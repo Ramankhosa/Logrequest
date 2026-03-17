@@ -776,6 +776,18 @@ export async function discardOrgStructureDraft(input: {
   }
 
   await prisma.$transaction(async (tx) => {
+    await tx.reportingLine.deleteMany({
+      where: { versionId: activeDraft.id },
+    });
+
+    await tx.orgRoleAssignment.deleteMany({
+      where: { versionId: activeDraft.id },
+    });
+
+    await tx.userOrgAssignment.deleteMany({
+      where: { versionId: activeDraft.id },
+    });
+
     await tx.orgStructureVersion.update({
       where: { id: activeDraft.id },
       data: {

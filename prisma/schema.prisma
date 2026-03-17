@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
   engineType = "binary"
 }
 
@@ -144,6 +144,61 @@ enum KpiMeasurementType {
   CURRENCY
 }
 
+enum PersonnelStatus {
+  ONBOARDING
+  ACTIVE
+  ON_LEAVE
+  NOTICE_PERIOD
+  SEPARATED
+  SUSPENDED_HR
+}
+
+enum PersonnelActionType {
+  ONBOARD
+  ACTIVATE
+  ASSIGN_UNIT
+  REMOVE_UNIT
+  CHANGE_PRIMARY_UNIT
+  ASSIGN_ROLE
+  REMOVE_ROLE
+  LEAVE_START
+  LEAVE_END
+  LEAVE_EXTEND
+  TRANSFER_INITIATE
+  TRANSFER_COMPLETE
+  TRANSFER_CANCEL
+  RESIGN
+  RESIGN_WITHDRAW
+  TERMINATE
+  REINSTATE
+  RETIRE
+}
+
+enum LeaveStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  EXTENDED
+}
+
+enum TransferStatus {
+  PROPOSED
+  APPROVED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  REJECTED
+}
+
+enum ResignationStatus {
+  SUBMITTED
+  NOTICE_PERIOD
+  HANDOVER_PENDING
+  COMPLETED
+  WITHDRAWN
+}
+
 model Tenant {
   id                    String                 @id @default(cuid())
   name                  String
@@ -168,6 +223,14 @@ model Tenant {
   orgUnits              OrgUnit[]
   kras                  Kra[]
   policy                TenantPolicy?
+  roleDefinitions       OrgRoleDefinition[]
+  personnelPolicy       TenantPersonnelPolicy?
+  leaveTypeDefinitions  LeaveTypeDefinition[]
+  leaveRecords          LeaveRecord[]
+  transferRecords       TransferRecord[]
+  resignationRecords    ResignationRecord[]
+  personnelActions      PersonnelAction[]
+  actingAssignments     ActingAssignment[]
 
   @@index([lifecycleState, entitlementState])
 }
@@ -187,10 +250,10 @@ model TenantPolicy {
 }
 
 model User {
-  id                  String             @id @default(cuid())
+  id                  String               @id @default(cuid())
   firstName           String
   lastName            String
-  officialEmail       String             @unique
+  officialEmail       String               @unique
   alternateEmail      String?
   phoneNumber         String?
   allowedLoginMethods Json?
@@ -199,10 +262,10 @@ model User {
   passwordSetAt       DateTime?
   passwordChangedAt   DateTime?
   lastLoginAt         DateTime?
-  lifecycleState      UserLifecycleState @default(DRAFT)
-  mustResetPassword   Boolean            @default(false)
-  isSuperadmin        Boolean            @default(false)
-  failedLoginCount    Int                @default(0)
+  lifecycleState      UserLifecycleState   @default(DRAFT)
+  mustResetPassword   Boolean              @default(false)
+  isSuperadmin        Boolean              @default(false)
+  failedLoginCount    Int                  @default(0)
   lockedUntil         DateTime?
   memberships         Membership[]
   invitations         Invitation[]
@@ -210,10 +273,10 @@ model User {
   passwordResetTokens PasswordResetToken[]
   orgAssignments      UserOrgAssignment[]
   orgRoleAssignments  OrgRoleAssignment[]
-  managerLines        ReportingLine[]    @relation("OrgManagerLines")
-  memberLines         ReportingLine[]    @relation("OrgMemberLines")
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  managerLines        ReportingLine[]      @relation("OrgManagerLines")
+  memberLines         ReportingLine[]      @relation("OrgMemberLines")
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
 
   @@index([lifecycleState])
 }
@@ -233,40 +296,50 @@ model SocialAccount {
 }
 
 model PasswordResetToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt])
 }
 
 model Membership {
-  id                  String           @id @default(cuid())
+  id                  String              @id @default(cuid())
   tenantId            String
   userId              String
   role                Role
   department          String?
   employeeId          String?
-  status              MembershipStatus @default(INVITED)
-  invitationState     InvitationStatus @default(PENDING)
+  designation         String?
+  dateOfJoining       DateTime?
+  personnelStatus     PersonnelStatus     @default(ONBOARDING)
+  status              MembershipStatus    @default(INVITED)
+  invitationState     InvitationStatus    @default(PENDING)
   invitedAt           DateTime?
   activationTimestamp DateTime?
   lastAccessTimestamp DateTime?
   createdByUserId     String?
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
-  tenant              Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   invitations         Invitation[]
   uploadRows          UploadRow[]
+  leaveRecords        LeaveRecord[]
+  transfers           TransferRecord[]    @relation("TransferSourceMember")
+  resignations        ResignationRecord[]
+  personnelActions    PersonnelAction[]
+  actingFor           ActingAssignment[]  @relation("ActingUser")
+  coveredBy           ActingAssignment[]  @relation("OriginalUser")
 
   @@unique([tenantId, userId])
   @@unique([tenantId, employeeId])
   @@index([tenantId, role, status])
+  @@index([tenantId, personnelStatus])
 }
 
 model Invitation {
@@ -355,40 +428,41 @@ model AuditLog {
 }
 
 model OrgStructureVersion {
-  id                String            @id @default(cuid())
+  id                String              @id @default(cuid())
   tenantId          String
   name              String
   versionNumber     Int
-  state             OrgStructureState @default(DRAFT)
+  state             OrgStructureState   @default(DRAFT)
   notes             String?
   validationSummary Json?
   validatedAt       DateTime?
   publishedAt       DateTime?
   createdByUserId   String?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   unitTypes         OrgUnitType[]
   units             OrgUnit[]
   reportingLines    ReportingLine[]
   userAssignments   UserOrgAssignment[]
   roleAssignments   OrgRoleAssignment[]
+  actingAssignments ActingAssignment[]
 
   @@unique([tenantId, versionNumber])
   @@index([tenantId, state])
 }
 
 model OrgUnitType {
-  id               String          @id @default(cuid())
+  id               String              @id @default(cuid())
   versionId        String
   typeKey          String
   internalCategory OrgUnitCategory
   displayLabel     String
   description      String?
-  allowRoot        Boolean         @default(false)
-  sortOrder        Int             @default(0)
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
+  allowRoot        Boolean             @default(false)
+  sortOrder        Int                 @default(0)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
   version          OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
   units            OrgUnit[]
 
@@ -397,32 +471,35 @@ model OrgUnitType {
 }
 
 model OrgUnit {
-  id              String        @id @default(cuid())
-  tenantId        String
-  versionId       String
-  typeId          String
-  code            String
-  name            String
-  parentId        String?
-  level           Int           @default(0)
-  sortOrder       Int           @default(0)
-  path            String?
-  state           OrgUnitState  @default(DRAFT)
-  metadata        Json?
-  effectiveFrom   DateTime?
-  effectiveTo     DateTime?
-  createdByUserId String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  version         OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  type            OrgUnitType   @relation(fields: [typeId], references: [id], onDelete: Restrict)
-  parent          OrgUnit?      @relation("OrgUnitTree", fields: [parentId], references: [id], onDelete: SetNull)
-  children        OrgUnit[]     @relation("OrgUnitTree")
-  reportingLines  ReportingLine[]
-  userAssignments UserOrgAssignment[]
-  roleAssignments OrgRoleAssignment[]
-  kras            Kra[]
+  id                String              @id @default(cuid())
+  tenantId          String
+  versionId         String
+  typeId            String
+  code              String
+  name              String
+  parentId          String?
+  level             Int                 @default(0)
+  sortOrder         Int                 @default(0)
+  path              String?
+  state             OrgUnitState        @default(DRAFT)
+  metadata          Json?
+  effectiveFrom     DateTime?
+  effectiveTo       DateTime?
+  createdByUserId   String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  version           OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  type              OrgUnitType         @relation(fields: [typeId], references: [id], onDelete: Restrict)
+  parent            OrgUnit?            @relation("OrgUnitTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children          OrgUnit[]           @relation("OrgUnitTree")
+  reportingLines    ReportingLine[]
+  userAssignments   UserOrgAssignment[]
+  roleAssignments   OrgRoleAssignment[]
+  kras              Kra[]
+  actingAssignments ActingAssignment[]
+  transfersFrom     TransferRecord[]    @relation("TransferSource")
+  transfersTo       TransferRecord[]    @relation("TransferTarget")
 
   @@unique([versionId, code])
   @@index([tenantId, code])
@@ -467,23 +544,48 @@ model UserOrgAssignment {
 }
 
 model OrgRoleAssignment {
-  id            String              @id @default(cuid())
-  versionId     String
-  unitId        String
-  userId        String
-  roleName      String
-  scope         OrgRoleScope        @default(NODE)
-  effectiveFrom DateTime?
-  effectiveTo   DateTime?
-  isActive      Boolean             @default(true)
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
-  version       OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  unit          OrgUnit             @relation(fields: [unitId], references: [id], onDelete: Cascade)
-  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String              @id @default(cuid())
+  versionId        String
+  unitId           String
+  userId           String
+  roleDefinitionId String?
+  roleName         String
+  scope            OrgRoleScope        @default(NODE)
+  effectiveFrom    DateTime?
+  effectiveTo      DateTime?
+  isActive         Boolean             @default(true)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  version          OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  unit             OrgUnit             @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleDefinition   OrgRoleDefinition?  @relation(fields: [roleDefinitionId], references: [id], onDelete: SetNull)
 
+  @@unique([versionId, unitId, userId, roleName])
   @@index([versionId, unitId, roleName])
   @@index([versionId, userId])
+  @@index([roleDefinitionId])
+}
+
+model OrgRoleDefinition {
+  id                String              @id @default(cuid())
+  tenantId          String
+  roleKey           String
+  displayLabel      String
+  description       String?
+  isUnitHead        Boolean             @default(false)
+  approvalAuthority Boolean             @default(false)
+  maxPerUnit        Int                 @default(-1)
+  sortOrder         Int                 @default(0)
+  isActive          Boolean             @default(true)
+  createdByUserId   String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roleAssignments   OrgRoleAssignment[]
+
+  @@unique([tenantId, roleKey])
+  @@index([tenantId, isActive])
 }
 
 model Kra {
@@ -521,4 +623,160 @@ model Kpi {
   kra             Kra                @relation(fields: [kraId], references: [id], onDelete: Cascade)
 
   @@index([kraId])
+}
+
+// ── Module 3: Personnel Lifecycle ────────────────────────────────────────────
+
+model TenantPersonnelPolicy {
+  id                            String   @id @default(cuid())
+  tenantId                      String   @unique
+  defaultNoticePeriodDays       Int      @default(30)
+  allowResignationWithdrawal    Boolean  @default(true)
+  withdrawalWindowDays          Int      @default(7)
+  requireTransferApproval       Boolean  @default(true)
+  requireLeaveApproval          Boolean  @default(true)
+  allowMultiplePrimaryUnits     Boolean  @default(false)
+  maxSecondaryUnits             Int      @default(5)
+  autoDeactivateOnExit          Boolean  @default(true)
+  requireHeadCoverageBeforeExit Boolean  @default(false)
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
+  tenant                        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model LeaveTypeDefinition {
+  id               String        @id @default(cuid())
+  tenantId         String
+  typeKey          String
+  displayLabel     String
+  description      String?
+  maxDaysPerYear   Int?
+  requiresApproval Boolean       @default(true)
+  requiresActing   Boolean       @default(false)
+  isPaid           Boolean       @default(true)
+  isActive         Boolean       @default(true)
+  sortOrder        Int           @default(0)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  tenant           Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  leaveRecords     LeaveRecord[]
+
+  @@unique([tenantId, typeKey])
+  @@index([tenantId, isActive])
+}
+
+model LeaveRecord {
+  id                String              @id @default(cuid())
+  tenantId          String
+  membershipId      String
+  leaveTypeId       String
+  startDate         DateTime
+  expectedEndDate   DateTime
+  actualEndDate     DateTime?
+  reason            String?
+  status            LeaveStatus         @default(SCHEDULED)
+  approvedByUserId  String?
+  createdByUserId   String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  membership        Membership          @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  leaveType         LeaveTypeDefinition @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+  actingAssignments ActingAssignment[]  @relation("LeaveActing")
+
+  @@index([tenantId, status])
+  @@index([membershipId, status])
+  @@index([tenantId, startDate, expectedEndDate])
+}
+
+model ActingAssignment {
+  id                   String              @id @default(cuid())
+  tenantId             String
+  leaveRecordId        String?
+  transferRecordId     String?
+  versionId            String
+  unitId               String
+  actingMembershipId   String
+  originalMembershipId String
+  roleAssignmentId     String?
+  startDate            DateTime
+  endDate              DateTime?
+  isActive             Boolean             @default(true)
+  createdByUserId      String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  leaveRecord          LeaveRecord?        @relation("LeaveActing", fields: [leaveRecordId], references: [id], onDelete: SetNull)
+  transferRecord       TransferRecord?     @relation("TransferActing", fields: [transferRecordId], references: [id], onDelete: SetNull)
+  version              OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  unit                 OrgUnit             @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  actingMembership     Membership          @relation("ActingUser", fields: [actingMembershipId], references: [id], onDelete: Cascade)
+  originalMembership   Membership          @relation("OriginalUser", fields: [originalMembershipId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, isActive])
+  @@index([leaveRecordId])
+  @@index([transferRecordId])
+  @@index([actingMembershipId, isActive])
+}
+
+model TransferRecord {
+  id                   String             @id @default(cuid())
+  tenantId             String
+  membershipId         String
+  sourceUnitId         String
+  targetUnitId         String
+  effectiveDate        DateTime
+  status               TransferStatus     @default(PROPOSED)
+  reason               String?
+  newRoleDefinitionIds String[]
+  initiatedByUserId    String?
+  approvedByUserId     String?
+  completedAt          DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  membership           Membership         @relation("TransferSourceMember", fields: [membershipId], references: [id], onDelete: Cascade)
+  sourceUnit           OrgUnit            @relation("TransferSource", fields: [sourceUnitId], references: [id], onDelete: Restrict)
+  targetUnit           OrgUnit            @relation("TransferTarget", fields: [targetUnitId], references: [id], onDelete: Restrict)
+  actingAssignments    ActingAssignment[] @relation("TransferActing")
+
+  @@index([tenantId, status])
+  @@index([membershipId, status])
+}
+
+model ResignationRecord {
+  id                String            @id @default(cuid())
+  tenantId          String
+  membershipId      String
+  resignationDate   DateTime
+  noticeEndDate     DateTime
+  actualExitDate    DateTime?
+  reason            String?
+  status            ResignationStatus @default(SUBMITTED)
+  handoverNotes     String?
+  processedByUserId String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  membership        Membership        @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([membershipId, status])
+}
+
+model PersonnelAction {
+  id            String              @id @default(cuid())
+  tenantId      String
+  membershipId  String
+  actionType    PersonnelActionType
+  effectiveDate DateTime
+  metadata      Json?
+  reason        String?
+  actorUserId   String
+  createdAt     DateTime            @default(now())
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  membership    Membership          @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, membershipId, createdAt])
+  @@index([tenantId, actionType, effectiveDate])
 }

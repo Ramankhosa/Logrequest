@@ -32,6 +32,7 @@ export const tenantNavigationGroups: NavigationGroup[] = [
       { href: "/tenant-admin", label: "Dashboard", icon: "layout-dashboard" },
       { href: "/tenant-admin/users", label: "Users", icon: "users" },
       { href: "/tenant-admin/structure", label: "Organization", icon: "network" },
+      { href: "/tenant-admin/personnel", label: "Personnel", icon: "contact" },
     ],
   },
   {

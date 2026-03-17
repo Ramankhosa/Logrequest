@@ -10,11 +10,15 @@ import {
   Plus,
   Tag,
   GitBranch,
+  Shield,
+  Users,
 } from "lucide-react";
 import { OrgTreeBuilder } from "@/components/tenant/org-tree-builder";
 import { StructureSummaryActions } from "@/components/tenant/structure-summary-actions";
 import { StructureUpload } from "@/components/tenant/structure-upload";
 import { VersionHistoryList } from "@/components/tenant/version-history-list";
+import { RoleDefinitionsList } from "@/components/tenant/role-definitions-list";
+import { UserRoleUpload } from "@/components/tenant/user-role-upload";
 
 type UnitType = {
   id: string;
@@ -48,6 +52,8 @@ type StructureTabsProps = {
 const TABS = [
   { key: "draft", label: "Draft", icon: FileEdit },
   { key: "published", label: "Published", icon: CheckCircle2 },
+  { key: "roles", label: "Roles", icon: Shield },
+  { key: "members", label: "Members", icon: Users },
   { key: "history", label: "History", icon: Clock },
   { key: "import", label: "Import", icon: Upload },
 ] as const;
@@ -102,6 +108,10 @@ export function StructureTabs({
           units={publishedUnits}
           typeColors={publishedTypeColors}
         />
+      ) : activeTab === "roles" ? (
+        <RolesTab />
+      ) : activeTab === "members" ? (
+        <MembersTab />
       ) : activeTab === "history" ? (
         <HistoryTab />
       ) : (
@@ -313,6 +323,26 @@ function HistoryTab() {
         </p>
       </div>
       <VersionHistoryList />
+    </div>
+  );
+}
+
+// ── Roles Tab ────────────────────────────────────────────────────────────────
+
+function RolesTab() {
+  return (
+    <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/60 p-5">
+      <RoleDefinitionsList />
+    </div>
+  );
+}
+
+// ── Members Tab ──────────────────────────────────────────────────────────────
+
+function MembersTab() {
+  return (
+    <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/60 p-5">
+      <UserRoleUpload />
     </div>
   );
 }
