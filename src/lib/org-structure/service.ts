@@ -504,6 +504,99 @@ export async function createOrgUnit(input: {
   };
 }
 
+export async function deleteOrgUnit(input: {
+  tenantId: string;
+  actorUserId: string;
+  actorRole: Role;
+  unitId: string;
+}): Promise<OrgStructureActionResult> {
+  if (!canManageStructure(input.actorRole)) {
+    return {
+      status: "error",
+      message: "You do not have permission to manage organization structure.",
+    };
+  }
+
+  const activeDraft = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId: input.tenantId,
+      state: { in: [...structureDraftStates] },
+    },
+    orderBy: { versionNumber: "desc" },
+  });
+
+  if (!activeDraft) {
+    return { status: "error", message: "No active draft found." };
+  }
+
+  const unit = await prisma.orgUnit.findFirst({
+    where: {
+      id: input.unitId,
+      versionId: activeDraft.id,
+      tenantId: input.tenantId,
+    },
+  });
+
+  if (!unit) {
+    return { status: "error", message: "Unit not found in the draft." };
+  }
+
+  // Collect all descendant IDs via breadth-first traversal
+  const toDelete: string[] = [unit.id];
+  const queue = [unit.id];
+
+  while (queue.length > 0) {
+    const parentId = queue.shift()!;
+    const children = await prisma.orgUnit.findMany({
+      where: { versionId: activeDraft.id, parentId },
+      select: { id: true },
+    });
+    for (const child of children) {
+      toDelete.push(child.id);
+      queue.push(child.id);
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.orgUnit.deleteMany({
+      where: { id: { in: toDelete } },
+    });
+
+    await tx.orgStructureVersion.update({
+      where: { id: activeDraft.id },
+      data: {
+        state: structureDraftState,
+        validatedAt: null,
+        validationSummary: Prisma.JsonNull,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId: input.tenantId,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        targetType: "OrgUnit",
+        targetId: unit.id,
+        action: "org_unit.deleted",
+        previousState: {
+          name: unit.name,
+          code: unit.code,
+          descendantsDeleted: toDelete.length - 1,
+        },
+      },
+    });
+  });
+
+  return {
+    status: "success",
+    message:
+      toDelete.length > 1
+        ? `Deleted "${unit.name}" and ${toDelete.length - 1} descendant(s).`
+        : `Deleted "${unit.name}".`,
+  };
+}
+
 export async function publishOrgStructure(input: {
   tenantId: string;
   actorUserId: string;

@@ -1,6 +1,7 @@
 export type NavigationItem = {
   href: string;
   label: string;
+  icon: string;
 };
 
 export type NavigationGroup = {
@@ -14,33 +15,30 @@ export const defaultNavigationGroups: NavigationGroup[] = [
     label: "Platform",
     defaultOpen: true,
     items: [
-      { href: "/", label: "Overview" },
-      { href: "/superadmin", label: "Superadmin" },
-      { href: "/tenant-admin", label: "Tenant" },
-      { href: "/imports", label: "Imports" },
-      { href: "/insights", label: "Insights" },
+      { href: "/", label: "Overview", icon: "home" },
+      { href: "/superadmin", label: "Superadmin", icon: "shield-check" },
+      { href: "/tenant-admin", label: "Tenant", icon: "building-2" },
+      { href: "/imports", label: "Imports", icon: "upload" },
+      { href: "/insights", label: "Insights", icon: "bar-chart-2" },
     ],
   },
 ];
 
 export const tenantNavigationGroups: NavigationGroup[] = [
   {
-    label: "Tenant",
+    label: "Workspace",
     defaultOpen: true,
     items: [
-      { href: "/tenant-admin", label: "Workspace" },
-      { href: "/tenant-admin/users", label: "Users" },
-      { href: "/tenant-admin/users/new", label: "New User" },
-      { href: "/tenant-admin/structure", label: "Organization" },
-      { href: "/tenant-admin/structure/types/new", label: "New Type" },
-      { href: "/tenant-admin/structure/units/new", label: "New Unit" },
+      { href: "/tenant-admin", label: "Dashboard", icon: "layout-dashboard" },
+      { href: "/tenant-admin/users", label: "Users", icon: "users" },
+      { href: "/tenant-admin/structure", label: "Organization", icon: "network" },
     ],
   },
   {
     label: "Platform",
     items: [
-      { href: "/insights", label: "Insights" },
-      { href: "/imports", label: "Imports" },
+      { href: "/insights", label: "Insights", icon: "bar-chart-2" },
+      { href: "/imports", label: "Imports", icon: "upload" },
     ],
   },
 ];
@@ -50,16 +48,16 @@ export const superadminNavigationGroups: NavigationGroup[] = [
     label: "Superadmin",
     defaultOpen: true,
     items: [
-      { href: "/superadmin", label: "Dashboard" },
-      { href: "/superadmin/tenants/new", label: "New Tenant" },
-      { href: "/insights", label: "Insights" },
+      { href: "/superadmin", label: "Dashboard", icon: "layout-dashboard" },
+      { href: "/superadmin/tenants/new", label: "New Tenant", icon: "building-2" },
+      { href: "/insights", label: "Insights", icon: "bar-chart-2" },
     ],
   },
   {
     label: "Platform",
     items: [
-      { href: "/", label: "Overview" },
-      { href: "/imports", label: "Imports" },
+      { href: "/", label: "Overview", icon: "home" },
+      { href: "/imports", label: "Imports", icon: "upload" },
     ],
   },
 ];
