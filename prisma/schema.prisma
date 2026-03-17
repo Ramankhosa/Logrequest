@@ -1,0 +1,469 @@
+generator client {
+  provider = "prisma-client-js"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TenantLifecycleState {
+  DRAFT
+  PENDING_VERIFICATION
+  ACTIVE
+  GRACE_PERIOD
+  SUSPENDED
+  REVOKED
+  ARCHIVED
+}
+
+enum TenantEntitlementState {
+  TRIAL_ACTIVE
+  PAID_ACTIVE
+  GRACE_PERIOD
+  PAYMENT_HOLD
+  SUSPENDED
+  REVOKED
+  EXPIRED
+  ARCHIVED
+}
+
+enum UserLifecycleState {
+  DRAFT
+  INVITED
+  PENDING_ACTIVATION
+  ACTIVE
+  LOCKED
+  SUSPENDED
+  REVOKED
+  ARCHIVED
+}
+
+enum MembershipStatus {
+  INVITED
+  PENDING_ACTIVATION
+  ACTIVE
+  LOCKED
+  SUSPENDED
+  REVOKED
+  ARCHIVED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum Role {
+  SUPERADMIN
+  TENANT_OWNER
+  TENANT_ADMIN
+  TENANT_USER
+}
+
+enum AuthProvider {
+  GOOGLE
+  MICROSOFT
+}
+
+enum UploadBatchStatus {
+  UPLOADED
+  VALIDATED
+  CONFIRMED
+  PROVISIONED
+  PARTIALLY_PROVISIONED
+  FAILED
+}
+
+enum UploadRowStatus {
+  VALID
+  WARNING
+  REJECTED
+  PROVISIONED
+}
+
+enum OrgStructureState {
+  DRAFT
+  VALIDATED
+  PUBLISHED
+  SUPERSEDED
+  ARCHIVED
+}
+
+enum OrgUnitCategory {
+  ORG_ROOT
+  CAMPUS
+  SCHOOL_LIKE_UNIT
+  DEPARTMENT_LIKE_UNIT
+  CENTER
+  LAB
+  OFFICE
+  DIVISION
+  PROGRAM
+  ADMINISTRATIVE_UNIT
+  BUSINESS_UNIT
+  FUNCTION
+  TEAM
+  REGION
+  BRANCH
+  SITE
+  PROJECT_UNIT
+  CUSTOM_UNIT
+}
+
+enum OrgUnitState {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum OrgAssignmentType {
+  PRIMARY
+  SECONDARY
+}
+
+enum OrgRoleScope {
+  NODE
+  DESCENDANTS
+}
+
+model Tenant {
+  id                    String                 @id @default(cuid())
+  name                  String
+  code                  String                 @unique
+  legalOrganizationName String
+  organizationType      String
+  primaryDomains        String[]
+  subscriptionPlan      String
+  subscriptionStartDate DateTime?
+  subscriptionEndDate   DateTime?
+  entitlementState      TenantEntitlementState @default(TRIAL_ACTIVE)
+  lifecycleState        TenantLifecycleState   @default(DRAFT)
+  ownerUserId           String?
+  createdByUserId       String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  memberships           Membership[]
+  invitations           Invitation[]
+  uploadBatches         UploadBatch[]
+  auditLogs             AuditLog[]
+  structureVersions     OrgStructureVersion[]
+  orgUnits              OrgUnit[]
+  policy                TenantPolicy?
+
+  @@index([lifecycleState, entitlementState])
+}
+
+model TenantPolicy {
+  id                           String   @id @default(cuid())
+  tenantId                     String   @unique
+  exactSocialEmailMatchOnly    Boolean  @default(true)
+  allowPasswordLogin           Boolean  @default(true)
+  allowGoogleLogin             Boolean  @default(true)
+  allowMicrosoftLogin          Boolean  @default(true)
+  allowGracePeriodAccess       Boolean  @default(true)
+  multiTenantMembershipEnabled Boolean  @default(false)
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+  tenant                       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id                  String             @id @default(cuid())
+  firstName           String
+  lastName            String
+  officialEmail       String             @unique
+  alternateEmail      String?
+  phoneNumber         String?
+  allowedLoginMethods Json?
+  passwordHash        String?
+  emailVerifiedAt     DateTime?
+  passwordSetAt       DateTime?
+  passwordChangedAt   DateTime?
+  lastLoginAt         DateTime?
+  lifecycleState      UserLifecycleState @default(DRAFT)
+  mustResetPassword   Boolean            @default(false)
+  isSuperadmin        Boolean            @default(false)
+  failedLoginCount    Int                @default(0)
+  lockedUntil         DateTime?
+  memberships         Membership[]
+  invitations         Invitation[]
+  socialAccounts      SocialAccount[]
+  passwordResetTokens PasswordResetToken[]
+  orgAssignments      UserOrgAssignment[]
+  orgRoleAssignments  OrgRoleAssignment[]
+  managerLines        ReportingLine[]    @relation("OrgManagerLines")
+  memberLines         ReportingLine[]    @relation("OrgMemberLines")
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([lifecycleState])
+}
+
+model SocialAccount {
+  id                String       @id @default(cuid())
+  userId            String
+  provider          AuthProvider
+  providerAccountId String
+  email             String
+  createdAt         DateTime     @default(now())
+  lastUsedAt        DateTime?
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@unique([userId, provider])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model Membership {
+  id                  String           @id @default(cuid())
+  tenantId            String
+  userId              String
+  role                Role
+  department          String?
+  employeeId          String?
+  status              MembershipStatus @default(INVITED)
+  invitationState     InvitationStatus @default(PENDING)
+  invitedAt           DateTime?
+  activationTimestamp DateTime?
+  lastAccessTimestamp DateTime?
+  createdByUserId     String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  tenant              Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invitations         Invitation[]
+  uploadRows          UploadRow[]
+
+  @@unique([tenantId, userId])
+  @@unique([tenantId, employeeId])
+  @@index([tenantId, role, status])
+}
+
+model Invitation {
+  id              String           @id @default(cuid())
+  token           String           @unique
+  tenantId        String
+  userId          String
+  membershipId    String?
+  status          InvitationStatus @default(PENDING)
+  deliveryChannel String           @default("email")
+  invitedByUserId String?
+  expiresAt       DateTime
+  sentAt          DateTime         @default(now())
+  acceptedAt      DateTime?
+  revokedAt       DateTime?
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membership      Membership?      @relation(fields: [membershipId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, status, expiresAt])
+}
+
+model UploadBatch {
+  id               String            @id @default(cuid())
+  tenantId         String
+  uploadedByUserId String?
+  fileName         String
+  fileType         String
+  status           UploadBatchStatus @default(UPLOADED)
+  totalRows        Int               @default(0)
+  validRows        Int               @default(0)
+  warningRows      Int               @default(0)
+  rejectedRows     Int               @default(0)
+  provisionedRows  Int               @default(0)
+  metadata         Json?
+  confirmedAt      DateTime?
+  provisionedAt    DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rows             UploadRow[]
+
+  @@index([tenantId, status, createdAt])
+}
+
+model UploadRow {
+  id             String          @id @default(cuid())
+  uploadBatchId  String
+  membershipId   String?
+  rowIndex       Int
+  status         UploadRowStatus
+  rawData        Json
+  normalizedData Json?
+  errors         Json?
+  warnings       Json?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  uploadBatch    UploadBatch     @relation(fields: [uploadBatchId], references: [id], onDelete: Cascade)
+  membership     Membership?     @relation(fields: [membershipId], references: [id], onDelete: SetNull)
+
+  @@unique([uploadBatchId, rowIndex])
+  @@index([uploadBatchId, status])
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  tenantId      String?
+  actorUserId   String?
+  actorRole     Role?
+  targetType    String
+  targetId      String
+  action        String
+  reason        String?
+  sourceIp      String?
+  userAgent     String?
+  previousState Json?
+  newState      Json?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  tenant        Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([targetType, targetId])
+}
+
+model OrgStructureVersion {
+  id                String            @id @default(cuid())
+  tenantId          String
+  name              String
+  versionNumber     Int
+  state             OrgStructureState @default(DRAFT)
+  notes             String?
+  validationSummary Json?
+  validatedAt       DateTime?
+  publishedAt       DateTime?
+  createdByUserId   String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unitTypes         OrgUnitType[]
+  units             OrgUnit[]
+  reportingLines    ReportingLine[]
+  userAssignments   UserOrgAssignment[]
+  roleAssignments   OrgRoleAssignment[]
+
+  @@unique([tenantId, versionNumber])
+  @@index([tenantId, state])
+}
+
+model OrgUnitType {
+  id               String          @id @default(cuid())
+  versionId        String
+  typeKey          String
+  internalCategory OrgUnitCategory
+  displayLabel     String
+  description      String?
+  allowRoot        Boolean         @default(false)
+  sortOrder        Int             @default(0)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  version          OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  units            OrgUnit[]
+
+  @@unique([versionId, typeKey])
+  @@index([versionId, sortOrder])
+}
+
+model OrgUnit {
+  id              String        @id @default(cuid())
+  tenantId        String
+  versionId       String
+  typeId          String
+  code            String
+  name            String
+  parentId        String?
+  level           Int           @default(0)
+  sortOrder       Int           @default(0)
+  path            String?
+  state           OrgUnitState  @default(DRAFT)
+  metadata        Json?
+  effectiveFrom   DateTime?
+  effectiveTo     DateTime?
+  createdByUserId String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  version         OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  type            OrgUnitType   @relation(fields: [typeId], references: [id], onDelete: Restrict)
+  parent          OrgUnit?      @relation("OrgUnitTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children        OrgUnit[]     @relation("OrgUnitTree")
+  reportingLines  ReportingLine[]
+  userAssignments UserOrgAssignment[]
+  roleAssignments OrgRoleAssignment[]
+
+  @@unique([versionId, code])
+  @@index([tenantId, code])
+  @@index([versionId, parentId])
+}
+
+model ReportingLine {
+  id            String              @id @default(cuid())
+  versionId     String
+  unitId        String?
+  managerUserId String
+  memberUserId  String
+  lineType      String              @default("SOLID")
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  version       OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  unit          OrgUnit?            @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  manager       User                @relation("OrgManagerLines", fields: [managerUserId], references: [id], onDelete: Cascade)
+  member        User                @relation("OrgMemberLines", fields: [memberUserId], references: [id], onDelete: Cascade)
+
+  @@index([versionId, unitId])
+  @@index([managerUserId, memberUserId])
+}
+
+model UserOrgAssignment {
+  id             String              @id @default(cuid())
+  versionId      String
+  unitId         String
+  userId         String
+  assignmentType OrgAssignmentType   @default(PRIMARY)
+  isPrimary      Boolean             @default(true)
+  effectiveFrom  DateTime?
+  effectiveTo    DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  version        OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  unit           OrgUnit             @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([versionId, unitId, userId, assignmentType])
+  @@index([versionId, userId])
+}
+
+model OrgRoleAssignment {
+  id            String              @id @default(cuid())
+  versionId     String
+  unitId        String
+  userId        String
+  roleName      String
+  scope         OrgRoleScope        @default(NODE)
+  effectiveFrom DateTime?
+  effectiveTo   DateTime?
+  isActive      Boolean             @default(true)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  version       OrgStructureVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  unit          OrgUnit             @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([versionId, unitId, roleName])
+  @@index([versionId, userId])
+}
