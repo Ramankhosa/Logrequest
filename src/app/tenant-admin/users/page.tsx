@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Plus } from "lucide-react";
+import { Role } from "@prisma/client";
 import { AppShell } from "@/components/app-shell";
 import { Panel } from "@/components/panel";
 import { UsersTable } from "@/components/users-table";
@@ -17,6 +18,7 @@ export default async function TenantUsersPage({
   const rows = await getTenantDirectoryRows(context.tenant?.id ?? "");
   const params = searchParams ? await searchParams : undefined;
   const showCreated = params?.created === "1";
+  const isTenantOwner = context.role === Role.TENANT_OWNER;
 
   return (
     <AppShell
@@ -41,7 +43,7 @@ export default async function TenantUsersPage({
       ) : null}
 
       <Panel eyebrow="Directory" title="Directory">
-        <UsersTable data={rows} />
+        <UsersTable data={rows} isTenantOwner={isTenantOwner} />
       </Panel>
     </AppShell>
   );

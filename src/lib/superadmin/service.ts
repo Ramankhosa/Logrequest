@@ -6,10 +6,11 @@ import {
   TenantLifecycleState,
   UserLifecycleState,
 } from "@prisma/client";
+import { addDays } from "date-fns";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getBaseUrl, sendAuthEmail } from "@/lib/auth/email";
-import { hashPassword, validatePasswordPolicy } from "@/lib/auth/password";
+import { createRawToken } from "@/lib/auth/password";
 import { normalizeEmail } from "@/lib/auth/utils";
 import { prisma } from "@/lib/prisma";
 import type { TenantCreationResult } from "@/lib/superadmin/shared";
@@ -28,22 +29,11 @@ const tenantCreationSchema = z
     entitlementState: z.nativeEnum(TenantEntitlementState),
     ownerName: z.string().trim().min(2),
     ownerEmail: z.string().trim().email(),
-    ownerPassword: z.string(),
     allowGracePeriodAccess: z.boolean(),
     notifyOwnerImmediately: z.boolean(),
     requireExactSocialMatch: z.boolean(),
   })
   .superRefine((value, context) => {
-    const passwordError = validatePasswordPolicy(value.ownerPassword);
-
-    if (passwordError) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["ownerPassword"],
-        message: passwordError,
-      });
-    }
-
     const startDate = new Date(value.subscriptionStartDate);
     const endDate = new Date(value.subscriptionEndDate);
 
@@ -138,7 +128,6 @@ export async function createTenantForSuperadmin(input: {
     };
   }
 
-  const ownerPasswordHash = await hashPassword(values.ownerPassword);
   const ownerNames = splitName(values.ownerName);
   const subscriptionStartDate = new Date(values.subscriptionStartDate);
   const subscriptionEndDate = new Date(values.subscriptionEndDate);
@@ -147,6 +136,9 @@ export async function createTenantForSuperadmin(input: {
     entitlementState: values.entitlementState,
     allowGracePeriodAccess: values.allowGracePeriodAccess,
   });
+  const activationToken = createRawToken();
+  const activationUrl = `${getBaseUrl()}/activate/${activationToken}`;
+  const invitationExpiresAt = addDays(new Date(), 7);
 
   let created:
     | {
@@ -163,12 +155,7 @@ export async function createTenantForSuperadmin(input: {
           firstName: ownerNames.firstName,
           lastName: ownerNames.lastName,
           officialEmail: normalizedEmail,
-          passwordHash: ownerPasswordHash,
-          emailVerifiedAt: new Date(),
-          passwordSetAt: new Date(),
-          passwordChangedAt: new Date(),
-          lifecycleState: UserLifecycleState.ACTIVE,
-          mustResetPassword: false,
+          lifecycleState: UserLifecycleState.PENDING_ACTIVATION,
           allowedLoginMethods: ["PASSWORD", "GOOGLE", "MICROSOFT"],
         },
       });
@@ -201,16 +188,27 @@ export async function createTenantForSuperadmin(input: {
         },
       });
 
-      await tx.membership.create({
+      const membership = await tx.membership.create({
         data: {
           tenantId: tenant.id,
           userId: owner.id,
           role: Role.TENANT_OWNER,
-          status: MembershipStatus.ACTIVE,
-          invitationState: InvitationStatus.ACCEPTED,
+          status: MembershipStatus.PENDING_ACTIVATION,
+          invitationState: InvitationStatus.PENDING,
           invitedAt: new Date(),
-          activationTimestamp: new Date(),
           createdByUserId: input.actorUserId,
+        },
+      });
+
+      await tx.invitation.create({
+        data: {
+          token: activationToken,
+          tenantId: tenant.id,
+          userId: owner.id,
+          membershipId: membership.id,
+          status: InvitationStatus.PENDING,
+          invitedByUserId: input.actorUserId,
+          expiresAt: invitationExpiresAt,
         },
       });
 
@@ -229,8 +227,9 @@ export async function createTenantForSuperadmin(input: {
             ownerEmail: normalizedEmail,
           },
           metadata: {
-            ownerProvisioning: "password_based",
+            ownerProvisioning: "invite_based",
             ownerCanSignIn,
+            ownerInvitationExpiresAt: invitationExpiresAt.toISOString(),
           },
         },
       });
@@ -249,25 +248,24 @@ export async function createTenantForSuperadmin(input: {
   }
 
   let message = ownerCanSignIn
-    ? "Tenant and owner account created. The owner can sign in now and provision tenant admins from the tenant workspace."
-    : "Tenant and owner account created. Update the tenant lifecycle and entitlement state before the owner can sign in.";
+    ? "Tenant created and owner invited to activate their account. After activation, the owner can sign in and provision tenant admins from the tenant workspace."
+    : "Tenant created and owner invited to activate their account. Access remains blocked until tenant lifecycle and entitlement states allow sign-in.";
 
   if (values.notifyOwnerImmediately) {
-    const loginUrl = `${getBaseUrl()}/login`;
-
     try {
       await sendAuthEmail({
         to: created.ownerEmail,
-        subject: `Your ${values.tenantName.trim()} owner account is ready`,
+        subject: `Activate your ${values.tenantName.trim()} owner account`,
         text: ownerCanSignIn
-          ? `Your tenant owner account is ready. Sign in at ${loginUrl} with your approved email.`
-          : `Your tenant owner account is created, but sign-in will remain blocked until the tenant lifecycle and entitlement states allow access. Once enabled, sign in at ${loginUrl}.`,
+          ? `Activate your tenant owner account using this link: ${activationUrl}. After activation, you can sign in with your approved email.`
+          : `Activate your tenant owner account using this link: ${activationUrl}. Sign-in will remain blocked until tenant lifecycle and entitlement states allow access.`,
         html: ownerCanSignIn
-          ? `<p>Your tenant owner account is ready.</p><p>Sign in at <a href="${loginUrl}">${loginUrl}</a> with your approved email.</p><p>Tenant code: <strong>${created.tenantCode}</strong></p>`
-          : `<p>Your tenant owner account is created, but sign-in is still blocked until the tenant lifecycle and entitlement states allow access.</p><p>Once enabled, sign in at <a href="${loginUrl}">${loginUrl}</a>.</p><p>Tenant code: <strong>${created.tenantCode}</strong></p>`,
+          ? `<p>Activate your tenant owner account using the link below.</p><p><a href="${activationUrl}">${activationUrl}</a></p><p>After activation, you can sign in with your approved email.</p><p>Tenant code: <strong>${created.tenantCode}</strong></p>`
+          : `<p>Activate your tenant owner account using the link below.</p><p><a href="${activationUrl}">${activationUrl}</a></p><p>Sign-in will remain blocked until tenant lifecycle and entitlement states allow access.</p><p>Tenant code: <strong>${created.tenantCode}</strong></p>`,
       });
+      message += " Invitation sent.";
     } catch {
-      message += " The tenant was saved, but the owner notification email could not be sent.";
+      message += " The tenant was saved, but the owner invitation email could not be sent.";
     }
   }
 

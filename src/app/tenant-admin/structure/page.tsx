@@ -1,11 +1,14 @@
 import Link from "next/link";
-import { ArrowLeft, Layers, Map, Scale } from "lucide-react";
+import { ArrowLeft, Layers, Map as MapIcon, Scale } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Panel } from "@/components/panel";
 import { requireTenantAdmin } from "@/lib/auth/session";
 import { getShellIdentity } from "@/lib/auth/access";
 import { tenantNavigationGroups } from "@/lib/navigation";
-import { getOrgStructureSnapshot } from "@/lib/org-structure/service";
+import {
+  getOrgStructureSnapshot,
+  type OrgStructureSnapshot,
+} from "@/lib/org-structure/service";
 import { StructureSummaryActions } from "@/components/tenant/structure-summary-actions";
 
 export default async function StructurePage() {
@@ -39,7 +42,7 @@ export default async function StructurePage() {
               hint={snapshot?.draft ? `v${snapshot.draft.versionNumber}` : "ready"}
             />
             <SummaryStat
-              icon={<Map className="h-4 w-4" />}
+              icon={<MapIcon className="h-4 w-4" />}
               label="Published units"
               value={snapshot?.published?.unitCount ?? 0}
               hint={
@@ -87,25 +90,8 @@ export default async function StructurePage() {
               </div>
               {snapshot?.draftUnits.length ? (
                 <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white/80">
-                  <div className="divide-y divide-slate-200">
-                    {snapshot.draftUnits.map((unit) => (
-                      <div
-                        key={unit.id}
-                        className="flex items-center justify-between px-4 py-3 text-sm text-slate-600"
-                      >
-                        <div>
-                          <div className="font-semibold text-slate-900">
-                            {unit.name}
-                          </div>
-                          <div className="text-xs text-slate-500">
-                            {unit.code}
-                          </div>
-                        </div>
-                        <div className="text-xs uppercase tracking-[0.16em] text-slate-500">
-                          {unit.level === 0 ? "Root" : `Level ${unit.level}`}
-                        </div>
-                      </div>
-                    ))}
+                  <div className="p-4">
+                    <UnitTreeList nodes={buildUnitTree(snapshot.draftUnits)} />
                   </div>
                 </div>
               ) : (
@@ -120,6 +106,76 @@ export default async function StructurePage() {
         </Panel>
       </div>
     </AppShell>
+  );
+}
+
+type DraftUnit = OrgStructureSnapshot["draftUnits"][number];
+
+type UnitNode = {
+  unit: DraftUnit;
+  children: UnitNode[];
+};
+
+function buildUnitTree(units: DraftUnit[]) {
+  const nodes = new Map<string, UnitNode>();
+  const roots: UnitNode[] = [];
+
+  for (const unit of units) {
+    nodes.set(unit.id, { unit, children: [] });
+  }
+
+  for (const unit of units) {
+    const node = nodes.get(unit.id);
+    if (!node) continue;
+
+    if (unit.parentId && nodes.has(unit.parentId)) {
+      nodes.get(unit.parentId)?.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  return roots;
+}
+
+function UnitTreeList({ nodes }: { nodes: UnitNode[] }) {
+  return (
+    <div className="space-y-3">
+      {nodes.map((node) => (
+        <UnitTreeNode key={node.unit.id} node={node} />
+      ))}
+    </div>
+  );
+}
+
+function UnitTreeNode({ node }: { node: UnitNode }) {
+  return (
+    <div className="rounded-2xl border border-slate-200/80 bg-white/80 px-4 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-900">
+            {node.unit.name}
+          </div>
+          <div className="text-xs text-slate-500">{node.unit.code}</div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-slate-700">
+              {node.unit.typeLabel}
+            </span>
+            <span className="text-xs uppercase tracking-[0.16em] text-slate-500">
+              {node.unit.level === 0 ? "Root" : `Level ${node.unit.level}`}
+            </span>
+          </div>
+        </div>
+        <div className="text-xs uppercase tracking-[0.16em] text-slate-500">
+          {node.unit.typeKey}
+        </div>
+      </div>
+      {node.children.length ? (
+        <div className="mt-3 border-l border-slate-200 pl-4">
+          <UnitTreeList nodes={node.children} />
+        </div>
+      ) : null}
+    </div>
   );
 }
 

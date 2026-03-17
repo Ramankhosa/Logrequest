@@ -35,21 +35,9 @@ const formSchema = z
     entitlementState: z.string().trim().min(1, "Entitlement state is required."),
     ownerName: z.string().trim().min(2, "Owner name is required."),
     ownerEmail: z.string().trim().email("Enter a valid owner email."),
-    ownerPassword: z
-      .string()
-      .min(10, "Password must be at least 10 characters long.")
-      .regex(/[A-Z]/, "Password must include at least one uppercase letter.")
-      .regex(/[a-z]/, "Password must include at least one lowercase letter.")
-      .regex(/[0-9]/, "Password must include at least one number.")
-      .regex(/[^A-Za-z0-9]/, "Password must include at least one special character."),
-    confirmOwnerPassword: z.string().min(1, "Confirm the owner password."),
     allowGracePeriodAccess: z.boolean(),
     notifyOwnerImmediately: z.boolean(),
     requireExactSocialMatch: z.boolean(),
-  })
-  .refine((value) => value.ownerPassword === value.confirmOwnerPassword, {
-    path: ["confirmOwnerPassword"],
-    message: "Owner password confirmation does not match.",
   });
 
 type TenantWizardForm = z.infer<typeof formSchema>;
@@ -92,12 +80,7 @@ const steps: Array<{
   },
   {
     title: "Tenant owner",
-    fields: [
-      "ownerName",
-      "ownerEmail",
-      "ownerPassword",
-      "confirmOwnerPassword",
-    ],
+    fields: ["ownerName", "ownerEmail"],
   },
   {
     title: "Activation",
@@ -106,6 +89,10 @@ const steps: Array<{
       "notifyOwnerImmediately",
       "requireExactSocialMatch",
     ],
+  },
+  {
+    title: "Review",
+    fields: [],
   },
 ];
 
@@ -122,20 +109,18 @@ export function TenantWizard() {
   const form = useForm<TenantWizardForm>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      tenantName: "Nexford School of Research",
-      tenantCode: "NEXFORD_RS",
-      legalOrganizationName: "Nexford School of Research Foundation",
-      organizationType: "University",
-      primaryDomain: "nexford.edu",
-      subscriptionPlan: "Enterprise Research",
-      subscriptionStartDate: "2026-04-01",
-      subscriptionEndDate: "2027-03-31",
-      lifecycleState: "ACTIVE",
-      entitlementState: "TRIAL_ACTIVE",
-      ownerName: "Dr. Alina Morgan",
-      ownerEmail: "alina.morgan@nexford.edu",
-      ownerPassword: "",
-      confirmOwnerPassword: "",
+      tenantName: "",
+      tenantCode: "",
+      legalOrganizationName: "",
+      organizationType: "",
+      primaryDomain: "",
+      subscriptionPlan: "",
+      subscriptionStartDate: "",
+      subscriptionEndDate: "",
+      lifecycleState: "",
+      entitlementState: "",
+      ownerName: "",
+      ownerEmail: "",
       allowGracePeriodAccess: true,
       notifyOwnerImmediately: true,
       requireExactSocialMatch: true,
@@ -164,12 +149,18 @@ export function TenantWizard() {
     control: form.control,
     name: "entitlementState",
   });
+  const formValues = (useWatch({
+    control: form.control,
+  }) ?? {}) as Partial<TenantWizardForm>;
 
   const ownerCanSignIn = calculateOwnerAccess({
     lifecycleState,
     entitlementState,
     allowGracePeriodAccess,
   });
+
+  const reviewValue = (value?: string) => (value && value.trim() ? value : "Not set");
+  const reviewToggle = (value?: boolean) => (value ? "Enabled" : "Disabled");
 
   const nextStep = async () => {
     const isValid = await form.trigger(currentStep.fields);
@@ -209,7 +200,6 @@ export function TenantWizard() {
             entitlementState: values.entitlementState,
             ownerName: values.ownerName,
             ownerEmail: values.ownerEmail,
-            ownerPassword: values.ownerPassword,
             allowGracePeriodAccess: values.allowGracePeriodAccess,
             notifyOwnerImmediately: values.notifyOwnerImmediately,
             requireExactSocialMatch: values.requireExactSocialMatch,
@@ -245,7 +235,7 @@ export function TenantWizard() {
   return (
     <Panel
       eyebrow="Create tenant"
-      title="Tenant owner first provisioning"
+      title="Tenant owner invite provisioning"
       description="All step data stays in the browser until the final submit. The database is touched only once, after the final validation succeeds."
     >
       <div className="mb-6 flex items-center justify-between gap-3 rounded-3xl border border-slate-200/80 bg-slate-50 px-4 py-3">
@@ -260,7 +250,7 @@ export function TenantWizard() {
         </Link>
       </div>
 
-      <div className="mb-6 grid gap-3 md:grid-cols-4">
+      <div className="mb-6 grid gap-3 md:grid-cols-5">
         {steps.map((step, index) => (
           <div
             key={step.title}
@@ -306,6 +296,9 @@ export function TenantWizard() {
               error={form.formState.errors.organizationType?.message}
               input={
                 <select {...form.register("organizationType")} className={inputClassName}>
+                  <option value="" disabled>
+                    Select organization type
+                  </option>
                   <option value="University">University</option>
                   <option value="Research Institute">Research Institute</option>
                   <option value="Company">Company</option>
@@ -334,6 +327,9 @@ export function TenantWizard() {
               error={form.formState.errors.lifecycleState?.message}
               input={
                 <select {...form.register("lifecycleState")} className={inputClassName}>
+                  <option value="" disabled>
+                    Select lifecycle state
+                  </option>
                   <option value="DRAFT">Draft</option>
                   <option value="PENDING_VERIFICATION">Pending verification</option>
                   <option value="ACTIVE">Active</option>
@@ -372,6 +368,9 @@ export function TenantWizard() {
                   {...form.register("entitlementState")}
                   className={inputClassName}
                 >
+                  <option value="" disabled>
+                    Select entitlement state
+                  </option>
                   <option value="TRIAL_ACTIVE">Trial active</option>
                   <option value="PAID_ACTIVE">Paid active</option>
                   <option value="GRACE_PERIOD">Grace period</option>
@@ -395,28 +394,6 @@ export function TenantWizard() {
               error={form.formState.errors.ownerEmail?.message}
               input={<input {...form.register("ownerEmail")} className={inputClassName} />}
             />
-            <FormField
-              label="Owner password"
-              error={form.formState.errors.ownerPassword?.message}
-              input={
-                <input
-                  {...form.register("ownerPassword")}
-                  className={inputClassName}
-                  type="password"
-                />
-              }
-            />
-            <FormField
-              label="Confirm owner password"
-              error={form.formState.errors.confirmOwnerPassword?.message}
-              input={
-                <input
-                  {...form.register("confirmOwnerPassword")}
-                  className={inputClassName}
-                  type="password"
-                />
-              }
-            />
 
             <div className="rounded-3xl border border-slate-200/80 bg-slate-50 p-4 md:col-span-2">
               <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
@@ -424,9 +401,9 @@ export function TenantWizard() {
                 Owner-first governance
               </div>
               <p className="text-sm leading-7 text-slate-600">
-                Superadmin provisions only the tenant owner here. After sign-in,
-                the owner uses the tenant workspace to create tenant admins and
-                standard users.
+                The tenant owner is invited to activate their account and set a
+                password. After activation and sign-in, the owner provisions tenant
+                admins and standard users from the tenant workspace.
               </p>
             </div>
           </div>
@@ -442,7 +419,7 @@ export function TenantWizard() {
             />
             <ToggleCard
               label="Notify owner immediately"
-              description="Send an owner-ready email with sign-in guidance after the tenant is created."
+              description="Send an activation email with a secure link to set a password."
               checked={notifyOwnerImmediately}
               input={<input {...form.register("notifyOwnerImmediately")} type="checkbox" />}
             />
@@ -460,14 +437,99 @@ export function TenantWizard() {
                 <StatusBadge label={lifecycleState} />
                 <StatusBadge label={entitlementState} />
                 <StatusBadge
-                  label={ownerCanSignIn ? "Owner sign-in ready" : "Owner sign-in blocked"}
+                  label={
+                    ownerCanSignIn
+                      ? "Access allowed after activation"
+                      : "Access blocked after activation"
+                  }
                   tone={ownerCanSignIn ? "brand" : "amber"}
                 />
               </div>
               <p className="mt-3 text-sm leading-7 text-slate-600">
                 {ownerCanSignIn
-                  ? "The owner can sign in immediately after the tenant is created."
-                  : "The owner account will be created, but access stays blocked until tenant lifecycle and entitlement states allow sign-in."}
+                  ? "An activation link is created for the owner. After activation, sign-in is allowed immediately."
+                  : "An activation link is created for the owner, but sign-in remains blocked until tenant lifecycle and entitlement states allow access."}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {stepIndex === 4 ? (
+          <div className="space-y-4">
+            <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4">
+              <div className="mb-2 text-sm font-semibold text-amber-900">
+                Final review
+              </div>
+              <p className="text-sm leading-7 text-amber-900">
+                Creating a tenant is irreversible. The owner will be invited to
+                activate their account and set a password. Review every value
+                before submitting.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <SummaryLine
+                label="Tenant name"
+                value={reviewValue(formValues.tenantName)}
+              />
+              <SummaryLine
+                label="Tenant code"
+                value={reviewValue(formValues.tenantCode)}
+              />
+              <SummaryLine
+                label="Legal organization"
+                value={reviewValue(formValues.legalOrganizationName)}
+              />
+              <SummaryLine
+                label="Organization type"
+                value={reviewValue(formValues.organizationType)}
+              />
+              <SummaryLine
+                label="Primary domain"
+                value={reviewValue(formValues.primaryDomain)}
+              />
+              <SummaryLine
+                label="Subscription plan"
+                value={reviewValue(formValues.subscriptionPlan)}
+              />
+              <SummaryLine
+                label="Subscription window"
+                value={`${reviewValue(formValues.subscriptionStartDate)} to ${reviewValue(
+                  formValues.subscriptionEndDate,
+                )}`}
+              />
+              <SummaryLine
+                label="Lifecycle and entitlement"
+                value={`${reviewValue(formValues.lifecycleState)} / ${reviewValue(
+                  formValues.entitlementState,
+                )}`}
+              />
+              <SummaryLine
+                label="Owner"
+                value={`${reviewValue(formValues.ownerName)} / ${reviewValue(
+                  formValues.ownerEmail,
+                )}`}
+              />
+              <SummaryLine
+                label="Grace-period access"
+                value={reviewToggle(formValues.allowGracePeriodAccess)}
+              />
+              <SummaryLine
+                label="Notify owner immediately"
+                value={reviewToggle(formValues.notifyOwnerImmediately)}
+              />
+              <SummaryLine
+                label="Exact social match"
+                value={reviewToggle(formValues.requireExactSocialMatch)}
+              />
+            </div>
+            <div className="rounded-3xl border border-slate-200/80 bg-white/80 p-4">
+              <div className="mb-2 text-sm font-semibold text-slate-900">
+                Invitation delivery
+              </div>
+              <p className="text-sm leading-7 text-slate-600">
+                {notifyOwnerImmediately
+                  ? "An activation link will be emailed to the owner immediately after the tenant is created."
+                  : "No activation email will be sent automatically. The invitation token will still be created with a 7-day expiry."}
               </p>
             </div>
           </div>
@@ -503,7 +565,7 @@ export function TenantWizard() {
               type="submit"
               disabled={isPending}
             >
-              {isPending ? "Creating tenant..." : "Create tenant and owner"}
+              {isPending ? "Creating tenant..." : "Create tenant and invite owner"}
             </button>
           )}
         </div>
@@ -513,7 +575,7 @@ export function TenantWizard() {
         <div className="mt-6 rounded-[1.75rem] border border-brand/15 bg-brand-soft/70 p-5">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-brand">
             <CheckCircle2 className="h-4 w-4" />
-            Tenant and owner account created
+            Tenant created and owner invited
           </div>
           <p className="mb-4 text-sm leading-7 text-slate-700">{result.message}</p>
           <div className="grid gap-3 md:grid-cols-2">
@@ -533,8 +595,8 @@ export function TenantWizard() {
               label="Access"
               value={
                 result.ownerCanSignIn
-                  ? "Owner can sign in now and create tenant admins."
-                  : "Owner account exists, but tenant access states must be updated before sign-in."
+                  ? "Owner must activate their account, then sign-in is allowed."
+                  : "Owner must activate their account, but sign-in remains blocked until tenant access is enabled."
               }
             />
           </div>
@@ -544,8 +606,8 @@ export function TenantWizard() {
             <StatusBadge
               label={
                 submittedSummary.notifyOwnerImmediately
-                  ? "Owner notified"
-                  : "Owner notification skipped"
+                  ? "Invitation sent"
+                  : "Invitation email skipped"
               }
               tone={submittedSummary.notifyOwnerImmediately ? "brand" : "slate"}
             />

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   initialOrgStructureActionResult,
   type OrgStructureActionResult,
@@ -17,8 +18,12 @@ export function StructureSummaryActions() {
     initialOrgStructureActionResult,
   );
   const [isPending, setPending] = useState(false);
+  const router = useRouter();
 
-  const sendAction = async (endpoint: string) => {
+  const sendAction = async (
+    endpoint: string,
+    options?: { refresh?: boolean },
+  ) => {
     setPending(true);
 
     try {
@@ -38,7 +43,32 @@ export function StructureSummaryActions() {
       });
     } finally {
       setPending(false);
+      if (options?.refresh) {
+        router.refresh();
+      }
     }
+  };
+
+  const handlePublish = () => {
+    if (
+      !window.confirm(
+        "Publish this draft? This will replace the current published structure.",
+      )
+    ) {
+      return;
+    }
+    void sendAction("/api/tenant/structure/publish", { refresh: true });
+  };
+
+  const handleDiscard = () => {
+    if (
+      !window.confirm(
+        "Discard this draft? All unpublished changes will be lost.",
+      )
+    ) {
+      return;
+    }
+    void sendAction("/api/tenant/structure/discard", { refresh: true });
   };
 
   return (
@@ -55,7 +85,9 @@ export function StructureSummaryActions() {
         <button
           type="button"
           disabled={isPending}
-          onClick={() => sendAction("/api/tenant/structure/validate")}
+          onClick={() =>
+            sendAction("/api/tenant/structure/validate", { refresh: true })
+          }
           className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:border-slate-400 disabled:opacity-50"
         >
           Validate draft
@@ -63,7 +95,15 @@ export function StructureSummaryActions() {
         <button
           type="button"
           disabled={isPending}
-          onClick={() => sendAction("/api/tenant/structure/publish")}
+          onClick={handleDiscard}
+          className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:border-rose-300 disabled:opacity-50"
+        >
+          Discard draft
+        </button>
+        <button
+          type="button"
+          disabled={isPending}
+          onClick={handlePublish}
           className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
         >
           Publish

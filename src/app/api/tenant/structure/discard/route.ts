@@ -2,7 +2,7 @@ import { Role } from "@prisma/client";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { validateOrgStructureDraft } from "@/lib/org-structure/service";
+import { discardOrgStructureDraft } from "@/lib/org-structure/service";
 
 export async function POST() {
   const session = await getServerSession(authOptions);
@@ -30,11 +30,13 @@ export async function POST() {
     );
   }
 
-  const validation = await validateOrgStructureDraft(session.user.tenantId);
+  const result = await discardOrgStructureDraft({
+    tenantId: session.user.tenantId,
+    actorUserId: session.user.id,
+    actorRole: session.user.role as Role,
+  });
 
-  return NextResponse.json({
-    status: validation.errors.length ? "error" : "success",
-    message: validation.errors[0] ?? "Draft validated.",
-    ...validation,
+  return NextResponse.json(result, {
+    status: result.status === "success" ? 200 : 400,
   });
 }

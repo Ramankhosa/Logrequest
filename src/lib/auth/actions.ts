@@ -275,7 +275,37 @@ export async function activateInvitationAction(
     };
   }
 
-  if (invitation.status !== InvitationStatus.PENDING || invitation.expiresAt < new Date()) {
+  if (invitation.status !== InvitationStatus.PENDING) {
+    return {
+      status: "error",
+      message: "Invitation link is expired or already used.",
+    };
+  }
+
+  if (invitation.expiresAt < new Date()) {
+    await prisma.$transaction(async (tx) => {
+      await tx.invitation.update({
+        where: {
+          id: invitation.id,
+        },
+        data: {
+          status: InvitationStatus.EXPIRED,
+        },
+      });
+
+      if (
+        invitation.membershipId &&
+        invitation.membership?.invitationState === InvitationStatus.PENDING
+      ) {
+        await tx.membership.update({
+          where: { id: invitation.membershipId },
+          data: {
+            invitationState: InvitationStatus.EXPIRED,
+          },
+        });
+      }
+    });
+
     return {
       status: "error",
       message: "Invitation link is expired or already used.",

@@ -37,6 +37,11 @@ export type MemberCreationInput = {
   role: "TENANT_ADMIN" | "TENANT_USER";
 };
 
+export type MemberGovernanceResult = {
+  status: "success" | "error";
+  message: string;
+};
+
 const memberCreationSchema = z.object({
   firstName: z.string().trim().min(2),
   lastName: z.string().trim().min(2),
@@ -84,6 +89,7 @@ export async function getTenantWorkspaceCounts(
 export async function getTenantDirectoryRows(
   tenantId: string,
 ): Promise<TenantDirectoryRow[]> {
+  await normalizeExpiredInvitations(tenantId);
   const memberships = await prisma.membership.findMany({
     where: { tenantId },
     include: {
@@ -263,4 +269,274 @@ export async function createTenantMember(input: {
     status: "success",
     message,
   };
+}
+
+export async function updateTenantMemberRole(input: {
+  actorUserId: string;
+  actorRole: Role;
+  tenantId: string;
+  membershipId: string;
+  role: Role;
+}): Promise<MemberGovernanceResult> {
+  if (!canManageMembers(input.actorRole)) {
+    return {
+      status: "error",
+      message: "You do not have permission to manage tenant users.",
+    };
+  }
+
+  const membership = await prisma.membership.findUnique({
+    where: { id: input.membershipId },
+    include: {
+      user: true,
+    },
+  });
+
+  if (!membership || membership.tenantId !== input.tenantId) {
+    return {
+      status: "error",
+      message: "Membership was not found.",
+    };
+  }
+
+  if (membership.role === Role.TENANT_OWNER) {
+    return {
+      status: "error",
+      message: "Tenant owner membership cannot be modified.",
+    };
+  }
+
+  if (input.role !== Role.TENANT_ADMIN && input.role !== Role.TENANT_USER) {
+    return {
+      status: "error",
+      message: "Role update is invalid.",
+    };
+  }
+
+  if (membership.role === input.role) {
+    return {
+      status: "error",
+      message: "Membership already has this role.",
+    };
+  }
+
+  if (requiresOwnerForAdminChange(input.actorRole, membership.role, input.role)) {
+    return {
+      status: "error",
+      message: "Only the tenant owner can manage tenant admins.",
+    };
+  }
+
+  const previousState = {
+    role: membership.role,
+    status: membership.status,
+    invitationState: membership.invitationState,
+  };
+
+  const updatedMembership = await prisma.$transaction(async (tx) => {
+    const updated = await tx.membership.update({
+      where: { id: membership.id },
+      data: {
+        role: input.role,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId: input.tenantId,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        targetType: "Membership",
+        targetId: membership.id,
+        action: "tenant.member.role.updated",
+        previousState,
+        newState: {
+          role: updated.role,
+          status: updated.status,
+          invitationState: updated.invitationState,
+          email: membership.user.officialEmail,
+        },
+      },
+    });
+
+    return updated;
+  });
+
+  return {
+    status: "success",
+    message:
+      updatedMembership.role === Role.TENANT_ADMIN
+        ? "Tenant admin role assigned."
+        : "Tenant admin role removed.",
+  };
+}
+
+export async function revokeTenantMember(input: {
+  actorUserId: string;
+  actorRole: Role;
+  tenantId: string;
+  membershipId: string;
+}): Promise<MemberGovernanceResult> {
+  if (!canManageMembers(input.actorRole)) {
+    return {
+      status: "error",
+      message: "You do not have permission to manage tenant users.",
+    };
+  }
+
+  const membership = await prisma.membership.findUnique({
+    where: { id: input.membershipId },
+    include: {
+      user: true,
+    },
+  });
+
+  if (!membership || membership.tenantId !== input.tenantId) {
+    return {
+      status: "error",
+      message: "Membership was not found.",
+    };
+  }
+
+  if (membership.role === Role.TENANT_OWNER) {
+    return {
+      status: "error",
+      message: "Tenant owner membership cannot be modified.",
+    };
+  }
+
+  if (membership.status === MembershipStatus.REVOKED) {
+    return {
+      status: "error",
+      message: "Membership is already revoked.",
+    };
+  }
+
+  if (requiresOwnerForAdminChange(input.actorRole, membership.role, membership.role)) {
+    return {
+      status: "error",
+      message: "Only the tenant owner can manage tenant admins.",
+    };
+  }
+
+  const previousState = {
+    role: membership.role,
+    status: membership.status,
+    invitationState: membership.invitationState,
+  };
+
+  await prisma.$transaction(async (tx) => {
+    await tx.invitation.updateMany({
+      where: {
+        membershipId: membership.id,
+        status: InvitationStatus.PENDING,
+      },
+      data: {
+        status: InvitationStatus.REVOKED,
+        revokedAt: new Date(),
+      },
+    });
+
+    const nextInvitationState =
+      membership.invitationState === InvitationStatus.PENDING
+        ? InvitationStatus.REVOKED
+        : membership.invitationState;
+
+    await tx.membership.update({
+      where: { id: membership.id },
+      data: {
+        status: MembershipStatus.REVOKED,
+        invitationState: nextInvitationState,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId: input.tenantId,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        targetType: "Membership",
+        targetId: membership.id,
+        action: "tenant.member.revoked",
+        previousState,
+        newState: {
+          role: membership.role,
+          status: MembershipStatus.REVOKED,
+          invitationState: nextInvitationState,
+          email: membership.user.officialEmail,
+        },
+      },
+    });
+  });
+
+  return {
+    status: "success",
+    message: "Membership revoked.",
+  };
+}
+
+async function normalizeExpiredInvitations(tenantId: string) {
+  const now = new Date();
+  const expiredInvitations = await prisma.invitation.findMany({
+    where: {
+      tenantId,
+      status: InvitationStatus.PENDING,
+      expiresAt: {
+        lt: now,
+      },
+    },
+    select: {
+      id: true,
+      membershipId: true,
+    },
+  });
+
+  if (!expiredInvitations.length) {
+    return;
+  }
+
+  const membershipIds = expiredInvitations
+    .map((invitation) => invitation.membershipId)
+    .filter((membershipId): membershipId is string => Boolean(membershipId));
+
+  await prisma.$transaction(async (tx) => {
+    await tx.invitation.updateMany({
+      where: {
+        id: {
+          in: expiredInvitations.map((invitation) => invitation.id),
+        },
+      },
+      data: {
+        status: InvitationStatus.EXPIRED,
+      },
+    });
+
+    if (membershipIds.length) {
+      await tx.membership.updateMany({
+        where: {
+          id: {
+            in: membershipIds,
+          },
+          invitationState: InvitationStatus.PENDING,
+        },
+        data: {
+          invitationState: InvitationStatus.EXPIRED,
+        },
+      });
+    }
+  });
+}
+
+function canManageMembers(role: Role) {
+  return role === Role.TENANT_OWNER || role === Role.TENANT_ADMIN;
+}
+
+function requiresOwnerForAdminChange(
+  actorRole: Role,
+  previousRole: Role,
+  nextRole: Role,
+) {
+  const touchesAdmin =
+    previousRole === Role.TENANT_ADMIN || nextRole === Role.TENANT_ADMIN;
+  return touchesAdmin && actorRole !== Role.TENANT_OWNER;
 }

@@ -1,13 +1,19 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 
 export type OrgUnitFormProps = {
   types: Array<{ id: string; displayLabel: string }>;
-  units: Array<{ id: string; code: string }>;
+  units: Array<{
+    id: string;
+    code: string;
+    name: string;
+    parentId: string | null;
+    level: number;
+  }>;
 };
 
 const unitSchema = z.object({
@@ -29,6 +35,7 @@ const inputClassName =
 export function OrgUnitForm({ types, units }: OrgUnitFormProps) {
   const [result, setResult] = useState("");
   const [isPending, startTransition] = useTransition();
+  const [parentQuery, setParentQuery] = useState("");
   const form = useForm<UnitFormValues>({
     resolver: zodResolver(unitSchema),
     defaultValues: {
@@ -38,6 +45,14 @@ export function OrgUnitForm({ types, units }: OrgUnitFormProps) {
       parentId: "",
     },
   });
+
+  const parentOptions = useMemo(() => buildParentOptions(units), [units]);
+  const normalizedParentQuery = parentQuery.trim().toLowerCase();
+  const visibleParentOptions = normalizedParentQuery
+    ? parentOptions.filter((option) =>
+        option.search.includes(normalizedParentQuery),
+      )
+    : parentOptions;
 
   const submit = form.handleSubmit((values) => {
     startTransition(async () => {
@@ -101,14 +116,28 @@ export function OrgUnitForm({ types, units }: OrgUnitFormProps) {
           label="Parent unit"
           error={form.formState.errors.parentId?.message}
           input={
-            <select {...form.register("parentId")} className={inputClassName}>
-              <option value="">No parent</option>
-              {units.map((unit) => (
-                <option key={unit.id} value={unit.id}>
-                  {unit.code}
-                </option>
-              ))}
-            </select>
+            <div className="space-y-2">
+              <input
+                value={parentQuery}
+                onChange={(event) => setParentQuery(event.target.value)}
+                placeholder="Search parent units"
+                className={inputClassName}
+              />
+              <select {...form.register("parentId")} className={inputClassName}>
+                <option value="">No parent</option>
+                {visibleParentOptions.length ? (
+                  visibleParentOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))
+                ) : (
+                  <option value="" disabled>
+                    No matching units
+                  </option>
+                )}
+              </select>
+            </div>
           }
         />
       </div>
@@ -128,6 +157,57 @@ export function OrgUnitForm({ types, units }: OrgUnitFormProps) {
       </button>
     </form>
   );
+}
+
+type ParentOption = {
+  id: string;
+  label: string;
+  search: string;
+};
+
+type OrgUnitNode = {
+  unit: OrgUnitFormProps["units"][number];
+  children: OrgUnitNode[];
+};
+
+function buildParentOptions(units: OrgUnitFormProps["units"]) {
+  const nodes = new Map<string, OrgUnitNode>();
+  const roots: OrgUnitNode[] = [];
+
+  for (const unit of units) {
+    nodes.set(unit.id, { unit, children: [] });
+  }
+
+  for (const unit of units) {
+    const node = nodes.get(unit.id);
+    if (!node) continue;
+
+    if (unit.parentId && nodes.has(unit.parentId)) {
+      nodes.get(unit.parentId)?.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const options: ParentOption[] = [];
+
+  const walk = (nodeList: OrgUnitNode[], depth: number) => {
+    for (const node of nodeList) {
+      const indent = depth > 0 ? `${"- ".repeat(depth)}` : "";
+      options.push({
+        id: node.unit.id,
+        label: `${indent}${node.unit.name} (${node.unit.code})`,
+        search: `${node.unit.name} ${node.unit.code}`.toLowerCase(),
+      });
+      if (node.children.length) {
+        walk(node.children, depth + 1);
+      }
+    }
+  };
+
+  walk(roots, 0);
+
+  return options;
 }
 
 function Field({

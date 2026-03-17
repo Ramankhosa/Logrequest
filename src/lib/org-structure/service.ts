@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { randomUUID } from "crypto";
 import type {
   OrgStructureState,
   OrgUnitCategory,
@@ -39,6 +40,7 @@ const structureDraftState = "DRAFT" satisfies OrgStructureState;
 const structureValidatedState = "VALIDATED" satisfies OrgStructureState;
 const structurePublishedState = "PUBLISHED" satisfies OrgStructureState;
 const structureSupersededState = "SUPERSEDED" satisfies OrgStructureState;
+const structureArchivedState = "ARCHIVED" satisfies OrgStructureState;
 const unitDraftState = "DRAFT" satisfies OrgUnitState;
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -608,6 +610,79 @@ export async function publishOrgStructure(input: {
   };
 }
 
+export async function discardOrgStructureDraft(input: {
+  tenantId: string;
+  actorUserId: string;
+  actorRole: Role;
+}): Promise<OrgStructureActionResult> {
+  if (!canManageStructure(input.actorRole)) {
+    return {
+      status: "error",
+      message: "You do not have permission to manage organization structure.",
+    };
+  }
+
+  const activeDraft = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId: input.tenantId,
+      state: {
+        in: [...structureDraftStates],
+      },
+    },
+    orderBy: {
+      versionNumber: "desc",
+    },
+    include: {
+      unitTypes: true,
+      units: true,
+    },
+  });
+
+  if (!activeDraft) {
+    return {
+      status: "error",
+      message: "There is no active draft to discard.",
+    };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.orgStructureVersion.update({
+      where: { id: activeDraft.id },
+      data: {
+        state: structureArchivedState,
+        validatedAt: null,
+        validationSummary: Prisma.JsonNull,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId: input.tenantId,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        targetType: "OrgStructureVersion",
+        targetId: activeDraft.id,
+        action: "org_structure.discarded",
+        previousState: {
+          state: activeDraft.state,
+          versionNumber: activeDraft.versionNumber,
+        },
+        newState: {
+          state: structureArchivedState,
+          versionNumber: activeDraft.versionNumber,
+          unitTypes: activeDraft.unitTypes.length,
+          units: activeDraft.units.length,
+        },
+      },
+    });
+  });
+
+  return {
+    status: "success",
+    message: "Draft discarded.",
+  };
+}
+
 export async function validateOrgStructureDraft(
   tenantId: string,
 ): Promise<{ errors: string[]; warnings: string[] }> {
@@ -653,69 +728,109 @@ export async function validateOrgStructureDraft(
   return validation;
 }
 
+const draftTransactionRetries = 3;
+
+function isRetryableDraftError(error: unknown) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return error.code === "P2034" || error.code === "P2002";
+  }
+
+  if (error instanceof Error) {
+    const message = error.message.toLowerCase();
+    return (
+      message.includes("could not serialize") || message.includes("deadlock detected")
+    );
+  }
+
+  return false;
+}
+
+async function runDraftTransaction<T>(
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; attempt < draftTransactionRetries; attempt += 1) {
+    try {
+      return await prisma.$transaction(fn, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (error) {
+      if (isRetryableDraftError(error) && attempt < draftTransactionRetries - 1) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error("Failed to ensure a draft version after retrying.");
+}
+
 async function ensureDraftVersion(input: {
   tenantId: string;
   actorUserId: string;
 }) {
-  const existingDraft = await prisma.orgStructureVersion.findFirst({
-    where: {
-      tenantId: input.tenantId,
-      state: {
-        in: [...structureDraftStates],
+  return runDraftTransaction(async (tx) => {
+    const existingDraft = await tx.orgStructureVersion.findFirst({
+      where: {
+        tenantId: input.tenantId,
+        state: {
+          in: [...structureDraftStates],
+        },
       },
-    },
-    orderBy: {
-      versionNumber: "desc",
-    },
-  });
-
-  if (existingDraft) {
-    return existingDraft;
-  }
-
-  const latestVersion = await prisma.orgStructureVersion.findFirst({
-    where: { tenantId: input.tenantId },
-    orderBy: {
-      versionNumber: "desc",
-    },
-    include: {
-      unitTypes: {
-        orderBy: [
-          { sortOrder: "asc" },
-          { displayLabel: "asc" },
-        ],
+      orderBy: {
+        versionNumber: "desc",
       },
-      units: {
-        orderBy: [
-          { level: "asc" },
-          { sortOrder: "asc" },
-          { name: "asc" },
-        ],
+    });
+
+    if (existingDraft) {
+      return existingDraft;
+    }
+
+    const latestVersion = await tx.orgStructureVersion.findFirst({
+      where: { tenantId: input.tenantId },
+      orderBy: {
+        versionNumber: "desc",
       },
-    },
-  });
+      include: {
+        unitTypes: {
+          orderBy: [
+            { sortOrder: "asc" },
+            { displayLabel: "asc" },
+          ],
+        },
+        units: {
+          orderBy: [
+            { level: "asc" },
+            { sortOrder: "asc" },
+            { name: "asc" },
+          ],
+        },
+      },
+    });
 
-  const nextVersionNumber = (latestVersion?.versionNumber ?? 0) + 1;
+    const nextVersionNumber = (latestVersion?.versionNumber ?? 0) + 1;
 
-  const draft = await prisma.orgStructureVersion.create({
-    data: {
-      tenantId: input.tenantId,
-      name: `Draft ${nextVersionNumber}`,
-      versionNumber: nextVersionNumber,
-      state: structureDraftState,
-      createdByUserId: input.actorUserId,
-    },
-  });
-
-  if (!latestVersion) {
-    return draft;
-  }
-
-  const typeMap = new Map<string, string>();
-
-  for (const type of latestVersion.unitTypes) {
-    const createdType = await prisma.orgUnitType.create({
+    const draft = await tx.orgStructureVersion.create({
       data: {
+        tenantId: input.tenantId,
+        name: `Draft ${nextVersionNumber}`,
+        versionNumber: nextVersionNumber,
+        state: structureDraftState,
+        createdByUserId: input.actorUserId,
+      },
+    });
+
+    if (!latestVersion) {
+      return draft;
+    }
+
+    const typeIdMap = new Map<string, string>();
+    const unitTypeData = latestVersion.unitTypes.map((type) => {
+      const id = randomUUID();
+      typeIdMap.set(type.id, id);
+
+      return {
+        id,
         versionId: draft.id,
         typeKey: type.typeKey,
         internalCategory: type.internalCategory,
@@ -723,38 +838,46 @@ async function ensureDraftVersion(input: {
         description: type.description,
         allowRoot: type.allowRoot,
         sortOrder: type.sortOrder,
-      },
+      };
     });
 
-    typeMap.set(type.id, createdType.id);
-  }
+    if (unitTypeData.length) {
+      await tx.orgUnitType.createMany({
+        data: unitTypeData,
+      });
+    }
 
-  const unitMap = new Map<string, string>();
+    const unitIdMap = new Map<string, string>();
+    for (const unit of latestVersion.units) {
+      unitIdMap.set(unit.id, randomUUID());
+    }
 
-  for (const unit of latestVersion.units) {
-    const createdUnit = await prisma.orgUnit.create({
-      data: {
-        tenantId: input.tenantId,
-        versionId: draft.id,
-        typeId: typeMap.get(unit.typeId) ?? unit.typeId,
-        code: unit.code,
-        name: unit.name,
-        parentId: unit.parentId ? unitMap.get(unit.parentId) ?? null : null,
-        level: unit.level,
-        sortOrder: unit.sortOrder,
-        path: unit.path,
-        state: unitDraftState,
-        metadata: unit.metadata as Prisma.InputJsonValue | undefined,
-        effectiveFrom: unit.effectiveFrom,
-        effectiveTo: unit.effectiveTo,
-        createdByUserId: input.actorUserId,
-      },
-    });
+    const unitData = latestVersion.units.map((unit) => ({
+      id: unitIdMap.get(unit.id)!,
+      tenantId: input.tenantId,
+      versionId: draft.id,
+      typeId: typeIdMap.get(unit.typeId) ?? unit.typeId,
+      code: unit.code,
+      name: unit.name,
+      parentId: unit.parentId ? unitIdMap.get(unit.parentId) ?? null : null,
+      level: unit.level,
+      sortOrder: unit.sortOrder,
+      path: unit.path,
+      state: unitDraftState as OrgUnitState,
+      metadata: unit.metadata as Prisma.InputJsonValue | undefined,
+      effectiveFrom: unit.effectiveFrom,
+      effectiveTo: unit.effectiveTo,
+      createdByUserId: input.actorUserId,
+    }));
 
-    unitMap.set(unit.id, createdUnit.id);
-  }
+    if (unitData.length) {
+      await tx.orgUnit.createMany({
+        data: unitData,
+      });
+    }
 
-  return draft;
+    return draft;
+  });
 }
 
 function validateDraft(draft: {
