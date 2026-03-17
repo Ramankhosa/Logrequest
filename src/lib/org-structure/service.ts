@@ -81,27 +81,44 @@ type StructureVersionWithCounts = {
   unitCount: number;
 };
 
+type UnitTypeView = {
+  id: string;
+  typeKey: string;
+  displayLabel: string;
+  internalCategory: OrgUnitCategory;
+  allowRoot: boolean;
+};
+
+type UnitView = {
+  id: string;
+  code: string;
+  name: string;
+  parentId: string | null;
+  level: number;
+  path: string | null;
+  state: OrgUnitState;
+  typeLabel: string;
+  typeKey: string;
+};
+
 export type OrgStructureSnapshot = {
   draft: StructureVersionWithCounts | null;
   published: StructureVersionWithCounts | null;
-  draftUnitTypes: Array<{
-    id: string;
-    typeKey: string;
-    displayLabel: string;
-    internalCategory: OrgUnitCategory;
-    allowRoot: boolean;
-  }>;
-  draftUnits: Array<{
-    id: string;
-    code: string;
-    name: string;
-    parentId: string | null;
-    level: number;
-    path: string | null;
-    state: OrgUnitState;
-    typeLabel: string;
-    typeKey: string;
-  }>;
+  draftUnitTypes: UnitTypeView[];
+  draftUnits: UnitView[];
+  publishedUnitTypes: UnitTypeView[];
+  publishedUnits: UnitView[];
+};
+
+export type VersionHistoryEntry = {
+  id: string;
+  name: string;
+  versionNumber: number;
+  state: OrgStructureState;
+  publishedAt: Date | null;
+  createdAt: Date;
+  unitTypeCount: number;
+  unitCount: number;
 };
 
 export type OrgStructureDraftContext = {
@@ -176,33 +193,53 @@ export async function getOrgStructureSnapshot(
             units: true,
           },
         },
+        unitTypes: {
+          orderBy: [
+            { sortOrder: "asc" },
+            { displayLabel: "asc" },
+          ],
+        },
+        units: {
+          include: { type: true },
+          orderBy: [
+            { level: "asc" },
+            { sortOrder: "asc" },
+            { name: "asc" },
+          ],
+        },
       },
     }),
   ]);
 
+  const mapUnitTypes = (types: typeof draftVersion extends null ? never : NonNullable<typeof draftVersion>["unitTypes"]): UnitTypeView[] =>
+    types.map((type) => ({
+      id: type.id,
+      typeKey: type.typeKey,
+      displayLabel: type.displayLabel,
+      internalCategory: type.internalCategory,
+      allowRoot: type.allowRoot,
+    }));
+
+  const mapUnits = (units: typeof draftVersion extends null ? never : NonNullable<typeof draftVersion>["units"]): UnitView[] =>
+    units.map((unit) => ({
+      id: unit.id,
+      code: unit.code,
+      name: unit.name,
+      parentId: unit.parentId,
+      level: unit.level,
+      path: unit.path,
+      state: unit.state,
+      typeLabel: unit.type.displayLabel,
+      typeKey: unit.type.typeKey,
+    }));
+
   return {
     draft: draftVersion ? mapVersionWithCounts(draftVersion) : null,
     published: publishedVersion ? mapVersionWithCounts(publishedVersion) : null,
-    draftUnitTypes:
-      draftVersion?.unitTypes.map((type) => ({
-        id: type.id,
-        typeKey: type.typeKey,
-        displayLabel: type.displayLabel,
-        internalCategory: type.internalCategory,
-        allowRoot: type.allowRoot,
-      })) ?? [],
-    draftUnits:
-      draftVersion?.units.map((unit) => ({
-        id: unit.id,
-        code: unit.code,
-        name: unit.name,
-        parentId: unit.parentId,
-        level: unit.level,
-        path: unit.path,
-        state: unit.state,
-        typeLabel: unit.type.displayLabel,
-        typeKey: unit.type.typeKey,
-      })) ?? [],
+    draftUnitTypes: draftVersion?.unitTypes ? mapUnitTypes(draftVersion.unitTypes) : [],
+    draftUnits: draftVersion?.units ? mapUnits(draftVersion.units) : [],
+    publishedUnitTypes: publishedVersion?.unitTypes ? mapUnitTypes(publishedVersion.unitTypes) : [],
+    publishedUnits: publishedVersion?.units ? mapUnits(publishedVersion.units) : [],
   };
 }
 
@@ -1023,6 +1060,532 @@ function validateDraft(draft: {
 
 function canManageStructure(role: Role) {
   return role === tenantOwnerRole || role === tenantAdminRole;
+}
+
+// ── Edit unit ─────────────────────────────────────────────────────────────
+
+const updateUnitSchema = z.object({
+  name: z.string().trim().min(2).optional(),
+  code: z
+    .string()
+    .trim()
+    .min(2)
+    .regex(/^[A-Z0-9_-]+$/)
+    .optional(),
+  typeId: z.string().trim().min(1).optional(),
+  parentId: z.string().trim().nullable().optional(),
+});
+
+export type UpdateOrgUnitInput = z.input<typeof updateUnitSchema>;
+
+export async function updateOrgUnit(input: {
+  tenantId: string;
+  actorUserId: string;
+  actorRole: Role;
+  unitId: string;
+  values: UpdateOrgUnitInput;
+}): Promise<OrgStructureActionResult> {
+  if (!canManageStructure(input.actorRole)) {
+    return {
+      status: "error",
+      message: "You do not have permission to manage organization structure.",
+    };
+  }
+
+  const parsedValues = updateUnitSchema.safeParse(input.values);
+  if (!parsedValues.success) {
+    return {
+      status: "error",
+      message:
+        parsedValues.error.issues[0]?.message ?? "Invalid update values.",
+    };
+  }
+
+  const values = parsedValues.data;
+
+  const activeDraft = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId: input.tenantId,
+      state: { in: [...structureDraftStates] },
+    },
+    orderBy: { versionNumber: "desc" },
+  });
+
+  if (!activeDraft) {
+    return { status: "error", message: "No active draft found." };
+  }
+
+  const unit = await prisma.orgUnit.findFirst({
+    where: {
+      id: input.unitId,
+      versionId: activeDraft.id,
+      tenantId: input.tenantId,
+    },
+  });
+
+  if (!unit) {
+    return { status: "error", message: "Unit not found in the draft." };
+  }
+
+  const previousState = { name: unit.name, code: unit.code, typeId: unit.typeId, parentId: unit.parentId };
+
+  // Check code uniqueness if changing
+  if (values.code && values.code !== unit.code) {
+    const existing = await prisma.orgUnit.findUnique({
+      where: {
+        versionId_code: {
+          versionId: activeDraft.id,
+          code: values.code.toUpperCase(),
+        },
+      },
+    });
+    if (existing) {
+      return { status: "error", message: "Unit code already exists in the draft." };
+    }
+  }
+
+  // Check type exists if changing
+  if (values.typeId && values.typeId !== unit.typeId) {
+    const type = await prisma.orgUnitType.findFirst({
+      where: { id: values.typeId, versionId: activeDraft.id },
+    });
+    if (!type) {
+      return { status: "error", message: "Invalid unit type." };
+    }
+  }
+
+  // Check parent validity if changing
+  if (values.parentId !== undefined && values.parentId !== unit.parentId) {
+    if (values.parentId) {
+      // Prevent circular: can't be own descendant
+      const ancestors = new Set<string>();
+      let current = values.parentId;
+      while (current) {
+        if (current === input.unitId) {
+          return { status: "error", message: "Cannot move a unit under its own descendant." };
+        }
+        ancestors.add(current);
+        const parentUnit = await prisma.orgUnit.findFirst({
+          where: { id: current, versionId: activeDraft.id },
+          select: { parentId: true },
+        });
+        current = parentUnit?.parentId ?? "";
+        if (!current || ancestors.has(current)) break;
+      }
+    }
+  }
+
+  const newCode = values.code?.toUpperCase() ?? unit.code;
+
+  // Compute new level and path
+  let newLevel = unit.level;
+  let newPath = unit.path;
+  if (values.parentId !== undefined && values.parentId !== unit.parentId) {
+    if (values.parentId) {
+      const newParent = await prisma.orgUnit.findFirst({
+        where: { id: values.parentId, versionId: activeDraft.id },
+        select: { level: true, path: true },
+      });
+      newLevel = (newParent?.level ?? 0) + 1;
+      newPath = newParent?.path ? `${newParent.path}/${newCode}` : newCode;
+    } else {
+      newLevel = 0;
+      newPath = newCode;
+    }
+  } else if (values.code && values.code !== unit.code) {
+    // Code changed but parent didn't - update path suffix
+    const parts = (unit.path ?? "").split("/");
+    parts[parts.length - 1] = newCode;
+    newPath = parts.join("/");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.orgUnit.update({
+      where: { id: input.unitId },
+      data: {
+        ...(values.name ? { name: values.name.trim() } : {}),
+        ...(values.code ? { code: newCode } : {}),
+        ...(values.typeId ? { typeId: values.typeId } : {}),
+        ...(values.parentId !== undefined ? { parentId: values.parentId } : {}),
+        level: newLevel,
+        path: newPath,
+      },
+    });
+
+    // Reset draft validation
+    await tx.orgStructureVersion.update({
+      where: { id: activeDraft.id },
+      data: {
+        state: structureDraftState,
+        validatedAt: null,
+        validationSummary: Prisma.JsonNull,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId: input.tenantId,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        targetType: "OrgUnit",
+        targetId: input.unitId,
+        action: "org_unit.updated",
+        previousState,
+        newState: { name: values.name ?? unit.name, code: newCode, typeId: values.typeId ?? unit.typeId },
+      },
+    });
+  });
+
+  return { status: "success", message: "Unit updated." };
+}
+
+// ── Toggle unit active/inactive ───────────────────────────────────────────
+
+export async function toggleOrgUnitState(input: {
+  tenantId: string;
+  actorUserId: string;
+  actorRole: Role;
+  unitId: string;
+  targetState: "ACTIVE" | "INACTIVE";
+}): Promise<OrgStructureActionResult> {
+  if (!canManageStructure(input.actorRole)) {
+    return {
+      status: "error",
+      message: "You do not have permission to manage organization structure.",
+    };
+  }
+
+  const activeDraft = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId: input.tenantId,
+      state: { in: [...structureDraftStates] },
+    },
+    orderBy: { versionNumber: "desc" },
+  });
+
+  if (!activeDraft) {
+    return { status: "error", message: "No active draft found." };
+  }
+
+  const unit = await prisma.orgUnit.findFirst({
+    where: {
+      id: input.unitId,
+      versionId: activeDraft.id,
+      tenantId: input.tenantId,
+    },
+  });
+
+  if (!unit) {
+    return { status: "error", message: "Unit not found in the draft." };
+  }
+
+  const newState = input.targetState as OrgUnitState;
+
+  // If deactivating, also deactivate descendants
+  const idsToUpdate = [unit.id];
+  if (input.targetState === "INACTIVE") {
+    const queue = [unit.id];
+    while (queue.length > 0) {
+      const parentId = queue.shift()!;
+      const children = await prisma.orgUnit.findMany({
+        where: { versionId: activeDraft.id, parentId },
+        select: { id: true },
+      });
+      for (const child of children) {
+        idsToUpdate.push(child.id);
+        queue.push(child.id);
+      }
+    }
+  }
+
+  // If reactivating, ensure parent is active
+  if (input.targetState === "ACTIVE" && unit.parentId) {
+    const parent = await prisma.orgUnit.findFirst({
+      where: { id: unit.parentId, versionId: activeDraft.id },
+      select: { state: true },
+    });
+    if (parent?.state === "INACTIVE") {
+      return {
+        status: "error",
+        message: "Cannot reactivate a unit whose parent is deactivated. Reactivate the parent first.",
+      };
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.orgUnit.updateMany({
+      where: { id: { in: idsToUpdate } },
+      data: { state: newState },
+    });
+
+    await tx.orgStructureVersion.update({
+      where: { id: activeDraft.id },
+      data: {
+        state: structureDraftState,
+        validatedAt: null,
+        validationSummary: Prisma.JsonNull,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId: input.tenantId,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        targetType: "OrgUnit",
+        targetId: input.unitId,
+        action: `org_unit.${input.targetState === "INACTIVE" ? "deactivated" : "reactivated"}`,
+        newState: {
+          state: newState,
+          affectedUnits: idsToUpdate.length,
+        },
+      },
+    });
+  });
+
+  const verb = input.targetState === "INACTIVE" ? "deactivated" : "reactivated";
+  return {
+    status: "success",
+    message:
+      idsToUpdate.length > 1
+        ? `"${unit.name}" ${verb} along with ${idsToUpdate.length - 1} descendant(s).`
+        : `"${unit.name}" ${verb}.`,
+  };
+}
+
+// ── Version history ───────────────────────────────────────────────────────
+
+export async function getVersionHistory(
+  tenantId: string,
+): Promise<VersionHistoryEntry[]> {
+  const versions = await prisma.orgStructureVersion.findMany({
+    where: { tenantId },
+    orderBy: { versionNumber: "desc" },
+    include: {
+      _count: {
+        select: { unitTypes: true, units: true },
+      },
+    },
+  });
+
+  return versions.map((v) => ({
+    id: v.id,
+    name: v.name,
+    versionNumber: v.versionNumber,
+    state: v.state,
+    publishedAt: v.publishedAt,
+    createdAt: v.createdAt,
+    unitTypeCount: v._count.unitTypes,
+    unitCount: v._count.units,
+  }));
+}
+
+// ── Get specific version detail ───────────────────────────────────────────
+
+export async function getVersionDetail(
+  tenantId: string,
+  versionId: string,
+): Promise<{
+  version: StructureVersionWithCounts;
+  unitTypes: UnitTypeView[];
+  units: UnitView[];
+} | null> {
+  const v = await prisma.orgStructureVersion.findFirst({
+    where: { id: versionId, tenantId },
+    include: {
+      _count: { select: { unitTypes: true, units: true } },
+      unitTypes: { orderBy: [{ sortOrder: "asc" }, { displayLabel: "asc" }] },
+      units: {
+        include: { type: true },
+        orderBy: [{ level: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
+      },
+    },
+  });
+
+  if (!v) return null;
+
+  return {
+    version: mapVersionWithCounts(v),
+    unitTypes: v.unitTypes.map((t) => ({
+      id: t.id,
+      typeKey: t.typeKey,
+      displayLabel: t.displayLabel,
+      internalCategory: t.internalCategory,
+      allowRoot: t.allowRoot,
+    })),
+    units: v.units.map((u) => ({
+      id: u.id,
+      code: u.code,
+      name: u.name,
+      parentId: u.parentId,
+      level: u.level,
+      path: u.path,
+      state: u.state,
+      typeLabel: u.type.displayLabel,
+      typeKey: u.type.typeKey,
+    })),
+  };
+}
+
+// ── Bulk create units from CSV upload ─────────────────────────────────────
+
+export async function bulkCreateUnits(input: {
+  tenantId: string;
+  actorUserId: string;
+  actorRole: Role;
+  rows: Array<{
+    typeKey: string;
+    code: string;
+    name: string;
+    parentCode: string | null;
+  }>;
+}): Promise<OrgStructureActionResult> {
+  if (!canManageStructure(input.actorRole)) {
+    return {
+      status: "error",
+      message: "You do not have permission to manage organization structure.",
+    };
+  }
+
+  if (input.rows.length === 0) {
+    return { status: "error", message: "No rows to import." };
+  }
+
+  const draft = await ensureDraftVersion({
+    tenantId: input.tenantId,
+    actorUserId: input.actorUserId,
+  });
+
+  // Load existing unit types for the draft
+  const existingTypes = await prisma.orgUnitType.findMany({
+    where: { versionId: draft.id },
+  });
+  const typeMap = new Map(existingTypes.map((t) => [t.typeKey, t.id]));
+
+  // Topologically sort: parents before children
+  const codeToRow = new Map(input.rows.map((r) => [r.code, r]));
+  const sorted: typeof input.rows = [];
+  const visited = new Set<string>();
+
+  function visit(code: string) {
+    if (visited.has(code)) return;
+    visited.add(code);
+    const row = codeToRow.get(code);
+    if (!row) return;
+    if (row.parentCode && codeToRow.has(row.parentCode)) {
+      visit(row.parentCode);
+    }
+    sorted.push(row);
+  }
+
+  for (const row of input.rows) visit(row.code);
+
+  // Check for missing types
+  for (const row of sorted) {
+    if (!typeMap.has(row.typeKey)) {
+      return {
+        status: "error",
+        message: `Unit type "${row.typeKey}" does not exist. Create it first or check the type_key column.`,
+      };
+    }
+  }
+
+  // Create all units in order
+  const codeToId = new Map<string, string>();
+
+  // Also load existing units so we can reference existing parents
+  const existingUnits = await prisma.orgUnit.findMany({
+    where: { versionId: draft.id },
+    select: { id: true, code: true, level: true, path: true },
+  });
+  for (const u of existingUnits) {
+    codeToId.set(u.code, u.id);
+  }
+
+  let created = 0;
+  let skipped = 0;
+
+  for (const row of sorted) {
+    const code = row.code.toUpperCase();
+
+    // Skip if already exists
+    if (codeToId.has(code)) {
+      skipped++;
+      continue;
+    }
+
+    const parentId = row.parentCode ? codeToId.get(row.parentCode.toUpperCase()) ?? null : null;
+
+    // Determine level and path
+    let level = 0;
+    let path = code;
+    if (parentId) {
+      const parentUnit = existingUnits.find((u) => u.id === parentId) ?? null;
+      if (parentUnit) {
+        level = parentUnit.level + 1;
+        path = parentUnit.path ? `${parentUnit.path}/${code}` : code;
+      } else {
+        // Parent was just created in this batch - look at sorted data
+        const parentRow = codeToRow.get(row.parentCode?.toUpperCase() ?? "");
+        // Simple level calculation from traversal
+        let l = 0;
+        let p: string | null = row.parentCode?.toUpperCase() ?? null;
+        while (p) {
+          l++;
+          const pr = codeToRow.get(p);
+          p = pr?.parentCode?.toUpperCase() ?? null;
+        }
+        level = l;
+        path = code; // simplified
+      }
+    }
+
+    const newUnit = await prisma.orgUnit.create({
+      data: {
+        tenantId: input.tenantId,
+        versionId: draft.id,
+        typeId: typeMap.get(row.typeKey)!,
+        code,
+        name: row.name.trim(),
+        parentId,
+        level,
+        path,
+        state: unitDraftState,
+        createdByUserId: input.actorUserId,
+      },
+    });
+
+    codeToId.set(code, newUnit.id);
+    existingUnits.push({ id: newUnit.id, code, level, path });
+    created++;
+  }
+
+  // Reset validation
+  await prisma.orgStructureVersion.update({
+    where: { id: draft.id },
+    data: {
+      state: structureDraftState,
+      validatedAt: null,
+      validationSummary: Prisma.JsonNull,
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      tenantId: input.tenantId,
+      actorUserId: input.actorUserId,
+      actorRole: input.actorRole,
+      targetType: "OrgStructureVersion",
+      targetId: draft.id,
+      action: "org_structure.bulk_import",
+      newState: { created, skipped, totalRows: input.rows.length },
+    },
+  });
+
+  return {
+    status: "success",
+    message: `Imported ${created} unit(s)${skipped ? `, ${skipped} skipped (already exist)` : ""}.`,
+  };
 }
 
 function mapVersionWithCounts(version: {

@@ -130,6 +130,20 @@ enum OrgRoleScope {
   DESCENDANTS
 }
 
+enum KraState {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum KpiMeasurementType {
+  NUMERIC
+  PERCENTAGE
+  BOOLEAN
+  RATING
+  CURRENCY
+}
+
 model Tenant {
   id                    String                 @id @default(cuid())
   name                  String
@@ -152,6 +166,7 @@ model Tenant {
   auditLogs             AuditLog[]
   structureVersions     OrgStructureVersion[]
   orgUnits              OrgUnit[]
+  kras                  Kra[]
   policy                TenantPolicy?
 
   @@index([lifecycleState, entitlementState])
@@ -275,24 +290,26 @@ model Invitation {
 }
 
 model UploadBatch {
-  id               String            @id @default(cuid())
-  tenantId         String
-  uploadedByUserId String?
-  fileName         String
-  fileType         String
-  status           UploadBatchStatus @default(UPLOADED)
-  totalRows        Int               @default(0)
-  validRows        Int               @default(0)
-  warningRows      Int               @default(0)
-  rejectedRows     Int               @default(0)
-  provisionedRows  Int               @default(0)
-  metadata         Json?
-  confirmedAt      DateTime?
-  provisionedAt    DateTime?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  rows             UploadRow[]
+  id                 String            @id @default(cuid())
+  tenantId           String
+  uploadedByUserId   String?
+  fileName           String
+  fileType           String
+  uploadType         String            @default("MEMBERS")
+  structureVersionId String?
+  status             UploadBatchStatus @default(UPLOADED)
+  totalRows          Int               @default(0)
+  validRows          Int               @default(0)
+  warningRows        Int               @default(0)
+  rejectedRows       Int               @default(0)
+  provisionedRows    Int               @default(0)
+  metadata           Json?
+  confirmedAt        DateTime?
+  provisionedAt      DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rows               UploadRow[]
 
   @@index([tenantId, status, createdAt])
 }
@@ -405,6 +422,7 @@ model OrgUnit {
   reportingLines  ReportingLine[]
   userAssignments UserOrgAssignment[]
   roleAssignments OrgRoleAssignment[]
+  kras            Kra[]
 
   @@unique([versionId, code])
   @@index([tenantId, code])
@@ -466,4 +484,41 @@ model OrgRoleAssignment {
 
   @@index([versionId, unitId, roleName])
   @@index([versionId, userId])
+}
+
+model Kra {
+  id              String    @id @default(cuid())
+  tenantId        String
+  unitId          String
+  title           String
+  description     String?
+  weightage       Float     @default(0)
+  state           KraState  @default(DRAFT)
+  effectiveFrom   DateTime?
+  effectiveTo     DateTime?
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unit            OrgUnit   @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  kpis            Kpi[]
+
+  @@index([tenantId, unitId])
+  @@index([tenantId, state])
+}
+
+model Kpi {
+  id              String             @id @default(cuid())
+  kraId           String
+  title           String
+  description     String?
+  measurementType KpiMeasurementType @default(NUMERIC)
+  targetValue     Float?
+  unit            String?
+  weightage       Float              @default(0)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  kra             Kra                @relation(fields: [kraId], references: [id], onDelete: Cascade)
+
+  @@index([kraId])
 }
