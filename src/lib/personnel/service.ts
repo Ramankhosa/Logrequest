@@ -160,7 +160,7 @@ export async function onboardMember(input: {
   }
 
   // Validate secondary units
-  const secondaryUnits = [];
+  const secondaryUnits: { id: string; code: string; state: string }[] = [];
   const policy = await getPersonnelPolicy(input.tenantId);
   const maxSecondary = policy?.maxSecondaryUnits ?? 5;
 
@@ -185,7 +185,7 @@ export async function onboardMember(input: {
   }
 
   // Validate role keys
-  const roleDefs = [];
+  const roleDefs: { id: string; displayLabel: string }[] = [];
   for (const key of v.roleKeys) {
     const def = await prisma.orgRoleDefinition.findFirst({
       where: { tenantId: input.tenantId, roleKey: key, isActive: true },

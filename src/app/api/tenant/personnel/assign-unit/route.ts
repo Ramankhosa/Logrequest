@@ -24,10 +24,10 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: Record<string, unknown>;
+  let body: { membershipId: string; unitCode: string; assignmentType?: "PRIMARY" | "SECONDARY" };
 
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    body = (await request.json()) as typeof body;
   } catch {
     return NextResponse.json(
       { status: "error", message: "Invalid request body." },

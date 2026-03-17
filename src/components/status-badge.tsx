@@ -53,7 +53,8 @@ function inferTone(label: string): Tone {
     normalized.includes("REVOKED") ||
     normalized.includes("REJECTED") ||
     normalized.includes("RISK") ||
-    normalized.includes("EXPIRED")
+    normalized.includes("EXPIRED") ||
+    normalized.includes("SEPARATED")
   ) {
     return "rose";
   }
@@ -63,7 +64,10 @@ function inferTone(label: string): Tone {
     normalized.includes("GRACE") ||
     normalized.includes("WARNING") ||
     normalized.includes("REVIEW") ||
-    normalized.includes("DEFERRED")
+    normalized.includes("DEFERRED") ||
+    normalized.includes("ON_LEAVE") ||
+    normalized.includes("ONBOARDING") ||
+    normalized.includes("NOTICE_PERIOD")
   ) {
     return "amber";
   }

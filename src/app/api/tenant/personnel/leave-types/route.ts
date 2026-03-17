@@ -2,7 +2,7 @@ import { Role } from "@prisma/client";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { listLeaveTypes, createLeaveType } from "@/lib/personnel/policy";
+import { listLeaveTypes, createLeaveType, type LeaveTypeInput } from "@/lib/personnel/policy";
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -39,10 +39,10 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: Record<string, unknown>;
+  let body: LeaveTypeInput;
 
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    body = (await request.json()) as LeaveTypeInput;
   } catch {
     return NextResponse.json(
       { status: "error", message: "Invalid request body." },

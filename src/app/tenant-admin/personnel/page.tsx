@@ -140,8 +140,13 @@ export default async function PersonnelPage({
                 {directory.length ? (
                   directory.map((row) => (
                     <tr key={row.membershipId} className="align-top">
-                      <td className="px-4 py-4 text-sm font-semibold text-slate-900 whitespace-nowrap">
-                        {row.name}
+                      <td className="px-4 py-4 text-sm font-semibold whitespace-nowrap">
+                        <Link
+                          href={`/tenant-admin/personnel/${row.membershipId}`}
+                          className="text-brand hover:underline"
+                        >
+                          {row.name}
+                        </Link>
                       </td>
                       <td className="px-4 py-4 text-sm text-slate-600">
                         {row.email}

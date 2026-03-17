@@ -24,10 +24,21 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: Record<string, unknown>;
+  let body: {
+    firstName: string;
+    lastName: string;
+    officialEmail: string;
+    primaryUnitCode: string;
+    employeeId?: string;
+    designation?: string;
+    dateOfJoining?: string;
+    role?: "TENANT_ADMIN" | "TENANT_USER";
+    secondaryUnitCodes?: string[];
+    roleKeys?: string[];
+  };
 
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    body = (await request.json()) as typeof body;
   } catch {
     return NextResponse.json(
       { status: "error", message: "Invalid request body." },
