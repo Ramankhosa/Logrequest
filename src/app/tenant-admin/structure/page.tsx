@@ -15,6 +15,7 @@ import {
 } from "@/lib/org-structure/service";
 import { StructureSummaryActions } from "@/components/tenant/structure-summary-actions";
 import { OrgTreeBuilder } from "@/components/tenant/org-tree-builder";
+import { StructureTabs } from "./structure-tabs";
 
 export default async function StructurePage() {
   const context = await requireTenantAdmin();
@@ -23,8 +24,11 @@ export default async function StructurePage() {
 
   const hasDraft = !!snapshot?.draft;
   const hasPublished = !!snapshot?.published;
-  const typeColors = buildTypeColorMap(
+  const draftTypeColors = buildTypeColorMap(
     snapshot?.draftUnitTypes.map((t) => t.typeKey) ?? [],
+  );
+  const publishedTypeColors = buildTypeColorMap(
+    snapshot?.publishedUnitTypes.map((t) => t.typeKey) ?? [],
   );
 
   return (
@@ -71,90 +75,15 @@ export default async function StructurePage() {
         />
       </section>
 
-      {/* Unit types & interactive tree */}
-      <section className="grid gap-6 lg:grid-cols-[260px_1fr]">
-        {/* Unit types sidebar */}
-        <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/60 p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-900">
-              Unit types
-            </h2>
-            <Link
-              href="/tenant-admin/structure/types/new"
-              className="flex h-7 w-7 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-brand/30 hover:text-brand"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Link>
-          </div>
-
-          {snapshot?.draftUnitTypes.length ? (
-            <ul className="space-y-2">
-              {snapshot.draftUnitTypes.map((type, i) => (
-                <li
-                  key={type.id}
-                  className="flex items-center justify-between rounded-xl border border-slate-200/80 bg-white px-3 py-2.5"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: typeColor(i) }}
-                    />
-                    <span className="text-sm font-medium text-slate-900">
-                      {type.displayLabel}
-                    </span>
-                  </div>
-                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                    {type.typeKey}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-slate-200 py-8 text-center">
-              <Tag className="h-6 w-6 text-slate-300" />
-              <p className="text-xs text-slate-500">No types defined yet</p>
-              <Link
-                href="/tenant-admin/structure/types/new"
-                className="text-xs font-semibold text-brand hover:underline"
-              >
-                Create first type
-              </Link>
-            </div>
-          )}
-        </div>
-
-        {/* Interactive hierarchy builder */}
-        <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/60 p-5">
-          <div className="mb-4">
-            <h2 className="text-sm font-semibold text-slate-900">
-              Hierarchy
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-400">
-              Click + on any node to add children, or use the trash icon to
-              remove
-            </p>
-          </div>
-
-          <OrgTreeBuilder
-            unitTypes={snapshot?.draftUnitTypes ?? []}
-            units={snapshot?.draftUnits ?? []}
-            typeColors={typeColors}
-          />
-        </div>
-      </section>
-
-      {/* Draft management actions */}
-      <section className="rounded-[1.75rem] border border-slate-200/80 bg-white/60 p-5">
-        <div className="mb-4">
-          <div className="section-title text-xs text-slate-400">
-            Draft management
-          </div>
-          <h2 className="mt-1 text-sm font-semibold text-slate-900">
-            Actions
-          </h2>
-        </div>
-        <StructureSummaryActions />
-      </section>
+      {/* Tabbed content */}
+      <StructureTabs
+        draftUnitTypes={snapshot?.draftUnitTypes ?? []}
+        draftUnits={snapshot?.draftUnits ?? []}
+        draftTypeColors={draftTypeColors}
+        publishedUnitTypes={snapshot?.publishedUnitTypes ?? []}
+        publishedUnits={snapshot?.publishedUnits ?? []}
+        publishedTypeColors={publishedTypeColors}
+      />
     </AppShell>
   );
 }
