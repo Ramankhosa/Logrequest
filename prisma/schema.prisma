@@ -130,18 +130,102 @@ enum OrgRoleScope {
   DESCENDANTS
 }
 
-enum KraState {
+// ── KRA/KPI Enums (Release 1) ──────────────────────────────────────────────
+
+enum KpiMeasurementType {
+  NUMERIC          // count of items (publications, patents)
+  PERCENTAGE       // pass rate, attendance
+  CURRENCY         // grant amount, revenue
+  BOOLEAN          // yes/no (accreditation obtained)
+  RATING           // 1-5 scale
+  MILESTONE        // NOT_STARTED → IN_PROGRESS → COMPLETED
+  DATE_TARGET      // deadline compliance
+  GRADE            // qualitative scale (Outstanding...Poor)
+}
+
+enum KraCategoryScope {
+  GLOBAL           // superadmin-managed, visible to all tenants
+  TENANT           // tenant-created
+}
+
+enum AssessmentPeriodState {
+  DRAFT
+  OPEN             // targets can be set
+  IN_PROGRESS      // targets locked, achievements recorded
+  UNDER_REVIEW     // verification happening
+  CLOSED           // finalized, read-only
+  ARCHIVED
+}
+
+enum AssessmentPeriodType {
+  CALENDAR_YEAR    // Jan-Dec
+  FINANCIAL_YEAR   // Apr-Mar (configurable)
+  SPECIFIC_RANGE   // custom start/end
+}
+
+enum ReviewCycleFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  HALF_YEARLY
+  ANNUAL
+}
+
+enum KraDefinitionState {
   DRAFT
   ACTIVE
   ARCHIVED
 }
 
-enum KpiMeasurementType {
-  NUMERIC
-  PERCENTAGE
-  BOOLEAN
-  RATING
-  CURRENCY
+enum KpiDefinitionState {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum KpiAllocationType {
+  DEPARTMENT       // stays at dept level, head owns it
+  INDIVIDUAL       // must be split to individual members
+  BOTH             // head decides whether to keep or split
+}
+
+enum TargetAllocationState {
+  ACTIVE           // final value entered, target is live
+  LOCKED           // frozen after deadline, no changes
+}
+
+enum AchievementState {
+  DRAFT            // being filled in
+  SUBMITTED        // submitted for verification
+  VERIFIED         // approved
+  REJECTED         // sent back with reason
+}
+
+enum ScoringMethod {
+  LINEAR           // actual/target * 100
+  THRESHOLD        // below = 0, above = 100
+  SLAB             // defined ranges
+}
+
+enum ScoringDirection {
+  ASCENDING        // higher actual = better (publications, revenue)
+  DESCENDING       // lower actual = better (attrition, defects, costs)
+}
+
+enum MilestoneStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum GradeValue {
+  OUTSTANDING
+  VERY_GOOD
+  GOOD
+  SATISFACTORY
+  NEEDS_IMPROVEMENT
+  POOR
 }
 
 enum PersonnelStatus {
@@ -221,7 +305,11 @@ model Tenant {
   auditLogs             AuditLog[]
   structureVersions     OrgStructureVersion[]
   orgUnits              OrgUnit[]
-  kras                  Kra[]
+  kraCategories         KraCategoryDefinition[]
+  assessmentPeriods     AssessmentPeriod[]
+  kraDefinitions        KraDefinition[]
+  targetAllocations     TargetAllocation[]
+  achievements          Achievement[]
   policy                TenantPolicy?
   roleDefinitions       OrgRoleDefinition[]
   personnelPolicy       TenantPersonnelPolicy?
@@ -275,6 +363,7 @@ model User {
   orgRoleAssignments  OrgRoleAssignment[]
   managerLines        ReportingLine[]      @relation("OrgManagerLines")
   memberLines         ReportingLine[]      @relation("OrgMemberLines")
+  targetAllocations   TargetAllocation[]   @relation("TargetUser")
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
@@ -496,7 +585,8 @@ model OrgUnit {
   reportingLines    ReportingLine[]
   userAssignments   UserOrgAssignment[]
   roleAssignments   OrgRoleAssignment[]
-  kras              Kra[]
+  kpiStarting       KpiDefinition[]     @relation("KpiStartingUnit")
+  targetAllocations TargetAllocation[]  @relation("TargetUnit")
   actingAssignments ActingAssignment[]
   transfersFrom     TransferRecord[]    @relation("TransferSource")
   transfersTo       TransferRecord[]    @relation("TransferTarget")
@@ -588,41 +678,185 @@ model OrgRoleDefinition {
   @@index([tenantId, isActive])
 }
 
-model Kra {
-  id              String    @id @default(cuid())
-  tenantId        String
-  unitId          String
-  title           String
-  description     String?
-  weightage       Float     @default(0)
-  state           KraState  @default(DRAFT)
-  effectiveFrom   DateTime?
-  effectiveTo     DateTime?
-  createdByUserId String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  unit            OrgUnit   @relation(fields: [unitId], references: [id], onDelete: Restrict)
-  kpis            Kpi[]
+// ── Module 2: KRA/KPI Framework (Release 1) ────────────────────────────────
 
-  @@index([tenantId, unitId])
+model KraCategoryDefinition {
+  id              String           @id @default(cuid())
+  tenantId        String?          // null = global (superadmin)
+  scope           KraCategoryScope @default(TENANT)
+  categoryKey     String           // "RESEARCH", "FINANCIAL"
+  displayLabel    String
+  description     String?
+  iconName        String?          // lucide icon name for UI
+  colorHex        String?          // dashboard color
+  sortOrder       Int              @default(0)
+  isActive        Boolean          @default(true)
+  createdByUserId String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kraDefinitions  KraDefinition[]
+
+  @@unique([tenantId, categoryKey])
+  @@index([scope, isActive])
+}
+
+model AssessmentPeriod {
+  id                    String                @id @default(cuid())
+  tenantId              String
+  name                  String                // "AY 2025-26"
+  code                  String                // "AY2025-26"
+  periodType            AssessmentPeriodType  @default(SPECIFIC_RANGE)
+  startDate             DateTime
+  endDate               DateTime
+  state                 AssessmentPeriodState @default(DRAFT)
+  reviewFrequency       ReviewCycleFrequency  @default(ANNUAL)
+  targetSettingDeadline DateTime?
+  achievementDeadline   DateTime?
+  reviewDeadline        DateTime?
+  description           String?
+  createdByUserId       String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  tenant                Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kraDefinitions        KraDefinition[]
+  targetAllocations     TargetAllocation[]
+
+  @@unique([tenantId, code])
   @@index([tenantId, state])
 }
 
-model Kpi {
-  id              String             @id @default(cuid())
-  kraId           String
+model KraDefinition {
+  id              String              @id @default(cuid())
+  tenantId        String
+  periodId        String
+  categoryId      String?
   title           String
   description     String?
-  measurementType KpiMeasurementType @default(NUMERIC)
-  targetValue     Float?
-  unit            String?
-  weightage       Float              @default(0)
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
-  kra             Kra                @relation(fields: [kraId], references: [id], onDelete: Cascade)
+  weightage       Int                 @default(0) // integer, out of org total 100
+  state           KraDefinitionState  @default(DRAFT)
+  sortOrder       Int                 @default(0)
+  createdByUserId String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  period          AssessmentPeriod    @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  category        KraCategoryDefinition? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  kpiDefinitions  KpiDefinition[]
 
-  @@index([kraId])
+  @@index([tenantId, periodId])
+  @@index([tenantId, state])
+}
+
+model KpiDefinition {
+  id                String             @id @default(cuid())
+  kraDefinitionId   String
+  title             String
+  description       String?
+  // ── Measurement ──
+  measurementType   KpiMeasurementType @default(NUMERIC)
+  unitLabel         String?            // "count", "%", "INR", "days"
+  weightage         Int                @default(0) // must sum to parent KRA's weightage
+  defaultTarget     Float?
+  measurementConfig Json?              // Zod-validated per type
+  // ── Scoring ──
+  scoringMethod     ScoringMethod      @default(LINEAR)
+  scoringDirection  ScoringDirection   @default(ASCENDING)
+  scoringConfig     Json?              // Zod-validated per method
+  isPerCapita       Boolean            @default(false)
+  // ── Allocation ──
+  allocationType    KpiAllocationType  @default(BOTH)
+  startingUnitId    String             // originating department
+  // ── State ──
+  state             KpiDefinitionState @default(DRAFT)
+  sortOrder         Int                @default(0)
+  guidanceNotes     String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  kraDefinition     KraDefinition      @relation(fields: [kraDefinitionId], references: [id], onDelete: Cascade)
+  startingUnit      OrgUnit            @relation("KpiStartingUnit", fields: [startingUnitId], references: [id], onDelete: Restrict)
+  targetAllocations TargetAllocation[]
+  achievements      Achievement[]
+
+  @@index([kraDefinitionId])
+  @@index([startingUnitId])
+}
+
+model TargetAllocation {
+  id                 String                @id @default(cuid())
+  tenantId           String
+  periodId           String
+  kpiDefinitionId    String
+  assignedToUnitId   String?
+  assignedToUserId   String?
+  allocatedByUserId  String
+  // Target (polymorphic by measurement type)
+  targetValue        Float?
+  targetDate         DateTime?
+  targetMilestone    MilestoneStatus?
+  targetGrade        GradeValue?
+  targetBoolean      Boolean?
+  targetRating       Int?
+  // State
+  state              TargetAllocationState @default(ACTIVE)
+  lockedAt           DateTime?
+  // Cascade lineage
+  parentAllocationId String?
+  notes              String?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  tenant             Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  period             AssessmentPeriod      @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  kpiDefinition      KpiDefinition         @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
+  assignedToUnit     OrgUnit?              @relation("TargetUnit", fields: [assignedToUnitId], references: [id], onDelete: SetNull)
+  assignedToUser     User?                 @relation("TargetUser", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  parentAllocation   TargetAllocation?     @relation("CascadeParent", fields: [parentAllocationId], references: [id], onDelete: SetNull)
+  childAllocations   TargetAllocation[]    @relation("CascadeParent")
+  achievements       Achievement[]
+
+  @@index([tenantId, periodId, kpiDefinitionId])
+  @@index([assignedToUnitId, periodId])
+  @@index([assignedToUserId, periodId])
+  @@index([parentAllocationId])
+}
+
+model Achievement {
+  id                    String             @id @default(cuid())
+  tenantId              String
+  periodId              String
+  kpiDefinitionId       String
+  targetAllocationId    String?
+  reportedByUserId      String
+  // Actuals (polymorphic)
+  actualValue           Float?
+  actualDate            DateTime?
+  actualMilestone       MilestoneStatus?
+  actualGrade           GradeValue?
+  actualBoolean         Boolean?
+  actualRating          Int?
+  // Evidence (simple text in R1, file uploads added in R2)
+  evidenceDescription   String?
+  evidenceLinks         String[]           // URLs for now, file uploads in R2
+  // Scoring
+  computedScore         Float?             // 0-100
+  // Verification (simple in R1, reverse-route chain in R2)
+  state                 AchievementState   @default(DRAFT)
+  verifiedByUserId      String?
+  verifiedAt            DateTime?
+  verificationNote      String?
+  rejectionReason       String?
+  reportingDate         DateTime           @default(now())
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  tenant                Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kpiDefinition         KpiDefinition      @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
+  targetAllocation      TargetAllocation?  @relation(fields: [targetAllocationId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, periodId])
+  @@index([targetAllocationId])
+  @@index([reportedByUserId, periodId])
+  @@index([tenantId, state])
 }
 
 // ── Module 3: Personnel Lifecycle ────────────────────────────────────────────
