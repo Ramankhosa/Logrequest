@@ -12,6 +12,8 @@ import {
   ShieldCheck,
   Network,
   Contact,
+  Target,
+  Tag,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -27,6 +29,8 @@ const iconMap: Record<string, LucideIcon> = {
   "shield-check": ShieldCheck,
   "network": Network,
   "contact": Contact,
+  "target": Target,
+  "tag": Tag,
 };
 
 export function SidebarNav({ groups }: { groups: NavigationGroup[] }) {

@@ -4,8 +4,26 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
 import {
   createOrgUnit,
+  listActiveStructureUnits,
   type CreateOrgUnitInput,
 } from "@/lib/org-structure/service";
+
+export async function GET() {
+  const session = await getServerSession(authOptions);
+
+  if (!session?.user?.id || !session.user.tenantId) {
+    return NextResponse.json(
+      {
+        status: "error",
+        message: "You do not have tenant access.",
+      },
+      { status: 403 },
+    );
+  }
+
+  const units = await listActiveStructureUnits(session.user.tenantId);
+  return NextResponse.json(units);
+}
 
 export async function POST(request: Request) {
   const session = await getServerSession(authOptions);

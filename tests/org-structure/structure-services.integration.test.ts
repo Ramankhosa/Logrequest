@@ -1,6 +1,7 @@
 import type { Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
+  beginOrgStructureEdit,
   bulkCreateUnits,
   createOrgUnit,
   createOrgUnitType,
@@ -930,7 +931,40 @@ describe("Org Structure Service Integration - Versioning & Publishing", () => {
     });
   });
 
-  test("3.9 getVersionHistory returns versions ordered DESC", async () => {
+  test("3.9 starting edit after discarding a newer draft clones the published version", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { context } = await setupActor(tracker);
+      await createBaseDraftStructure(context);
+      await validateOrgStructureDraft(context.tenantId);
+      await publishOrgStructure(context);
+
+      await createOrgUnitType({
+        ...context,
+        values: {
+          typeKey: "LAB",
+          displayLabel: "Lab",
+          internalCategory: "LAB",
+          allowRoot: false,
+        },
+      });
+
+      const discarded = await discardOrgStructureDraft(context);
+      expect(discarded.status).toBe("success");
+
+      const result = await beginOrgStructureEdit(context);
+      expect(result.status).toBe("success");
+
+      const snapshot = await getOrgStructureSnapshot(context.tenantId);
+      expect(snapshot.draft).toBeTruthy();
+      expect(snapshot.published).toBeTruthy();
+      expect(snapshot.draft?.versionNumber).toBe(3);
+      expect(snapshot.draft?.state).toBe("DRAFT");
+      expect(snapshot.draft?.unitCount).toBe(snapshot.published?.unitCount);
+      expect(snapshot.draft?.unitTypeCount).toBe(snapshot.published?.unitTypeCount);
+    });
+  });
+
+  test("3.10 getVersionHistory returns versions ordered DESC", async () => {
     await withIsolatedDb(async (tracker) => {
       const { context } = await setupActor(tracker);
       await createBaseDraftStructure(context);
@@ -956,7 +990,7 @@ describe("Org Structure Service Integration - Versioning & Publishing", () => {
     });
   });
 
-  test("3.10 getVersionDetail returns version with unit types and units", async () => {
+  test("3.11 getVersionDetail returns version with unit types and units", async () => {
     await withIsolatedDb(async (tracker) => {
       const { context } = await setupActor(tracker);
       await createBaseDraftStructure(context);
@@ -976,7 +1010,7 @@ describe("Org Structure Service Integration - Versioning & Publishing", () => {
     });
   });
 
-  test("3.11 get snapshot returns both draft and published sections", async () => {
+  test("3.12 get snapshot returns both draft and published sections", async () => {
     await withIsolatedDb(async (tracker) => {
       const { context } = await setupActor(tracker);
       await createBaseDraftStructure(context);

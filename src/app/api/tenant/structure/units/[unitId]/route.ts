@@ -1,20 +1,31 @@
 import { Role } from "@prisma/client";
+import type { Session } from "next-auth";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
 import { deleteOrgUnit, updateOrgUnit } from "@/lib/org-structure/service";
 
-function requireStructureAccess(session: Awaited<ReturnType<typeof getServerSession>>) {
-  if (!session?.user?.id || !session.user.tenantId || !session.user.role) {
+type StructureActor = {
+  id: string;
+  tenantId: string;
+  role: Role;
+};
+
+function requireStructureAccess(session: Session | null) {
+  const user = session?.user;
+
+  if (!user?.id || !user.tenantId || !user.role) {
     return null;
   }
-  if (
-    session.user.role !== Role.TENANT_OWNER &&
-    session.user.role !== Role.TENANT_ADMIN
-  ) {
+  if (user.role !== Role.TENANT_OWNER && user.role !== Role.TENANT_ADMIN) {
     return null;
   }
-  return session.user as { id: string; tenantId: string; role: string };
+
+  return {
+    id: user.id,
+    tenantId: user.tenantId,
+    role: user.role,
+  } satisfies StructureActor;
 }
 
 export async function DELETE(

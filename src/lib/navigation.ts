@@ -33,6 +33,7 @@ export const tenantNavigationGroups: NavigationGroup[] = [
       { href: "/tenant-admin/users", label: "Users", icon: "users" },
       { href: "/tenant-admin/structure", label: "Organization", icon: "network" },
       { href: "/tenant-admin/personnel", label: "Personnel", icon: "contact" },
+      { href: "/tenant-admin/kra-kpi", label: "KRA / KPI", icon: "target" },
     ],
   },
   {
@@ -51,6 +52,7 @@ export const superadminNavigationGroups: NavigationGroup[] = [
     items: [
       { href: "/superadmin", label: "Dashboard", icon: "layout-dashboard" },
       { href: "/superadmin/tenants/new", label: "New Tenant", icon: "building-2" },
+      { href: "/superadmin/kra-categories", label: "KRA Categories", icon: "tag" },
       { href: "/insights", label: "Insights", icon: "bar-chart-2" },
     ],
   },

@@ -15,7 +15,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],
-      include: ["src/lib/org-structure/**/*.ts"],
+      include: ["src/lib/org-structure/**/*.ts", "src/lib/kra-kpi/**/*.ts"],
     },
   },
   resolve: {

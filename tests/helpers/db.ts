@@ -132,6 +132,50 @@ export async function cleanupTrackedData(tracker: DbTracker) {
         },
       },
     });
+    await prisma.achievement.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.targetAllocation.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.kpiDefinition.deleteMany({
+      where: {
+        kraDefinition: {
+          tenantId: {
+            in: tenantIds,
+          },
+        },
+      },
+    });
+    await prisma.kraDefinition.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.assessmentPeriod.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.kraCategoryDefinition.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
     await prisma.tenant.deleteMany({
       where: {
         id: {

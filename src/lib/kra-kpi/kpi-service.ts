@@ -12,8 +12,8 @@ const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
 const createKpiSchema = z.object({
-  kraDefinitionId: z.string().trim().min(1),
-  title: z.string().trim().min(2).max(200),
+  kraDefinitionId: z.string().trim().min(1, "Select a KRA before creating a KPI."),
+  title: z.string().trim().min(2, "KPI title must be at least 2 characters.").max(200),
   description: z.string().trim().max(1000).optional(),
   measurementType: z.enum([
     "NUMERIC",
@@ -34,7 +34,7 @@ const createKpiSchema = z.object({
   scoringConfig: scoringConfigSchema.optional(),
   isPerCapita: z.boolean().default(false),
   allocationType: z.enum(["DEPARTMENT", "INDIVIDUAL", "BOTH"]).default("BOTH"),
-  startingUnitId: z.string().trim().min(1),
+  startingUnitId: z.string().trim().min(1, "Select a starting unit."),
   guidanceNotes: z.string().trim().max(2000).optional(),
   sortOrder: z.number().int().min(0).max(9999).default(0),
 });
@@ -63,7 +63,7 @@ const updateKpiSchema = z.object({
   scoringConfig: scoringConfigSchema.nullable().optional(),
   isPerCapita: z.boolean().optional(),
   allocationType: z.enum(["DEPARTMENT", "INDIVIDUAL", "BOTH"]).optional(),
-  startingUnitId: z.string().trim().min(1).optional(),
+  startingUnitId: z.string().trim().min(1, "Select a starting unit.").optional(),
   guidanceNotes: z.string().trim().max(2000).nullable().optional(),
   sortOrder: z.number().int().min(0).max(9999).optional(),
 });
@@ -79,6 +79,10 @@ function isAdminOrOwner(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+function canModifyKpiInPeriodState(state: string): boolean {
+  return state === "DRAFT" || state === "OPEN" || state === "UNDER_REVIEW";
 }
 
 // ── List KPIs ────────────────────────────────────────────────────────────────
@@ -201,8 +205,8 @@ export async function createKpi(
     return { status: "error", message: "KRA not found." };
   }
 
-  // Period must be DRAFT or OPEN
-  if (kra.period.state !== "DRAFT" && kra.period.state !== "OPEN") {
+  // Period must be editable
+  if (!canModifyKpiInPeriodState(kra.period.state)) {
     return {
       status: "error",
       message: `Cannot add KPIs — period is in "${kra.period.state}" state.`,
@@ -336,7 +340,7 @@ export async function updateKpi(
   }
 
   const periodState = kpi.kraDefinition.period.state;
-  if (periodState !== "DRAFT" && periodState !== "OPEN") {
+  if (!canModifyKpiInPeriodState(periodState)) {
     return {
       status: "error",
       message: `Cannot edit KPI — period is in "${periodState}" state.`,

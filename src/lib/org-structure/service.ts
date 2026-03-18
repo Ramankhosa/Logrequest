@@ -139,6 +139,59 @@ export type OrgStructureDraftContext = {
   }>;
 };
 
+export async function beginOrgStructureEdit(input: {
+  tenantId: string;
+  actorUserId: string;
+  actorRole: Role;
+}): Promise<OrgStructureActionResult> {
+  if (!canManageStructure(input.actorRole)) {
+    return {
+      status: "error",
+      message: "You do not have permission to manage organization structure.",
+    };
+  }
+
+  const existingDraft = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId: input.tenantId,
+      state: {
+        in: [...structureDraftStates],
+      },
+    },
+    orderBy: {
+      versionNumber: "desc",
+    },
+  });
+
+  if (existingDraft) {
+    return {
+      status: "success",
+      message: `Draft v${existingDraft.versionNumber} is ready for editing while the published hierarchy remains active.`,
+    };
+  }
+
+  const draft = await ensureDraftVersion({
+    tenantId: input.tenantId,
+    actorUserId: input.actorUserId,
+  });
+  const publishedVersion = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId: input.tenantId,
+      state: structurePublishedState,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  return {
+    status: "success",
+    message: publishedVersion
+      ? `Published hierarchy copied into draft v${draft.versionNumber}. Review, validate, and publish when ready.`
+      : `Draft v${draft.versionNumber} is ready for editing.`,
+  };
+}
+
 export async function getOrgStructureSnapshot(
   tenantId: string,
 ): Promise<OrgStructureSnapshot> {
@@ -298,6 +351,52 @@ export async function getOrgStructureDraftContext(
         path: unit.path,
       })) ?? [],
   };
+}
+
+export async function listActiveStructureUnits(
+  tenantId: string,
+): Promise<UnitView[]> {
+  const activeVersion = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId,
+      state: {
+        in: [...structureDraftStates, structurePublishedState],
+      },
+    },
+    orderBy: {
+      versionNumber: "desc",
+    },
+    include: {
+      units: {
+        include: {
+          type: true,
+        },
+        orderBy: [
+          { level: "asc" },
+          { sortOrder: "asc" },
+          { name: "asc" },
+        ],
+      },
+    },
+  });
+
+  if (!activeVersion) {
+    return [];
+  }
+
+  return activeVersion.units
+    .filter((unit) => unit.state === "ACTIVE" || unit.state === "DRAFT")
+    .map((unit) => ({
+      id: unit.id,
+      code: unit.code,
+      name: unit.name,
+      parentId: unit.parentId,
+      level: unit.level,
+      path: unit.path,
+      state: unit.state,
+      typeLabel: unit.type.displayLabel,
+      typeKey: unit.type.typeKey,
+    }));
 }
 
 export async function createOrgUnitType(input: {
@@ -928,8 +1027,22 @@ async function ensureDraftVersion(input: {
       return existingDraft;
     }
 
-    const latestVersion = await tx.orgStructureVersion.findFirst({
-      where: { tenantId: input.tenantId },
+    const latestVersionNumber =
+      (await tx.orgStructureVersion.findFirst({
+        where: { tenantId: input.tenantId },
+        orderBy: {
+          versionNumber: "desc",
+        },
+        select: {
+          versionNumber: true,
+        },
+      }))?.versionNumber ?? 0;
+
+    const publishedVersion = await tx.orgStructureVersion.findFirst({
+      where: {
+        tenantId: input.tenantId,
+        state: structurePublishedState,
+      },
       orderBy: {
         versionNumber: "desc",
       },
@@ -950,24 +1063,22 @@ async function ensureDraftVersion(input: {
       },
     });
 
-    const nextVersionNumber = (latestVersion?.versionNumber ?? 0) + 1;
-
     const draft = await tx.orgStructureVersion.create({
       data: {
         tenantId: input.tenantId,
-        name: `Draft ${nextVersionNumber}`,
-        versionNumber: nextVersionNumber,
+        name: `Draft ${latestVersionNumber + 1}`,
+        versionNumber: latestVersionNumber + 1,
         state: structureDraftState,
         createdByUserId: input.actorUserId,
       },
     });
 
-    if (!latestVersion) {
+    if (!publishedVersion) {
       return draft;
     }
 
     const typeIdMap = new Map<string, string>();
-    const unitTypeData = latestVersion.unitTypes.map((type) => {
+    const unitTypeData = publishedVersion.unitTypes.map((type) => {
       const id = randomUUID();
       typeIdMap.set(type.id, id);
 
@@ -990,11 +1101,11 @@ async function ensureDraftVersion(input: {
     }
 
     const unitIdMap = new Map<string, string>();
-    for (const unit of latestVersion.units) {
+    for (const unit of publishedVersion.units) {
       unitIdMap.set(unit.id, randomUUID());
     }
 
-    const unitData = latestVersion.units.map((unit) => ({
+    const unitData = publishedVersion.units.map((unit) => ({
       id: unitIdMap.get(unit.id)!,
       tenantId: input.tenantId,
       versionId: draft.id,

@@ -40,6 +40,10 @@ function isAdminOrOwner(role: Role): boolean {
   );
 }
 
+function canModifyKraInPeriodState(state: string): boolean {
+  return state === "DRAFT" || state === "OPEN" || state === "UNDER_REVIEW";
+}
+
 // ── List KRAs ────────────────────────────────────────────────────────────────
 
 export async function listKras(
@@ -137,8 +141,8 @@ export async function createKra(
     return { status: "error", message: "Assessment period not found." };
   }
 
-  // Period must be DRAFT or OPEN to add KRAs
-  if (period.state !== "DRAFT" && period.state !== "OPEN") {
+  // Period must be editable to add KRAs
+  if (!canModifyKraInPeriodState(period.state)) {
     return {
       status: "error",
       message: `Cannot add KRAs to a period in "${period.state}" state.`,
@@ -229,11 +233,11 @@ export async function updateKra(
     return { status: "error", message: "KRA not found." };
   }
 
-  // Can only edit DRAFT KRAs, or ACTIVE KRAs in DRAFT/OPEN periods
+  // Can only edit non-archived KRAs while the period is editable
   if (kra.state === "ARCHIVED") {
     return { status: "error", message: "Cannot edit an archived KRA." };
   }
-  if (kra.period.state !== "DRAFT" && kra.period.state !== "OPEN") {
+  if (!canModifyKraInPeriodState(kra.period.state)) {
     return {
       status: "error",
       message: `Cannot edit KRA — period is in "${kra.period.state}" state.`,
@@ -317,10 +321,21 @@ export async function activateKra(
 
   // Validate: KPI weightages must sum to KRA's weightage
   const kpiSum = kra.kpiDefinitions.reduce((s, k) => s + k.weightage, 0);
-  if (kpiSum !== kra.weightage) {
+  if (kra.kpiDefinitions.length === 0 && kra.weightage !== 0) {
     return {
       status: "error",
-      message: `Cannot activate: KPI weightages sum to ${kpiSum}, but KRA weightage is ${kra.weightage}. They must match.`,
+      message: `Cannot activate KRA "${kra.title}" because it has no KPIs yet. Add KPI definitions totaling ${kra.weightage} before activating.`,
+    };
+  }
+  if (kpiSum !== kra.weightage) {
+    const delta = kra.weightage - kpiSum;
+    const guidance =
+      delta > 0
+        ? `${delta} remaining. Add or increase KPI weightage before activating.`
+        : `${Math.abs(delta)} over. Reduce KPI weightage before activating.`;
+    return {
+      status: "error",
+      message: `Cannot activate KRA "${kra.title}": KPI weightages sum to ${kpiSum}, but KRA weightage is ${kra.weightage}. ${guidance}`,
     };
   }
 

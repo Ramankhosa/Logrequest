@@ -10,9 +10,7 @@ const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
-const createAllocationSchema = z.object({
-  periodId: z.string().trim().min(1),
-  kpiDefinitionId: z.string().trim().min(1),
+const allocationPayloadSchema = z.object({
   assignedToUnitId: z.string().trim().min(1).optional(),
   assignedToUserId: z.string().trim().min(1).optional(),
   targetValue: z.number().optional(),
@@ -25,6 +23,17 @@ const createAllocationSchema = z.object({
   targetRating: z.number().int().min(1).max(10).optional(),
   parentAllocationId: z.string().trim().min(1).optional(),
   notes: z.string().trim().max(500).optional(),
+});
+
+const createAllocationSchema = z.object({
+  periodId: z.string().trim().min(1),
+  kpiDefinitionId: z.string().trim().min(1),
+}).and(allocationPayloadSchema);
+
+const createAllocationsSchema = z.object({
+  periodId: z.string().trim().min(1),
+  kpiDefinitionId: z.string().trim().min(1),
+  allocations: z.array(allocationPayloadSchema).min(1),
 });
 
 const updateAllocationSchema = z.object({
@@ -58,6 +67,7 @@ const cascadeDistributionSchema = z.object({
 });
 
 export type CreateAllocationInput = z.input<typeof createAllocationSchema>;
+export type CreateAllocationBatchInput = z.input<typeof createAllocationsSchema>;
 export type UpdateAllocationInput = z.input<typeof updateAllocationSchema>;
 export type CascadeDistributionInput = z.input<typeof cascadeDistributionSchema>;
 
@@ -152,83 +162,42 @@ export async function createAllocation(
     return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid input." };
   }
   const data = parsed.data;
-
-  // Must assign to either unit or user
-  if (!data.assignedToUnitId && !data.assignedToUserId) {
-    return { status: "error", message: "Must assign to either a unit or a user." };
-  }
-
-  // Verify period
-  const period = await prisma.assessmentPeriod.findFirst({
-    where: { id: data.periodId, tenantId },
-  });
-  if (!period) {
-    return { status: "error", message: "Period not found." };
-  }
-  if (period.state !== "OPEN" && period.state !== "IN_PROGRESS") {
-    return {
-      status: "error",
-      message: `Cannot allocate targets in "${period.state}" period. Period must be OPEN or IN_PROGRESS.`,
-    };
-  }
-
-  // Verify KPI
-  const kpi = await prisma.kpiDefinition.findFirst({
-    where: { id: data.kpiDefinitionId, kraDefinition: { tenantId } },
-  });
-  if (!kpi) {
-    return { status: "error", message: "KPI not found." };
-  }
-
-  // Verify parent allocation if cascading
-  if (data.parentAllocationId) {
-    const parent = await prisma.targetAllocation.findFirst({
-      where: { id: data.parentAllocationId, tenantId },
-    });
-    if (!parent) {
-      return { status: "error", message: "Parent allocation not found." };
-    }
-  }
-
-  await prisma.$transaction(async (tx) => {
-    const allocation = await tx.targetAllocation.create({
-      data: {
-        tenantId,
-        periodId: data.periodId,
-        kpiDefinitionId: data.kpiDefinitionId,
-        assignedToUnitId: data.assignedToUnitId,
-        assignedToUserId: data.assignedToUserId,
-        allocatedByUserId: actorUserId,
-        targetValue: data.targetValue,
-        targetDate: data.targetDate,
-        targetMilestone: data.targetMilestone,
-        targetGrade: data.targetGrade,
-        targetBoolean: data.targetBoolean,
-        targetRating: data.targetRating,
-        parentAllocationId: data.parentAllocationId,
-        notes: data.notes,
-      },
-    });
-
-    await tx.auditLog.create({
-      data: {
-        tenantId,
-        actorUserId,
-        actorRole,
-        targetType: "TargetAllocation",
-        targetId: allocation.id,
-        action: "CREATE",
-        newState: {
-          kpiDefinitionId: data.kpiDefinitionId,
-          targetValue: data.targetValue,
-          assignedToUnitId: data.assignedToUnitId,
-          assignedToUserId: data.assignedToUserId,
-        },
-      },
-    });
+  const result = await createAllocationRecords({
+    tenantId,
+    periodId: data.periodId,
+    kpiDefinitionId: data.kpiDefinitionId,
+    allocations: [data],
+    actorUserId,
+    actorRole,
   });
 
-  return { status: "success", message: "Target allocated successfully." };
+  return result;
+}
+
+export async function createAllocations(
+  tenantId: string,
+  input: CreateAllocationBatchInput,
+  actorUserId: string,
+  actorRole: Role,
+): Promise<KraKpiActionResult> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", message: "Insufficient permissions." };
+  }
+
+  const parsed = createAllocationsSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid input." };
+  }
+
+  const data = parsed.data;
+  return createAllocationRecords({
+    tenantId,
+    periodId: data.periodId,
+    kpiDefinitionId: data.kpiDefinitionId,
+    allocations: data.allocations,
+    actorUserId,
+    actorRole,
+  });
 }
 
 // ── Update Allocation ────────────────────────────────────────────────────────
@@ -322,6 +291,55 @@ export async function lockTarget(
   return { status: "success", message: "Target locked." };
 }
 
+export async function unlockTarget(
+  allocationId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role
+): Promise<KraKpiActionResult> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", message: "Insufficient permissions." };
+  }
+
+  const allocation = await prisma.targetAllocation.findFirst({
+    where: { id: allocationId, tenantId },
+  });
+  if (!allocation) {
+    return { status: "error", message: "Allocation not found." };
+  }
+  if (allocation.state !== "LOCKED") {
+    return { status: "error", message: "Only locked allocations can be unlocked." };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.targetAllocation.update({
+      where: { id: allocationId },
+      data: { state: "ACTIVE", lockedAt: null },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "TargetAllocation",
+        targetId: allocationId,
+        action: "UNLOCK",
+        previousState: {
+          state: allocation.state,
+          lockedAt: allocation.lockedAt,
+        },
+        newState: {
+          state: "ACTIVE",
+          lockedAt: null,
+        },
+      },
+    });
+  });
+
+  return { status: "success", message: "Target unlocked. You can edit it now." };
+}
+
 // ── Cascade Targets ──────────────────────────────────────────────────────────
 
 /**
@@ -357,6 +375,12 @@ export async function cascadeTargets(
   }
   if (parent.state === "LOCKED") {
     return { status: "error", message: "Cannot cascade a locked allocation." };
+  }
+  if (parent.assignedToUserId) {
+    return {
+      status: "error",
+      message: "Individual allocations cannot be cascaded.",
+    };
   }
 
   const { measurementType, allocationType } = parent.kpiDefinition;
@@ -421,6 +445,159 @@ export async function cascadeTargets(
   return {
     status: "success",
     message: `Target cascaded to ${distributions.length} allocation(s).`,
+  };
+}
+
+async function createAllocationRecords(input: {
+  tenantId: string;
+  periodId: string;
+  kpiDefinitionId: string;
+  allocations: Array<z.infer<typeof allocationPayloadSchema>>;
+  actorUserId: string;
+  actorRole: Role;
+}): Promise<KraKpiActionResult> {
+  const { tenantId, periodId, kpiDefinitionId, allocations, actorUserId, actorRole } = input;
+
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+  });
+  if (!period) {
+    return { status: "error", message: "Period not found." };
+  }
+  if (period.state !== "OPEN" && period.state !== "IN_PROGRESS") {
+    return {
+      status: "error",
+      message: `Cannot allocate targets in "${period.state}" period. Period must be OPEN or IN_PROGRESS.`,
+    };
+  }
+
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiDefinitionId, kraDefinition: { tenantId } },
+  });
+  if (!kpi) {
+    return { status: "error", message: "KPI not found." };
+  }
+
+  for (const allocation of allocations) {
+    if (!!allocation.assignedToUnitId === !!allocation.assignedToUserId) {
+      return {
+        status: "error",
+        message: "Assign each target to exactly one unit or one user.",
+      };
+    }
+
+    const hasTargetValue =
+      allocation.targetValue !== undefined ||
+      allocation.targetDate !== undefined ||
+      allocation.targetMilestone !== undefined ||
+      allocation.targetGrade !== undefined ||
+      allocation.targetBoolean !== undefined ||
+      allocation.targetRating !== undefined;
+
+    if (!hasTargetValue) {
+      return {
+        status: "error",
+        message: "Enter a target value before allocating.",
+      };
+    }
+
+    if (allocation.parentAllocationId) {
+      const parent = await prisma.targetAllocation.findFirst({
+        where: { id: allocation.parentAllocationId, tenantId },
+      });
+      if (!parent) {
+        return { status: "error", message: "Parent allocation not found." };
+      }
+    }
+
+    if (kpi.allocationType === "DEPARTMENT" && allocation.assignedToUserId) {
+      return {
+        status: "error",
+        message: "This KPI can only be allocated to units.",
+      };
+    }
+
+    if (kpi.allocationType === "INDIVIDUAL" && allocation.assignedToUnitId) {
+      return {
+        status: "error",
+        message: "This KPI can only be allocated to users.",
+      };
+    }
+
+    if (allocation.assignedToUnitId) {
+      const unit = await prisma.orgUnit.findFirst({
+        where: { id: allocation.assignedToUnitId, tenantId },
+        select: { id: true },
+      });
+      if (!unit) {
+        return { status: "error", message: "Assigned unit not found." };
+      }
+    }
+
+    if (allocation.assignedToUserId) {
+      const membership = await prisma.membership.findFirst({
+        where: {
+          tenantId,
+          userId: allocation.assignedToUserId,
+          status: { notIn: ["REVOKED", "ARCHIVED"] },
+        },
+        select: { id: true },
+      });
+      if (!membership) {
+        return {
+          status: "error",
+          message: "Assigned user not found in this tenant.",
+        };
+      }
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    for (const allocation of allocations) {
+      const created = await tx.targetAllocation.create({
+        data: {
+          tenantId,
+          periodId,
+          kpiDefinitionId,
+          assignedToUnitId: allocation.assignedToUnitId,
+          assignedToUserId: allocation.assignedToUserId,
+          allocatedByUserId: actorUserId,
+          targetValue: allocation.targetValue,
+          targetDate: allocation.targetDate,
+          targetMilestone: allocation.targetMilestone,
+          targetGrade: allocation.targetGrade,
+          targetBoolean: allocation.targetBoolean,
+          targetRating: allocation.targetRating,
+          parentAllocationId: allocation.parentAllocationId,
+          notes: allocation.notes,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          actorUserId,
+          actorRole,
+          targetType: "TargetAllocation",
+          targetId: created.id,
+          action: "CREATE",
+          newState: {
+            kpiDefinitionId,
+            targetValue: allocation.targetValue,
+            assignedToUnitId: allocation.assignedToUnitId,
+            assignedToUserId: allocation.assignedToUserId,
+          },
+        },
+      });
+    }
+  });
+
+  return {
+    status: "success",
+    message:
+      allocations.length === 1
+        ? "Target allocated successfully."
+        : `${allocations.length} target allocations created successfully.`,
   };
 }
 

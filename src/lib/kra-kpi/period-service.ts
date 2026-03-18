@@ -6,7 +6,6 @@ import type {
   AssessmentPeriodView,
   ComputedReviewCycle,
 } from "./shared";
-import { ASSESSMENT_PERIOD_TRANSITIONS } from "./shared";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -277,22 +276,16 @@ export async function transitionPeriodState(
     return { status: "error", message: "Assessment period not found." };
   }
 
-  const allowedNext = ASSESSMENT_PERIOD_TRANSITIONS[period.state];
-  if (!allowedNext.includes(newState)) {
+  if (newState === period.state) {
     return {
       status: "error",
-      message: `Cannot transition from "${period.state}" to "${newState}". Allowed: ${allowedNext.join(", ") || "none"}.`,
+      message: `Period is already in "${newState}" state.`,
     };
   }
 
-  // Business rules for specific transitions
+  // Admins can explicitly move periods between stages from the UI.
   if (newState === "OPEN") {
-    // Validate KRA weightages sum to 100 before opening
-    const kraSum = await prisma.kraDefinition.aggregate({
-      where: { periodId, tenantId, state: { not: "ARCHIVED" } },
-      _sum: { weightage: true },
-    });
-    // Allow opening even with 0 KRAs (they can be added while OPEN)
+    // Allow reopening even with 0 KRAs so setup can continue.
   }
 
   await prisma.$transaction(async (tx) => {

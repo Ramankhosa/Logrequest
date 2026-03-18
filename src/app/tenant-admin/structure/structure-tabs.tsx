@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   FileEdit,
   CheckCircle2,
@@ -12,6 +13,8 @@ import {
   GitBranch,
   Shield,
   Users,
+  Loader2,
+  Pencil,
 } from "lucide-react";
 import { OrgTreeBuilder } from "@/components/tenant/org-tree-builder";
 import { StructureSummaryActions } from "@/components/tenant/structure-summary-actions";
@@ -47,6 +50,8 @@ type StructureTabsProps = {
   publishedUnitTypes: UnitType[];
   publishedUnits: DraftUnit[];
   publishedTypeColors: Record<string, string>;
+  hasDraft: boolean;
+  hasPublished: boolean;
 };
 
 const TABS = [
@@ -67,8 +72,12 @@ export function StructureTabs({
   publishedUnitTypes,
   publishedUnits,
   publishedTypeColors,
+  hasDraft,
+  hasPublished,
 }: StructureTabsProps) {
-  const [activeTab, setActiveTab] = useState<TabKey>("draft");
+  const [activeTab, setActiveTab] = useState<TabKey>(
+    hasDraft ? "draft" : hasPublished ? "published" : "draft",
+  );
 
   return (
     <div className="space-y-6">
@@ -107,6 +116,9 @@ export function StructureTabs({
           unitTypes={publishedUnitTypes}
           units={publishedUnits}
           typeColors={publishedTypeColors}
+          hasDraft={hasDraft}
+          hasPublished={hasPublished}
+          onStartEditing={() => setActiveTab("draft")}
         />
       ) : activeTab === "roles" ? (
         <RolesTab />
@@ -229,11 +241,45 @@ function PublishedTab({
   unitTypes,
   units,
   typeColors,
+  hasDraft,
+  hasPublished,
+  onStartEditing,
 }: {
   unitTypes: UnitType[];
   units: DraftUnit[];
   typeColors: Record<string, string>;
+  hasDraft: boolean;
+  hasPublished: boolean;
+  onStartEditing: () => void;
 }) {
+  const router = useRouter();
+  const [startingEdit, setStartingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const handleStartEditing = async () => {
+    setEditError(null);
+    setStartingEdit(true);
+
+    try {
+      const res = await fetch("/api/tenant/structure/edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+
+      if (data.status === "success") {
+        onStartEditing();
+        router.refresh();
+      } else {
+        setEditError(data.message ?? "Failed to prepare an editable draft.");
+      }
+    } catch {
+      setEditError("Failed to prepare an editable draft.");
+    } finally {
+      setStartingEdit(false);
+    }
+  };
+
   if (units.length === 0 && unitTypes.length === 0) {
     return (
       <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-slate-200 py-16 text-center">
@@ -287,15 +333,49 @@ function PublishedTab({
 
         {/* Published tree (read-only) */}
         <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/60 p-5">
-          <div className="mb-4">
-            <h2 className="text-sm font-semibold text-slate-900">
-              Published hierarchy
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-400">
-              This is the currently active structure visible to your
-              organization
-            </p>
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">
+                Published hierarchy
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-400">
+                {hasDraft
+                  ? "The published structure stays active while you work in draft."
+                  : hasPublished
+                    ? "Create a draft copy before making changes to the live hierarchy."
+                    : "This view shows the active structure currently visible to your organization."}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                void handleStartEditing();
+              }}
+              disabled={startingEdit}
+              className="inline-flex items-center gap-2 rounded-xl border border-brand/20 bg-brand/5 px-3 py-2 text-xs font-semibold text-brand transition hover:border-brand/30 hover:bg-brand/10 disabled:opacity-50"
+            >
+              {startingEdit ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Pencil className="h-3.5 w-3.5" />
+              )}
+              {hasDraft ? "Open draft editor" : "Edit hierarchy"}
+            </button>
           </div>
+
+          {editError ? (
+            <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {editError}
+            </div>
+          ) : null}
+
+          {!hasDraft ? (
+            <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              The published version remains live until you validate and publish
+              the new draft.
+            </div>
+          ) : null}
 
           <OrgTreeBuilder
             unitTypes={unitTypes}

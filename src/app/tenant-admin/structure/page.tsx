@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  Plus,
   Tag,
   CheckCircle2,
   FileEdit,
@@ -11,10 +10,7 @@ import { getShellIdentity } from "@/lib/auth/access";
 import { tenantNavigationGroups } from "@/lib/navigation";
 import {
   getOrgStructureSnapshot,
-  type OrgStructureSnapshot,
 } from "@/lib/org-structure/service";
-import { StructureSummaryActions } from "@/components/tenant/structure-summary-actions";
-import { OrgTreeBuilder } from "@/components/tenant/org-tree-builder";
 import { StructureTabs } from "./structure-tabs";
 
 export default async function StructurePage() {
@@ -83,6 +79,8 @@ export default async function StructurePage() {
         publishedUnitTypes={snapshot?.publishedUnitTypes ?? []}
         publishedUnits={snapshot?.publishedUnits ?? []}
         publishedTypeColors={publishedTypeColors}
+        hasDraft={hasDraft}
+        hasPublished={hasPublished}
       />
     </AppShell>
   );

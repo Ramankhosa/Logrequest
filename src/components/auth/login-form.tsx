@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import { signIn } from "next-auth/react";
+import { useEffect, useState, useTransition } from "react";
+import { signIn, signOut } from "next-auth/react";
 
 type LoginFormProps = {
   callbackUrl?: string;
   error?: string;
+  invalidateSession?: boolean;
   googleEnabled: boolean;
   microsoftEnabled: boolean;
 };
@@ -15,12 +16,21 @@ type LoginFormProps = {
 export function LoginForm({
   callbackUrl,
   error,
+  invalidateSession = false,
   googleEnabled,
   microsoftEnabled,
 }: LoginFormProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [formError, setFormError] = useState(error ?? "");
+
+  useEffect(() => {
+    if (!invalidateSession) {
+      return;
+    }
+
+    void signOut({ redirect: false });
+  }, [invalidateSession]);
 
   return (
     <div className="glass-panel mx-auto w-full max-w-md rounded-[2rem] border p-6 sm:p-8">
