@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { ArrowLeft } from "lucide-react";
-import type { MyAllocationView, MyKpiContext } from "@/lib/kra-kpi/shared";
+import type { MyAllocationView } from "@/lib/kra-kpi/shared";
 
 type UnitMember = {
   userId: string;
@@ -25,12 +25,11 @@ type Distribution = {
 
 type Props = {
   allocation: MyAllocationView;
-  context: MyKpiContext;
   onDone: () => void;
   onCancel: () => void;
 };
 
-export function MyCascadeForm({ allocation, context, onDone, onCancel }: Props) {
+export function MyCascadeForm({ allocation, onDone, onCancel }: Props) {
   const a = allocation;
   const [members, setMembers] = useState<UnitMember[]>([]);
   const [childUnits, setChildUnits] = useState<ChildUnit[]>([]);
@@ -46,7 +45,20 @@ export function MyCascadeForm({ allocation, context, onDone, onCancel }: Props) 
 
   useEffect(() => {
     async function load() {
-      if (!a.assignedToUnitId) return;
+      if (!a.assignedToUnitId) {
+        setLoading(false);
+        return;
+      }
+      const blockedUserIds = new Set(
+        a.childAllocations
+          .map((child) => child.assignedToUserId)
+          .filter((value): value is string => Boolean(value)),
+      );
+      const blockedUnitIds = new Set(
+        a.childAllocations
+          .map((child) => child.assignedToUnitId)
+          .filter((value): value is string => Boolean(value)),
+      );
       const [membersRes, unitsRes] = await Promise.all([
         fetch(`/api/tenant/kra-kpi/my/unit-members?unitId=${a.assignedToUnitId}`),
         fetch(`/api/tenant/kra-kpi/my/child-units?unitId=${a.assignedToUnitId}`),
@@ -54,13 +66,18 @@ export function MyCascadeForm({ allocation, context, onDone, onCancel }: Props) 
 
       if (membersRes.ok) {
         const data: UnitMember[] = await membersRes.json();
-        // Exclude existing cascade targets and unit heads
-        const existingUserIds = a.childAllocations
-          .map((c) => c.assignedToUserName)
-          .filter(Boolean);
-        setMembers(data.filter((m) => !m.isUnitHead));
+        setMembers(
+          data.filter(
+            (member) => !member.isUnitHead && !blockedUserIds.has(member.userId),
+          ),
+        );
       }
-      if (unitsRes.ok) setChildUnits(await unitsRes.json());
+      if (unitsRes.ok) {
+        const data: ChildUnit[] = await unitsRes.json();
+        setChildUnits(
+          data.filter((unit) => !blockedUnitIds.has(unit.unitId)),
+        );
+      }
 
       setLoading(false);
     }

@@ -1,6 +1,10 @@
 import type { Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { canRecord } from "./assignee-access";
+import { getMyKpiContext } from "./my-kpi-service";
+import { getUserAssignments } from "@/lib/org-structure/roles-service";
+import { computeReviewCycles } from "./period-service";
 import type {
   KraKpiActionResult,
   AchievementView,
@@ -61,6 +65,134 @@ function isAdminOrOwner(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+function hasConfiguredTarget(allocation: {
+  targetValue?: number | null;
+  targetDate?: Date | null;
+  targetMilestone?: string | null;
+  targetGrade?: string | null;
+  targetBoolean?: boolean | null;
+  targetRating?: number | null;
+} | null): boolean {
+  if (!allocation) return false;
+
+  return (
+    allocation.targetValue != null ||
+    allocation.targetDate != null ||
+    allocation.targetMilestone != null ||
+    allocation.targetGrade != null ||
+    allocation.targetBoolean != null ||
+    allocation.targetRating != null
+  );
+}
+
+function validateAchievementFormData(
+  formConfig: AchievementFormConfig | null,
+  formData: Record<string, unknown> | undefined,
+): string | null {
+  if (!formConfig) return null;
+
+  const validator = buildFormDataValidator(formConfig.fields);
+  const parsed = validator.safeParse(formData ?? {});
+  if (parsed.success) {
+    return null;
+  }
+
+  return parsed.error.issues[0]?.message ?? "Invalid form data.";
+}
+
+function findCycleNumberForDate(
+  reportingDate: Date,
+  period: { startDate: Date; endDate: Date; reviewFrequency: string },
+): number {
+  const cycles = computeReviewCycles(
+    period.startDate,
+    period.endDate,
+    period.reviewFrequency,
+  );
+  const cycle = cycles.find(
+    (item) =>
+      reportingDate >= item.startDate &&
+      (reportingDate < item.endDate ||
+        reportingDate.getTime() === item.endDate.getTime()),
+  );
+
+  return cycle?.cycleNumber ?? 1;
+}
+
+async function getAchievementAssigneeUnitIds(
+  tenantId: string,
+  achievement: {
+    reportedByUserId: string;
+    targetAllocation: {
+      assignedToUnitId: string | null;
+      assignedToUserId: string | null;
+    } | null;
+  },
+): Promise<string[]> {
+  const unitIds = new Set<string>();
+
+  if (achievement.targetAllocation?.assignedToUnitId) {
+    unitIds.add(achievement.targetAllocation.assignedToUnitId);
+  }
+
+  const assigneeUserId =
+    achievement.targetAllocation?.assignedToUserId ?? achievement.reportedByUserId;
+  const assignments = await getUserAssignments(tenantId, assigneeUserId);
+  for (const assignment of assignments) {
+    unitIds.add(assignment.unitId);
+  }
+
+  return [...unitIds];
+}
+
+async function canActorRecommendAchievement(
+  tenantId: string,
+  actorUserId: string,
+  achievement: {
+    reportedByUserId: string;
+    targetAllocation: {
+      assignedToUnitId: string | null;
+      assignedToUserId: string | null;
+    } | null;
+  },
+): Promise<boolean> {
+  const context = await getMyKpiContext(tenantId, actorUserId);
+  if (context.headOfUnits.length === 0) {
+    return false;
+  }
+
+  const headUnitIds = new Set(context.headOfUnits.map((unit) => unit.unitId));
+  const assigneeUnitIds = await getAchievementAssigneeUnitIds(tenantId, achievement);
+
+  return assigneeUnitIds.some((unitId) => headUnitIds.has(unitId));
+}
+
+async function canActorVerifyAchievement(
+  tenantId: string,
+  actorUserId: string,
+  startingUnitId: string,
+): Promise<boolean> {
+  const context = await getMyKpiContext(tenantId, actorUserId);
+
+  return context.headOfUnits.some((unit) => unit.unitId === startingUnitId);
+}
+
+async function usesSameDepartmentShortcut(
+  tenantId: string,
+  achievement: {
+    reportedByUserId: string;
+    kpiDefinition: { startingUnitId: string };
+    targetAllocation: {
+      assignedToUnitId: string | null;
+      assignedToUserId: string | null;
+    } | null;
+  },
+): Promise<boolean> {
+  const assigneeUnitIds = await getAchievementAssigneeUnitIds(tenantId, achievement);
+
+  return assigneeUnitIds.includes(achievement.kpiDefinition.startingUnitId);
 }
 
 function mapAchievementView(
@@ -155,10 +287,18 @@ export async function recordAchievement(
     return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid input." };
   }
   const data = parsed.data;
+  const reportingDate = data.reportingDate ?? new Date();
 
   // Verify period
   const period = await prisma.assessmentPeriod.findFirst({
     where: { id: data.periodId, tenantId },
+    select: {
+      id: true,
+      state: true,
+      startDate: true,
+      endDate: true,
+      reviewFrequency: true,
+    },
   });
   if (!period) {
     return { status: "error", message: "Period not found." };
@@ -173,50 +313,125 @@ export async function recordAchievement(
   // Verify KPI
   const kpi = await prisma.kpiDefinition.findFirst({
     where: { id: data.kpiDefinitionId, kraDefinition: { tenantId } },
+    include: {
+      kraDefinition: {
+        select: { state: true },
+      },
+    },
   });
   if (!kpi) {
     return { status: "error", message: "KPI not found." };
   }
+  if (kpi.state !== "ACTIVE") {
+    return { status: "error", message: "Cannot record achievements for a KPI that is not ACTIVE." };
+  }
+  if (kpi.kraDefinition.state !== "ACTIVE") {
+    return { status: "error", message: "Cannot record achievements while the parent KRA is not ACTIVE." };
+  }
 
   // Verify target allocation if provided
-  let allocation: Awaited<ReturnType<typeof prisma.targetAllocation.findFirst>> = null;
+  let allocation:
+    | (Awaited<ReturnType<typeof prisma.targetAllocation.findFirst>> & {
+        _count: { childAllocations: number };
+      })
+    | null = null;
   if (data.targetAllocationId) {
     allocation = await prisma.targetAllocation.findFirst({
       where: { id: data.targetAllocationId, tenantId },
+      include: {
+        _count: { select: { childAllocations: true } },
+      },
     });
     if (!allocation) {
       return { status: "error", message: "Target allocation not found." };
     }
-  }
-
-  // Duplicate prevention: block if a non-VERIFIED achievement already exists for this allocation
-  if (data.targetAllocationId) {
-    const existing = await prisma.achievement.findFirst({
-      where: {
-        targetAllocationId: data.targetAllocationId,
-        reportedByUserId: actorUserId,
-        state: { in: ["DRAFT", "SUBMITTED", "RECOMMENDED"] },
-      },
-    });
-    if (existing) {
+    if (
+      allocation.periodId !== data.periodId ||
+      allocation.kpiDefinitionId !== data.kpiDefinitionId
+    ) {
       return {
         status: "error",
-        message: "Achievement already exists for this allocation. Edit the existing one.",
+        message: "Target allocation does not match the selected period or KPI.",
       };
+    }
+  }
+
+  if (!allocation && !isAdminOrOwner(actorRole)) {
+    return {
+      status: "error",
+      message: "Assignee achievements must be recorded against a target allocation.",
+    };
+  }
+
+  if (allocation && !hasConfiguredTarget(allocation)) {
+    return {
+      status: "error",
+      message: "Target not set yet. Achievement recording is disabled.",
+    };
+  }
+
+  if (allocation && !isAdminOrOwner(actorRole)) {
+    const context = await getMyKpiContext(tenantId, actorUserId);
+    const allowed = canRecord(
+      {
+        assignedToUnitId: allocation.assignedToUnitId,
+        assignedToUserId: allocation.assignedToUserId,
+        allocationType: kpi.allocationType,
+        state: allocation.state,
+        childCount: allocation._count.childAllocations,
+        parentAllocationId: allocation.parentAllocationId,
+      },
+      context,
+      period.state,
+    );
+    if (!allowed) {
+      return {
+        status: "error",
+        message: "You are not allowed to record an achievement for this allocation.",
+      };
+    }
+  }
+
+  // Duplicate prevention: only one achievement per allocation per review cycle
+  if (data.targetAllocationId) {
+    const newCycleNumber = findCycleNumberForDate(reportingDate, period);
+    const existingAchievements = await prisma.achievement.findMany({
+      where: {
+        targetAllocationId: data.targetAllocationId,
+        periodId: data.periodId,
+      },
+      select: {
+        id: true,
+        reportingDate: true,
+      },
+    });
+
+    for (const existingAchievement of existingAchievements) {
+      const existingCycleNumber = findCycleNumberForDate(
+        existingAchievement.reportingDate,
+        period,
+      );
+      if (existingCycleNumber === newCycleNumber) {
+        return {
+          status: "error",
+          message:
+            "Achievement already exists for this allocation and review cycle. Edit the existing one.",
+        };
+      }
     }
   }
 
   // Validate achievementFormData against KPI's form config if present
   const formConfig = kpi.achievementFormConfig as AchievementFormConfig | null;
-  if (formConfig && data.achievementFormData) {
-    const validator = buildFormDataValidator(formConfig.fields);
-    const formResult = validator.safeParse(data.achievementFormData);
-    if (!formResult.success) {
-      return {
-        status: "error",
-        message: formResult.error.issues[0]?.message ?? "Invalid form data.",
-      };
-    }
+  const formValidationError = validateAchievementFormData(
+    formConfig,
+    data.achievementFormData,
+  );
+  if (formValidationError) {
+    return {
+      status: "error",
+      message: formValidationError,
+    };
   }
 
   // Compute score if we have target data
@@ -245,6 +460,7 @@ export async function recordAchievement(
     );
   }
 
+  let createdAchievementId: string | undefined;
   await prisma.$transaction(async (tx) => {
     const achievement = await tx.achievement.create({
       data: {
@@ -263,9 +479,10 @@ export async function recordAchievement(
         evidenceLinks: data.evidenceLinks,
         achievementFormData: data.achievementFormData as object | undefined,
         computedScore: computedScoreValue,
-        reportingDate: data.reportingDate ?? new Date(),
+        reportingDate,
       },
     });
+    createdAchievementId = achievement.id;
 
     await tx.auditLog.create({
       data: {
@@ -284,7 +501,11 @@ export async function recordAchievement(
     });
   });
 
-  return { status: "success", message: "Achievement recorded." };
+  return {
+    status: "success",
+    message: "Achievement recorded.",
+    id: createdAchievementId,
+  };
 }
 
 // ── Update Achievement ───────────────────────────────────────────────────────
@@ -322,14 +543,29 @@ export async function updateAchievement(
     return { status: "error", message: "Only the reporter or admin can edit this achievement." };
   }
 
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: achievement.kpiDefinitionId, kraDefinition: { tenantId } },
+  });
+  const mergedFormData =
+    data.achievementFormData !== undefined
+      ? data.achievementFormData
+      : ((achievement.achievementFormData as Record<string, unknown> | null) ?? undefined);
+  const formValidationError = validateAchievementFormData(
+    (kpi?.achievementFormConfig as AchievementFormConfig | null) ?? null,
+    mergedFormData,
+  );
+  if (formValidationError) {
+    return {
+      status: "error",
+      message: formValidationError,
+    };
+  }
+
   // Recompute score if actuals changed and we have a target allocation
   let newScore = achievement.computedScore;
   if (achievement.targetAllocationId) {
     const allocation = await prisma.targetAllocation.findFirst({
-      where: { id: achievement.targetAllocationId },
-    });
-    const kpi = await prisma.kpiDefinition.findFirst({
-      where: { id: achievement.kpiDefinitionId },
+      where: { id: achievement.targetAllocationId, tenantId },
     });
     if (allocation && kpi) {
       newScore = computeScore(
@@ -475,20 +711,56 @@ export async function verifyAchievement(
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
     include: {
-      kpiDefinition: { select: { measurementType: true, scoringMethod: true, scoringDirection: true, scoringConfig: true, measurementConfig: true } },
-      targetAllocation: true,
+      kpiDefinition: {
+        select: {
+          measurementType: true,
+          scoringMethod: true,
+          scoringDirection: true,
+          scoringConfig: true,
+          measurementConfig: true,
+          startingUnitId: true,
+        },
+      },
+      targetAllocation: {
+        include: {
+          parentAllocation: {
+            select: { assignedToUnitId: true },
+          },
+        },
+      },
     },
   });
   if (!achievement) {
     return { status: "error", message: "Achievement not found." };
   }
 
-  // Admins can verify from SUBMITTED or RECOMMENDED
   if (achievement.state !== "SUBMITTED" && achievement.state !== "RECOMMENDED") {
     return {
       status: "error",
       message: `Cannot verify — achievement is in "${achievement.state}" state.`,
     };
+  }
+
+  const isShortcut = await usesSameDepartmentShortcut(tenantId, achievement);
+
+  if (!isAdminOrOwner(actorRole)) {
+    const canVerify = await canActorVerifyAchievement(
+      tenantId,
+      actorUserId,
+      achievement.kpiDefinition.startingUnitId,
+    );
+    if (!canVerify) {
+      return {
+        status: "error",
+        message: "Only the source department head can verify this achievement.",
+      };
+    }
+    if (achievement.state === "SUBMITTED" && !isShortcut) {
+      return {
+        status: "error",
+        message: "This achievement must be recommended before final verification.",
+      };
+    }
   }
 
   const actor = await prisma.user.findUnique({
@@ -580,9 +852,20 @@ export async function recommendAchievement(
   approved: boolean,
   note: string | null,
   actorUserId: string,
+  actorRole: Role,
 ): Promise<KraKpiActionResult> {
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
+    include: {
+      kpiDefinition: { select: { startingUnitId: true } },
+      targetAllocation: {
+        include: {
+          parentAllocation: {
+            select: { assignedToUnitId: true },
+          },
+        },
+      },
+    },
   });
   if (!achievement) {
     return { status: "error", message: "Achievement not found." };
@@ -593,6 +876,27 @@ export async function recommendAchievement(
       status: "error",
       message: `Cannot recommend — achievement is in "${achievement.state}" state.`,
     };
+  }
+
+  if (!isAdminOrOwner(actorRole)) {
+    const canRecommend = await canActorRecommendAchievement(
+      tenantId,
+      actorUserId,
+      achievement,
+    );
+    if (!canRecommend) {
+      return {
+        status: "error",
+        message: "Only the assignee's department head can recommend this achievement.",
+      };
+    }
+    if (await usesSameDepartmentShortcut(tenantId, achievement)) {
+      return {
+        status: "error",
+        message:
+          "This achievement should be verified directly because the assignee and source unit are the same.",
+      };
+    }
   }
 
   const actor = await prisma.user.findUnique({
@@ -629,7 +933,7 @@ export async function recommendAchievement(
         data: {
           tenantId,
           actorUserId,
-          actorRole: "TENANT_USER",
+          actorRole,
           targetType: "Achievement",
           targetId: achievementId,
           action: "RECOMMEND",
@@ -653,9 +957,9 @@ export async function recommendAchievement(
   };
 
   await prisma.$transaction(async (tx) => {
-    await tx.achievement.update({
-      where: { id: achievementId },
-      data: {
+      await tx.achievement.update({
+        where: { id: achievementId },
+        data: {
         state: "DRAFT",
         rejectionReason: note ?? "Sent back by department head",
         verificationLog: [...existingLog, logEntry] as unknown as object[],
@@ -663,12 +967,12 @@ export async function recommendAchievement(
     });
 
     await tx.auditLog.create({
-      data: {
-        tenantId,
-        actorUserId,
-        actorRole: "TENANT_USER",
-        targetType: "Achievement",
-        targetId: achievementId,
+        data: {
+          tenantId,
+          actorUserId,
+          actorRole,
+          targetType: "Achievement",
+          targetId: achievementId,
         action: "SEND_BACK",
         previousState: { state: "SUBMITTED" },
         newState: { state: "DRAFT", note },
@@ -782,10 +1086,13 @@ export async function getPeriodSummary(
   const [kraCount, kpiCount, allocationCount, achievementCounts, verifiedAchievements] =
     await Promise.all([
       prisma.kraDefinition.count({
-        where: { periodId, tenantId, state: { not: "ARCHIVED" } },
+        where: { periodId, tenantId, state: "ACTIVE" },
       }),
       prisma.kpiDefinition.count({
-        where: { kraDefinition: { periodId, tenantId, state: { not: "ARCHIVED" } } },
+        where: {
+          state: "ACTIVE",
+          kraDefinition: { periodId, tenantId, state: { not: "ARCHIVED" } },
+        },
       }),
       prisma.targetAllocation.count({
         where: { periodId, tenantId },

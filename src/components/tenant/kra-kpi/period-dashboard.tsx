@@ -112,8 +112,8 @@ export function PeriodDashboard({ periodId }: { periodId: string }) {
 
       {/* Metrics grid */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <MetricTile label="KRAs" value={summary.totalKras} icon={Target} accent="bg-blue-50 text-blue-600" />
-        <MetricTile label="KPIs" value={summary.totalKpis} icon={BarChart3} accent="bg-purple-50 text-purple-600" />
+        <MetricTile label="Active KRAs" value={summary.totalKras} icon={Target} accent="bg-blue-50 text-blue-600" />
+        <MetricTile label="Active KPIs" value={summary.totalKpis} icon={BarChart3} accent="bg-purple-50 text-purple-600" />
         <MetricTile label="Allocations" value={summary.totalAllocations} icon={Users} accent="bg-slate-100 text-slate-600" />
         <MetricTile label="Total Achievements" value={summary.totalAchievements} icon={ClipboardCheck} accent="bg-brand-soft text-brand" />
         <MetricTile label="Verified" value={summary.verifiedAchievements} icon={Award} accent="bg-emerald-50 text-emerald-600" />

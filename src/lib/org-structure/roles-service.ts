@@ -119,6 +119,14 @@ async function getActiveVersionId(tenantId: string): Promise<string | null> {
   return v?.id ?? null;
 }
 
+async function getRuntimeVersionId(tenantId: string): Promise<string | null> {
+  const publishedVersionId = await getPublishedVersionId(tenantId);
+  if (publishedVersionId) {
+    return publishedVersionId;
+  }
+  return getActiveVersionId(tenantId);
+}
+
 // ── Role Definition CRUD ──────────────────────────────────────────────────────
 
 export async function listRoleDefinitions(
@@ -651,7 +659,7 @@ export async function getUnitMembers(
   tenantId: string,
   unitId: string,
 ): Promise<RoleAssignmentView[]> {
-  const versionId = await getActiveVersionId(tenantId);
+  const versionId = await getRuntimeVersionId(tenantId);
   if (!versionId) return [];
 
   const assignments = await prisma.orgRoleAssignment.findMany({
@@ -685,7 +693,7 @@ export async function getUserAssignments(
   tenantId: string,
   userId: string,
 ): Promise<RoleAssignmentView[]> {
-  const versionId = await getActiveVersionId(tenantId);
+  const versionId = await getRuntimeVersionId(tenantId);
   if (!versionId) return [];
 
   const assignments = await prisma.orgRoleAssignment.findMany({

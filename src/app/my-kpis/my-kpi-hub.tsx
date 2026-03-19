@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import {
   ClipboardList,
   CheckCircle2,
@@ -18,6 +18,7 @@ import { MyReviewItem } from "@/components/my-kpis/my-review-item";
 import { MyDashboard } from "@/components/my-kpis/my-dashboard";
 import { MyAchievementForm } from "@/components/my-kpis/my-achievement-form";
 import { MyCascadeForm } from "@/components/my-kpis/my-cascade-form";
+import { hasReviewRole } from "@/lib/kra-kpi/assignee-access";
 
 type Tab = "targets" | "review" | "dashboard";
 
@@ -36,6 +37,8 @@ type StatusFilter =
   | "notApproved"
   | "needsCascade";
 
+type DeadlineFilter = "all" | "overdue" | "dueSoon" | "upcoming" | "dueThisCycle";
+
 export function MyKpiHub() {
   const [activeTab, setActiveTab] = useState<Tab>("targets");
   const [periods, setPeriods] = useState<{ id: string; name: string; state: string }[]>([]);
@@ -49,6 +52,8 @@ export function MyKpiHub() {
   const [sourceDeptFilter, setSourceDeptFilter] = useState<string>("");
   const [categoryFilter, setCategoryFilter] = useState<string>("");
   const [sortBy, setSortBy] = useState<string>("default");
+  const [deadlineFilter, setDeadlineFilter] = useState<DeadlineFilter>("all");
+  const [todayTs] = useState(() => Date.now());
 
   // Achievement form state
   const [editingAllocation, setEditingAllocation] = useState<MyAllocationView | null>(null);
@@ -80,14 +85,13 @@ export function MyKpiHub() {
       .catch(() => {});
   }, []);
 
-  const refreshData = useCallback(async () => {
-    if (!selectedPeriodId) return;
+  async function refreshData(periodId: string) {
     setLoading(true);
 
     const [allocRes, reviewRes, dashRes] = await Promise.all([
-      fetch(`/api/tenant/kra-kpi/my/allocations?periodId=${selectedPeriodId}`),
-      fetch(`/api/tenant/kra-kpi/my/review-queue?periodId=${selectedPeriodId}`),
-      fetch(`/api/tenant/kra-kpi/my/dashboard?periodId=${selectedPeriodId}`),
+      fetch(`/api/tenant/kra-kpi/my/allocations?periodId=${periodId}`),
+      fetch(`/api/tenant/kra-kpi/my/review-queue?periodId=${periodId}`),
+      fetch(`/api/tenant/kra-kpi/my/dashboard?periodId=${periodId}`),
     ]);
 
     if (allocRes.ok) setAllocations(await allocRes.json());
@@ -95,11 +99,24 @@ export function MyKpiHub() {
     if (dashRes.ok) setDashboardSummary(await dashRes.json());
 
     setLoading(false);
-  }, [selectedPeriodId]);
+  }
 
   useEffect(() => {
-    refreshData();
-  }, [refreshData]);
+    if (!selectedPeriodId) return;
+
+    const timer = setTimeout(() => {
+      void refreshData(selectedPeriodId);
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [selectedPeriodId]);
+
+  const canReview = ctx ? hasReviewRole(ctx) : false;
+  const visibleTabs = TABS.filter((tab) => canReview || tab.key !== "review");
+  const effectiveActiveTab = canReview || activeTab !== "review" ? activeTab : "targets";
+  const cycleInfo = allocations.length > 0
+    ? getCurrentCycleInfo(allocations[0], todayTs)
+    : null;
 
   // Derive filter options
   const sourceDepts = [...new Set(allocations.map((a) => a.startingUnitName))].sort();
@@ -109,6 +126,9 @@ export function MyKpiHub() {
   const filteredAllocations = allocations.filter((a) => {
     if (sourceDeptFilter && a.startingUnitName !== sourceDeptFilter) return false;
     if (categoryFilter && a.categoryLabel !== categoryFilter) return false;
+    if (deadlineFilter !== "all" && !matchesDeadlineFilter(a, deadlineFilter, todayTs, cycleInfo)) {
+      return false;
+    }
 
     if (statusFilter === "all") return true;
     const ach = a.achievement;
@@ -130,7 +150,9 @@ export function MyKpiHub() {
   const sortedAllocations = [...filteredAllocations].sort((a, b) => {
     if (sortBy === "weightageDesc") return b.kpiWeightage - a.kpiWeightage;
     if (sortBy === "weightageAsc") return a.kpiWeightage - b.kpiWeightage;
-    return 0; // default: keep grouped by KRA
+    if (a.kraTitle !== b.kraTitle) return a.kraTitle.localeCompare(b.kraTitle);
+    if (a.kpiWeightage !== b.kpiWeightage) return b.kpiWeightage - a.kpiWeightage;
+    return a.kpiTitle.localeCompare(b.kpiTitle);
   });
 
   // Group by section
@@ -169,7 +191,12 @@ export function MyKpiHub() {
     return (
       <MyAchievementForm
         allocation={editingAllocation}
-        onDone={() => { setEditingAllocation(null); refreshData(); }}
+        onDone={() => {
+          setEditingAllocation(null);
+          if (selectedPeriodId) {
+            void refreshData(selectedPeriodId);
+          }
+        }}
         onCancel={() => setEditingAllocation(null)}
       />
     );
@@ -179,8 +206,12 @@ export function MyKpiHub() {
     return (
       <MyCascadeForm
         allocation={cascadingAllocation}
-        context={ctx}
-        onDone={() => { setCascadingAllocation(null); refreshData(); }}
+        onDone={() => {
+          setCascadingAllocation(null);
+          if (selectedPeriodId) {
+            void refreshData(selectedPeriodId);
+          }
+        }}
         onCancel={() => setCascadingAllocation(null)}
       />
     );
@@ -207,7 +238,7 @@ export function MyKpiHub() {
       {/* Tabs */}
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex gap-6">
-          {TABS.map((tab) => {
+          {visibleTabs.map((tab) => {
             const Icon = tab.icon;
             const badge = tab.key === "review" ? reviewQueue.length : undefined;
             return (
@@ -238,8 +269,20 @@ export function MyKpiHub() {
         <div className="py-12 text-center text-gray-500">Loading...</div>
       )}
 
-      {!loading && activeTab === "targets" && (
+      {!loading && effectiveActiveTab === "targets" && (
         <div className="space-y-4">
+          {cycleInfo && (
+            <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+              Current cycle: <span className="font-semibold">{cycleInfo.label}</span> (ends{" "}
+              {cycleInfo.endLabel})
+              {cycleInfo.daysRemaining != null && (
+                <span className="ml-2 text-blue-700">
+                  Next deadline: {cycleInfo.daysRemaining < 0 ? "Overdue" : `${cycleInfo.daysRemaining} days`}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Filters */}
           <div className="flex flex-wrap gap-2 items-center">
             {STATUS_FILTERS.map((f) => (
@@ -296,6 +339,17 @@ export function MyKpiHub() {
               <option value="weightageDesc">Highest Weightage</option>
               <option value="weightageAsc">Lowest Weightage</option>
             </select>
+            <select
+              className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+              value={deadlineFilter}
+              onChange={(e) => setDeadlineFilter(e.target.value as DeadlineFilter)}
+            >
+              <option value="all">All Deadlines</option>
+              <option value="overdue">Overdue</option>
+              <option value="dueSoon">Due Soon</option>
+              <option value="upcoming">Upcoming</option>
+              <option value="dueThisCycle">Due This Cycle</option>
+            </select>
           </div>
 
           {/* Allocations */}
@@ -314,16 +368,14 @@ export function MyKpiHub() {
               <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                 Department KPIs
               </h3>
-              {deptAllocations.map((a) => (
-                <MyAllocationCard
-                  key={a.id}
-                  allocation={a}
-                  context={ctx}
-                  onRecordAchievement={() => setEditingAllocation(a)}
-                  onCascade={() => setCascadingAllocation(a)}
-                  onRefresh={refreshData}
-                />
-              ))}
+              {renderAllocationsByKra(
+                deptAllocations,
+                ctx,
+                selectedPeriodId,
+                setEditingAllocation,
+                setCascadingAllocation,
+                refreshData,
+              )}
             </div>
           )}
 
@@ -332,22 +384,20 @@ export function MyKpiHub() {
               <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                 My Individual KPIs
               </h3>
-              {indivAllocations.map((a) => (
-                <MyAllocationCard
-                  key={a.id}
-                  allocation={a}
-                  context={ctx}
-                  onRecordAchievement={() => setEditingAllocation(a)}
-                  onCascade={() => setCascadingAllocation(a)}
-                  onRefresh={refreshData}
-                />
-              ))}
+              {renderAllocationsByKra(
+                indivAllocations,
+                ctx,
+                selectedPeriodId,
+                setEditingAllocation,
+                setCascadingAllocation,
+                refreshData,
+              )}
             </div>
           )}
         </div>
       )}
 
-      {!loading && activeTab === "review" && (
+      {!loading && effectiveActiveTab === "review" && (
         <div className="space-y-4">
           {reviewQueue.length === 0 ? (
             <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 py-12 text-center">
@@ -358,16 +408,171 @@ export function MyKpiHub() {
               <MyReviewItem
                 key={item.achievementId}
                 item={item}
-                onActionComplete={refreshData}
+                onActionComplete={() => {
+                  if (selectedPeriodId) {
+                    void refreshData(selectedPeriodId);
+                  }
+                }}
               />
             ))
           )}
         </div>
       )}
 
-      {!loading && activeTab === "dashboard" && (
+      {!loading && effectiveActiveTab === "dashboard" && (
         <MyDashboard summary={dashboardSummary} />
       )}
     </div>
   );
+}
+
+function renderAllocationsByKra(
+  allocations: MyAllocationView[],
+  context: MyKpiContext | null,
+  selectedPeriodId: string | null,
+  setEditingAllocation: (allocation: MyAllocationView) => void,
+  setCascadingAllocation: (allocation: MyAllocationView) => void,
+  refreshData: (periodId: string) => Promise<void>,
+) {
+  const groups = new Map<string, MyAllocationView[]>();
+
+  for (const allocation of allocations) {
+    const key = allocation.kraTitle;
+    const existing = groups.get(key) ?? [];
+    existing.push(allocation);
+    groups.set(key, existing);
+  }
+
+  return [...groups.entries()].map(([kraTitle, items]) => (
+    <div key={kraTitle} className="space-y-3">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{kraTitle}</h4>
+      {items.map((allocation) => (
+        <MyAllocationCard
+          key={allocation.id}
+          allocation={allocation}
+          context={context}
+          onRecordAchievement={() => setEditingAllocation(allocation)}
+          onCascade={() => setCascadingAllocation(allocation)}
+          onRefresh={() => {
+            if (selectedPeriodId) {
+              void refreshData(selectedPeriodId);
+            }
+          }}
+        />
+      ))}
+    </div>
+  ));
+}
+
+function getDaysUntilDeadline(deadline: Date | null, todayTs: number) {
+  if (!deadline) return null;
+
+  return Math.ceil((new Date(deadline).getTime() - todayTs) / (1000 * 60 * 60 * 24));
+}
+
+function getCurrentCycleInfo(allocation: MyAllocationView, todayTs: number) {
+  if (allocation.reviewFrequency === "ANNUAL") {
+    return null;
+  }
+
+  const start = new Date(allocation.periodStartDate);
+  const end = new Date(allocation.periodEndDate);
+  const today = new Date(todayTs);
+  let cycleStart = new Date(start);
+  let cycleIndex = 1;
+
+  while (cycleStart < end) {
+    const cycleEnd = advanceCycleEnd(cycleStart, allocation.reviewFrequency, end);
+    const isCurrent =
+      today >= cycleStart && (today < cycleEnd || today.getTime() === cycleEnd.getTime());
+
+    if (isCurrent) {
+      return {
+        label: getCycleLabel(allocation.reviewFrequency, cycleIndex, cycleStart),
+        endLabel: cycleEnd.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        }),
+        daysRemaining: getDaysUntilDeadline(allocation.achievementDeadline, todayTs),
+      };
+    }
+
+    cycleStart = cycleEnd;
+    cycleIndex += 1;
+  }
+
+  return null;
+}
+
+function matchesDeadlineFilter(
+  allocation: MyAllocationView,
+  filter: DeadlineFilter,
+  todayTs: number,
+  cycleInfo: ReturnType<typeof getCurrentCycleInfo>,
+) {
+  if (allocation.achievement?.state === "VERIFIED") {
+    return false;
+  }
+
+  const days = getDaysUntilDeadline(allocation.achievementDeadline, todayTs);
+  if (days == null) {
+    return filter === "all";
+  }
+
+  if (filter === "overdue") return days < 0;
+  if (filter === "dueSoon") return days >= 0 && days <= 14;
+  if (filter === "upcoming") return days > 14;
+  if (filter === "dueThisCycle") return cycleInfo != null;
+
+  return true;
+}
+
+function advanceCycleEnd(start: Date, frequency: MyAllocationView["reviewFrequency"], maxEnd: Date) {
+  const next = new Date(start);
+
+  switch (frequency) {
+    case "DAILY":
+      next.setDate(next.getDate() + 1);
+      break;
+    case "WEEKLY":
+      next.setDate(next.getDate() + 7);
+      break;
+    case "MONTHLY":
+      next.setMonth(next.getMonth() + 1);
+      break;
+    case "QUARTERLY":
+      next.setMonth(next.getMonth() + 3);
+      break;
+    case "HALF_YEARLY":
+      next.setMonth(next.getMonth() + 6);
+      break;
+    case "ANNUAL":
+    default:
+      next.setFullYear(next.getFullYear() + 1);
+      break;
+  }
+
+  return next > maxEnd ? new Date(maxEnd) : next;
+}
+
+function getCycleLabel(
+  frequency: MyAllocationView["reviewFrequency"],
+  index: number,
+  start: Date,
+) {
+  switch (frequency) {
+    case "MONTHLY":
+      return start.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+    case "QUARTERLY":
+      return `Q${index}`;
+    case "HALF_YEARLY":
+      return `H${index}`;
+    case "WEEKLY":
+      return `Week ${index}`;
+    case "DAILY":
+      return start.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    case "ANNUAL":
+    default:
+      return `Cycle ${index}`;
+  }
 }

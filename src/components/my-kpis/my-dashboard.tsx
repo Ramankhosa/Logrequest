@@ -18,6 +18,8 @@ export function MyDashboard({ summary }: Props) {
 
   const s = summary;
   const sc = s.statusCounts;
+  const withAchievements =
+    s.totalAllocations - (sc.notStarted ?? 0) - (sc.needsCascade ?? 0);
 
   return (
     <div className="space-y-6">
@@ -106,7 +108,7 @@ export function MyDashboard({ summary }: Props) {
       <div className="rounded-lg border border-gray-200 bg-white p-4">
         <h3 className="text-sm font-semibold text-gray-700 mb-2">Progress</h3>
         <div className="text-sm text-gray-600">
-          {sc.completed ?? 0} of {s.totalAllocations} KPIs completed
+          {withAchievements} of {s.totalAllocations} KPIs have achievements
           {sc.needsCascade && sc.needsCascade > 0 && (
             <span className="ml-2 text-amber-600">
               ({sc.needsCascade} pending distribution)
@@ -118,7 +120,7 @@ export function MyDashboard({ summary }: Props) {
             className="h-full rounded-full bg-green-500"
             style={{
               width: s.totalAllocations > 0
-                ? `${((sc.completed ?? 0) / s.totalAllocations) * 100}%`
+                ? `${(withAchievements / s.totalAllocations) * 100}%`
                 : "0%",
             }}
           />

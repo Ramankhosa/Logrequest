@@ -9,6 +9,7 @@ import type {
   ChildAllocationSummary,
   AchievementFormConfig,
   VerificationLogEntry,
+  MeasurementConfig,
 } from "./shared";
 
 // ── Build MyKpiContext ───────────────────────────────────────────────────────
@@ -32,6 +33,25 @@ export async function getMyKpiContext(
   return { userId, headOfUnits, memberOfUnits };
 }
 
+export async function isUserHeadOfUnit(
+  tenantId: string,
+  userId: string,
+  unitId: string,
+): Promise<boolean> {
+  const context = await getMyKpiContext(tenantId, userId);
+
+  return context.headOfUnits.some((unit) => unit.unitId === unitId);
+}
+
+async function getUserUnitIds(
+  tenantId: string,
+  userId: string,
+): Promise<string[]> {
+  const assignments = await getUserAssignments(tenantId, userId);
+
+  return [...new Set(assignments.map((assignment) => assignment.unitId))];
+}
+
 // ── Get My Allocations ───────────────────────────────────────────────────────
 
 export async function getMyAllocations(
@@ -41,7 +61,6 @@ export async function getMyAllocations(
 ): Promise<MyAllocationView[]> {
   const ctx = await getMyKpiContext(tenantId, userId);
   const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
-  const allUnitIds = ctx.memberOfUnits.map((u) => u.unitId);
 
   // Fetch allocations where:
   // 1. assigned to user directly, OR
@@ -72,12 +91,12 @@ export async function getMyAllocations(
         },
       },
       assignedToUnit: { select: { name: true } },
-      assignedToUser: { select: { firstName: true, lastName: true } },
+      assignedToUser: { select: { id: true, firstName: true, lastName: true } },
       parentAllocation: { select: { targetValue: true } },
       childAllocations: {
         include: {
-          assignedToUser: { select: { firstName: true, lastName: true } },
-          assignedToUnit: { select: { name: true } },
+          assignedToUser: { select: { id: true, firstName: true, lastName: true } },
+          assignedToUnit: { select: { id: true, name: true } },
           achievements: {
             where: { reportedByUserId: { not: undefined } },
             orderBy: { createdAt: "desc" },
@@ -99,6 +118,7 @@ export async function getMyAllocations(
         select: {
           state: true,
           name: true,
+          startDate: true,
           achievementDeadline: true,
           endDate: true,
           reviewFrequency: true,
@@ -112,7 +132,7 @@ export async function getMyAllocations(
   // Filter out: KPI DRAFT or 0 weightage
   const filtered = allocations.filter((a) => {
     const kpi = a.kpiDefinition;
-    if (kpi.state === "DRAFT") return false;
+    if (kpi.state !== "ACTIVE") return false;
     if (kpi.weightage === 0) return false;
     return true;
   });
@@ -144,6 +164,8 @@ export async function getMyAllocations(
       const childAch = c.achievements[0] ?? null;
       return {
         id: c.id,
+        assignedToUserId: c.assignedToUser?.id ?? null,
+        assignedToUnitId: c.assignedToUnit?.id ?? null,
         assignedToUserName: c.assignedToUser
           ? `${c.assignedToUser.firstName} ${c.assignedToUser.lastName}`
           : null,
@@ -215,12 +237,14 @@ export async function getMyAllocations(
       childCount: a._count.childAllocations,
       achievementCount: a._count.achievements,
       createdAt: a.createdAt,
+      updatedAt: a.updatedAt,
       // Extended fields
       kraTitle: kra.title,
       kraWeightage: kra.weightage,
       categoryLabel: kra.category?.displayLabel ?? null,
       categoryKey: kra.category?.categoryKey ?? null,
       measurementType: kpi.measurementType,
+      measurementConfig: kpi.measurementConfig as MeasurementConfig | null,
       unitLabel: kpi.unitLabel,
       kpiWeightage: kpi.weightage,
       defaultTarget: kpi.defaultTarget,
@@ -234,6 +258,7 @@ export async function getMyAllocations(
       achievementFormConfig: kpi.achievementFormConfig as AchievementFormConfig | null,
       periodState: a.period.state,
       periodName: a.period.name,
+      periodStartDate: a.period.startDate,
       achievementDeadline: a.period.achievementDeadline,
       periodEndDate: a.period.endDate,
       reviewFrequency: a.period.reviewFrequency,
@@ -298,35 +323,30 @@ export async function getMyReviewQueue(
     const alloc = ach.targetAllocation;
     if (!alloc) continue;
 
-    // Check the user is head of the unit this allocation belongs to
-    const unitId = alloc.assignedToUnitId;
-    const isHeadOfAllocUnit = unitId ? headUnitIds.includes(unitId) : false;
-
-    // Or if it's an individual allocation cascaded from a unit they head
-    let isHeadOfParentUnit = false;
-    if (!isHeadOfAllocUnit && alloc.assignedToUserId) {
-      const parentAlloc = await prisma.targetAllocation.findFirst({
-        where: {
-          childAllocations: { some: { id: { not: undefined } } },
-          assignedToUnitId: { in: headUnitIds },
-          achievements: { some: { id: ach.id } },
-        },
-      });
-      if (!parentAlloc) {
-        // Try finding via the target allocation's parent
-        const ta = await prisma.targetAllocation.findFirst({
-          where: { id: ach.targetAllocationId ?? "" },
-          select: { parentAllocation: { select: { assignedToUnitId: true } } },
-        });
-        isHeadOfParentUnit = ta?.parentAllocation?.assignedToUnitId
-          ? headUnitIds.includes(ta.parentAllocation.assignedToUnitId)
-          : false;
-      } else {
-        isHeadOfParentUnit = true;
+    const assigneeUnitIds = new Set<string>();
+    if (alloc.assignedToUnitId) {
+      assigneeUnitIds.add(alloc.assignedToUnitId);
+    }
+    if (alloc.assignedToUserId) {
+      for (const unitId of await getUserUnitIds(tenantId, alloc.assignedToUserId)) {
+        assigneeUnitIds.add(unitId);
+      }
+    }
+    if (assigneeUnitIds.size === 0) {
+      for (const unitId of await getUserUnitIds(tenantId, ach.reportedByUserId)) {
+        assigneeUnitIds.add(unitId);
       }
     }
 
-    if (!isHeadOfAllocUnit && !isHeadOfParentUnit) continue;
+    const usesShortcut = assigneeUnitIds.has(ach.kpiDefinition.startingUnitId);
+    const canRecommend = [...assigneeUnitIds].some((unitId) => headUnitIds.includes(unitId));
+    const canVerify = headUnitIds.includes(ach.kpiDefinition.startingUnitId);
+
+    if (usesShortcut) {
+      if (!canVerify) continue;
+    } else if (!canRecommend) {
+      continue;
+    }
 
     const reporter = await prisma.user.findUnique({
       where: { id: ach.reportedByUserId },
@@ -355,7 +375,7 @@ export async function getMyReviewQueue(
       evidenceLinks: ach.evidenceLinks,
       verificationLog: (ach.verificationLog as VerificationLogEntry[]) ?? [],
       reportingDate: ach.reportingDate,
-      reviewLevel: "RECOMMEND",
+      reviewLevel: usesShortcut ? "VERIFY" : "RECOMMEND",
       startingUnitId: ach.kpiDefinition.startingUnitId,
     });
   }
@@ -610,30 +630,58 @@ export async function getMyPendingCount(
   if (ctx.headOfUnits.length === 0) return 0;
 
   const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
+  let submittedCount = 0;
 
-  const [submittedCount, recommendedCount] = await Promise.all([
-    prisma.achievement.count({
-      where: {
-        tenantId,
-        state: "SUBMITTED",
-        OR: [
-          { targetAllocation: { assignedToUnitId: { in: headUnitIds } } },
-          {
-            targetAllocation: {
-              parentAllocation: { assignedToUnitId: { in: headUnitIds } },
-            },
-          },
-        ],
+  const submittedAchievements = await prisma.achievement.findMany({
+    where: {
+      tenantId,
+      state: "SUBMITTED",
+    },
+    include: {
+      kpiDefinition: {
+        select: { startingUnitId: true },
       },
-    }),
-    prisma.achievement.count({
-      where: {
-        tenantId,
-        state: "RECOMMENDED",
-        kpiDefinition: { startingUnitId: { in: headUnitIds } },
+      targetAllocation: {
+        select: { assignedToUnitId: true, assignedToUserId: true },
       },
-    }),
-  ]);
+    },
+  });
+
+  for (const ach of submittedAchievements) {
+    const alloc = ach.targetAllocation;
+    if (!alloc) continue;
+
+    const assigneeUnitIds = new Set<string>();
+    if (alloc.assignedToUnitId) {
+      assigneeUnitIds.add(alloc.assignedToUnitId);
+    }
+    if (alloc.assignedToUserId) {
+      for (const unitId of await getUserUnitIds(tenantId, alloc.assignedToUserId)) {
+        assigneeUnitIds.add(unitId);
+      }
+    }
+    if (assigneeUnitIds.size === 0) {
+      for (const unitId of await getUserUnitIds(tenantId, ach.reportedByUserId)) {
+        assigneeUnitIds.add(unitId);
+      }
+    }
+
+    const usesShortcut = assigneeUnitIds.has(ach.kpiDefinition.startingUnitId);
+    const canRecommend = [...assigneeUnitIds].some((unitId) => headUnitIds.includes(unitId));
+    const canVerify = headUnitIds.includes(ach.kpiDefinition.startingUnitId);
+
+    if ((usesShortcut && canVerify) || (!usesShortcut && canRecommend)) {
+      submittedCount++;
+    }
+  }
+
+  const recommendedCount = await prisma.achievement.count({
+    where: {
+      tenantId,
+      state: "RECOMMENDED",
+      kpiDefinition: { startingUnitId: { in: headUnitIds } },
+    },
+  });
 
   return submittedCount + recommendedCount;
 }

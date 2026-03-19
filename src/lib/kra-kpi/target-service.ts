@@ -1,7 +1,13 @@
 import type { Role, KpiMeasurementType } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import type { KraKpiActionResult, TargetAllocationView } from "./shared";
+import type {
+  KraKpiActionResult,
+  TargetAllocationView,
+  MeasurementConfig,
+} from "./shared";
+import { getMeasurementCapValue } from "./shared";
+import { getUserAssignments } from "@/lib/org-structure/roles-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -84,6 +90,112 @@ function isAdminOrOwner(role: Role): boolean {
 /** Types where child target values must sum to parent */
 const SUMMABLE_TYPES: KpiMeasurementType[] = ["NUMERIC", "CURRENCY"];
 
+function hasConfiguredTarget(allocation: {
+  targetValue?: number | null;
+  targetDate?: Date | null;
+  targetMilestone?: string | null;
+  targetGrade?: string | null;
+  targetBoolean?: boolean | null;
+  targetRating?: number | null;
+}) {
+  return (
+    allocation.targetValue != null ||
+    allocation.targetDate != null ||
+    allocation.targetMilestone != null ||
+    allocation.targetGrade != null ||
+    allocation.targetBoolean != null ||
+    allocation.targetRating != null
+  );
+}
+
+function validateAllocationValueAgainstCap(
+  measurementType: KpiMeasurementType,
+  measurementConfig: MeasurementConfig | null | undefined,
+  allocation: {
+    targetValue?: number | null;
+    targetRating?: number | null;
+  },
+): string | null {
+  const capValue = getMeasurementCapValue(measurementType, measurementConfig);
+  if (capValue == null) {
+    return null;
+  }
+
+  if (
+    (measurementType === "NUMERIC" ||
+      measurementType === "PERCENTAGE" ||
+      measurementType === "CURRENCY") &&
+    allocation.targetValue != null &&
+    allocation.targetValue > capValue
+  ) {
+    return `Target value cannot exceed the KPI cap (${capValue}).`;
+  }
+
+  if (
+    measurementType === "RATING" &&
+    allocation.targetRating != null &&
+    allocation.targetRating > capValue
+  ) {
+    return `Target rating cannot exceed the KPI cap (${capValue}).`;
+  }
+
+  return null;
+}
+
+async function validateTopLevelAllocationCap(input: {
+  tenantId: string;
+  periodId: string;
+  kpiDefinitionId: string;
+  measurementType: KpiMeasurementType;
+  measurementConfig: MeasurementConfig | null | undefined;
+  allocations: Array<{
+    parentAllocationId?: string | null;
+    targetValue?: number | null;
+  }>;
+  excludeAllocationId?: string;
+}): Promise<string | null> {
+  const capValue = getMeasurementCapValue(
+    input.measurementType,
+    input.measurementConfig,
+  );
+  if (
+    capValue == null ||
+    (input.measurementType !== "NUMERIC" &&
+      input.measurementType !== "PERCENTAGE" &&
+      input.measurementType !== "CURRENCY")
+  ) {
+    return null;
+  }
+
+  const newTopLevelTotal = input.allocations.reduce((sum, allocation) => {
+    if (allocation.parentAllocationId) {
+      return sum;
+    }
+    return sum + (allocation.targetValue ?? 0);
+  }, 0);
+  if (newTopLevelTotal === 0) {
+    return null;
+  }
+
+  const existing = await prisma.targetAllocation.aggregate({
+    where: {
+      tenantId: input.tenantId,
+      periodId: input.periodId,
+      kpiDefinitionId: input.kpiDefinitionId,
+      parentAllocationId: null,
+      ...(input.excludeAllocationId && { id: { not: input.excludeAllocationId } }),
+    },
+    _sum: { targetValue: true },
+  });
+
+  const combinedTotal = (existing._sum.targetValue ?? 0) + newTopLevelTotal;
+  if (combinedTotal > capValue + 0.01) {
+    return `Total top-level allocations (${combinedTotal}) cannot exceed the KPI cap (${capValue}).`;
+  }
+
+  return null;
+}
+
 // ── List Allocations ─────────────────────────────────────────────────────────
 
 export async function listAllocations(
@@ -142,6 +254,7 @@ export async function listAllocations(
     childCount: a._count.childAllocations,
     achievementCount: a._count.achievements,
     createdAt: a.createdAt,
+    updatedAt: a.updatedAt,
   }));
 }
 
@@ -221,6 +334,16 @@ export async function updateAllocation(
 
   const allocation = await prisma.targetAllocation.findFirst({
     where: { id: allocationId, tenantId },
+    include: {
+      kpiDefinition: {
+        select: {
+          measurementType: true,
+          measurementConfig: true,
+          state: true,
+          kraDefinition: { select: { state: true } },
+        },
+      },
+    },
   });
   if (!allocation) {
     return { status: "error", message: "Allocation not found." };
@@ -228,6 +351,47 @@ export async function updateAllocation(
 
   if (allocation.state === "LOCKED") {
     return { status: "error", message: "Cannot update a locked allocation." };
+  }
+
+  if (allocation.kpiDefinition.state !== "ACTIVE") {
+    return { status: "error", message: "Cannot update targets for a KPI that is not ACTIVE." };
+  }
+  if (allocation.kpiDefinition.kraDefinition.state !== "ACTIVE") {
+    return { status: "error", message: "Cannot update targets while the parent KRA is not ACTIVE." };
+  }
+
+  const nextTargetValue =
+    data.targetValue !== undefined ? data.targetValue : allocation.targetValue;
+  const nextTargetRating =
+    data.targetRating !== undefined ? data.targetRating : allocation.targetRating;
+  const capError = validateAllocationValueAgainstCap(
+    allocation.kpiDefinition.measurementType,
+    allocation.kpiDefinition.measurementConfig as MeasurementConfig | null,
+    {
+      targetValue: nextTargetValue,
+      targetRating: nextTargetRating,
+    },
+  );
+  if (capError) {
+    return { status: "error", message: capError };
+  }
+
+  const topLevelCapError = await validateTopLevelAllocationCap({
+    tenantId,
+    periodId: allocation.periodId,
+    kpiDefinitionId: allocation.kpiDefinitionId,
+    measurementType: allocation.kpiDefinition.measurementType,
+    measurementConfig: allocation.kpiDefinition.measurementConfig as MeasurementConfig | null,
+    allocations: [
+      {
+        parentAllocationId: allocation.parentAllocationId,
+        targetValue: nextTargetValue,
+      },
+    ],
+    excludeAllocationId: allocationId,
+  });
+  if (topLevelCapError) {
+    return { status: "error", message: topLevelCapError };
   }
 
   await prisma.$transaction(async (tx) => {
@@ -372,8 +536,16 @@ export async function cascadeTargets(
   const parent = await prisma.targetAllocation.findFirst({
     where: { id: parentAllocationId, tenantId },
     include: {
-      kpiDefinition: { select: { measurementType: true, allocationType: true } },
-      childAllocations: { select: { targetValue: true } },
+      kpiDefinition: {
+        select: {
+          measurementType: true,
+          allocationType: true,
+          measurementConfig: true,
+        },
+      },
+      childAllocations: {
+        select: { targetValue: true, assignedToUnitId: true, assignedToUserId: true },
+      },
     },
   });
   if (!parent) {
@@ -388,8 +560,32 @@ export async function cascadeTargets(
       message: "Individual allocations cannot be cascaded.",
     };
   }
+  if (!parent.assignedToUnitId) {
+    return {
+      status: "error",
+      message: "Only unit-level allocations can be cascaded.",
+    };
+  }
+  if (!hasConfiguredTarget(parent)) {
+    return {
+      status: "error",
+      message: "Target not set yet. Cascade is disabled.",
+    };
+  }
 
   const { measurementType, allocationType } = parent.kpiDefinition;
+
+  const parentCapError = validateAllocationValueAgainstCap(
+    measurementType,
+    parent.kpiDefinition.measurementConfig as MeasurementConfig | null,
+    {
+      targetValue: parent.targetValue,
+      targetRating: parent.targetRating,
+    },
+  );
+  if (parentCapError) {
+    return { status: "error", message: parentCapError };
+  }
 
   if (allocationType === "DEPARTMENT") {
     const hasUserAssignments = distributions.some((d) => d.assignedToUserId);
@@ -399,6 +595,106 @@ export async function cascadeTargets(
         message: "This KPI's allocation type is DEPARTMENT — cannot assign to individuals.",
       };
     }
+  }
+
+  const existingChildUserIds = new Set(
+    parent.childAllocations
+      .map((child) => child.assignedToUserId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const existingChildUnitIds = new Set(
+    parent.childAllocations
+      .map((child) => child.assignedToUnitId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const childUnitIds = new Set(
+    (
+      await prisma.orgUnit.findMany({
+        where: { tenantId, parentId: parent.assignedToUnitId },
+        select: { id: true },
+      })
+    ).map((unit) => unit.id),
+  );
+  const seenUserIds = new Set<string>();
+  const seenUnitIds = new Set<string>();
+
+  for (const dist of distributions) {
+    const capError = validateAllocationValueAgainstCap(
+      measurementType,
+      parent.kpiDefinition.measurementConfig as MeasurementConfig | null,
+      {
+        targetValue: dist.targetValue ?? parent.targetValue,
+        targetRating: dist.targetRating ?? parent.targetRating,
+      },
+    );
+    if (capError) {
+      return {
+        status: "error",
+        message: capError,
+      };
+    }
+
+    const hasUnitTarget = Boolean(dist.assignedToUnitId);
+    const hasUserTarget = Boolean(dist.assignedToUserId);
+
+    if (hasUnitTarget === hasUserTarget) {
+      return {
+        status: "error",
+        message: "Each cascade target must assign to exactly one user or one child unit.",
+      };
+    }
+
+    if (allocationType === "INDIVIDUAL" && hasUnitTarget) {
+      return {
+        status: "error",
+        message: "INDIVIDUAL KPIs can only be cascaded to individual users.",
+      };
+    }
+
+    if (hasUnitTarget) {
+      const childUnitId = dist.assignedToUnitId!;
+      if (!childUnitIds.has(childUnitId)) {
+        return {
+          status: "error",
+          message: "Targets can only be cascaded to direct child units of the parent unit.",
+        };
+      }
+      if (existingChildUnitIds.has(childUnitId) || seenUnitIds.has(childUnitId)) {
+        return {
+          status: "error",
+          message: "A child unit has already been assigned for this parent allocation.",
+        };
+      }
+      seenUnitIds.add(childUnitId);
+      continue;
+    }
+
+    const userId = dist.assignedToUserId!;
+    if (existingChildUserIds.has(userId) || seenUserIds.has(userId)) {
+      return {
+        status: "error",
+        message: "A user has already been assigned for this parent allocation.",
+      };
+    }
+
+    const assignments = await getUserAssignments(tenantId, userId);
+    const matchingAssignments = assignments.filter(
+      (assignment) => assignment.unitId === parent.assignedToUnitId,
+    );
+    if (matchingAssignments.length === 0) {
+      return {
+        status: "error",
+        message: "Cascade targets must belong to the parent unit.",
+      };
+    }
+    if (matchingAssignments.some((assignment) => assignment.isUnitHead)) {
+      return {
+        status: "error",
+        message: "Cascade targets cannot be unit heads.",
+      };
+    }
+
+    seenUserIds.add(userId);
   }
 
   // Incremental cascade: existing children + new must still sum to parent
@@ -482,9 +778,20 @@ async function createAllocationRecords(input: {
 
   const kpi = await prisma.kpiDefinition.findFirst({
     where: { id: kpiDefinitionId, kraDefinition: { tenantId } },
+    include: {
+      kraDefinition: {
+        select: { state: true },
+      },
+    },
   });
   if (!kpi) {
     return { status: "error", message: "KPI not found." };
+  }
+  if (kpi.state !== "ACTIVE") {
+    return { status: "error", message: "Cannot allocate targets for a KPI that is not ACTIVE." };
+  }
+  if (kpi.kraDefinition.state !== "ACTIVE") {
+    return { status: "error", message: "Cannot allocate targets while the parent KRA is not ACTIVE." };
   }
 
   for (const allocation of allocations) {
@@ -510,6 +817,18 @@ async function createAllocationRecords(input: {
       };
     }
 
+    const capError = validateAllocationValueAgainstCap(
+      kpi.measurementType,
+      kpi.measurementConfig as MeasurementConfig | null,
+      allocation,
+    );
+    if (capError) {
+      return {
+        status: "error",
+        message: capError,
+      };
+    }
+
     if (allocation.parentAllocationId) {
       const parent = await prisma.targetAllocation.findFirst({
         where: { id: allocation.parentAllocationId, tenantId },
@@ -523,13 +842,6 @@ async function createAllocationRecords(input: {
       return {
         status: "error",
         message: "This KPI can only be allocated to units.",
-      };
-    }
-
-    if (kpi.allocationType === "INDIVIDUAL" && allocation.assignedToUnitId) {
-      return {
-        status: "error",
-        message: "This KPI can only be allocated to users.",
       };
     }
 
@@ -559,6 +871,21 @@ async function createAllocationRecords(input: {
         };
       }
     }
+  }
+
+  const topLevelCapError = await validateTopLevelAllocationCap({
+    tenantId,
+    periodId,
+    kpiDefinitionId,
+    measurementType: kpi.measurementType,
+    measurementConfig: kpi.measurementConfig as MeasurementConfig | null,
+    allocations,
+  });
+  if (topLevelCapError) {
+    return {
+      status: "error",
+      message: topLevelCapError,
+    };
   }
 
   await prisma.$transaction(async (tx) => {

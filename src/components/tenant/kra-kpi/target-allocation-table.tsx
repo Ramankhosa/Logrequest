@@ -22,6 +22,10 @@ import {
   X,
 } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
+import {
+  getMeasurementCapValue,
+  type MeasurementConfig,
+} from "@/lib/kra-kpi/shared";
 import { TargetCascadeForm } from "./target-cascade-form";
 
 type AllocationView = {
@@ -100,6 +104,7 @@ type AllocationFormProps = {
   periodId: string;
   kpiDefinitionId: string;
   measurementType: string;
+  measurementConfig: MeasurementConfig | null;
   units: UnitOption[];
   users: UserOption[];
   parentAllocationId?: string;
@@ -137,11 +142,13 @@ export function TargetAllocationTable({
   kpiDefinitionId,
   kpiTitle,
   measurementType,
+  measurementConfig,
 }: {
   periodId: string;
   kpiDefinitionId: string;
   kpiTitle?: string;
   measurementType: string;
+  measurementConfig: MeasurementConfig | null;
 }) {
   const [allocations, setAllocations] = useState<AllocationView[]>([]);
   const [units, setUnits] = useState<UnitOption[]>([]);
@@ -257,6 +264,11 @@ export function TargetAllocationTable({
   };
 
   const rootAllocations = allocations.filter((a) => !a.parentAllocationId);
+  const configuredCap = getMeasurementCapValue(measurementType, measurementConfig);
+  const topLevelAllocatedTotal = rootAllocations.reduce(
+    (sum, allocation) => sum + (allocation.targetValue ?? 0),
+    0,
+  );
   const childrenOf = (parentId: string) => allocations.filter((a) => a.parentAllocationId === parentId);
   const editingAllocation = useMemo(
     () => allocations.find((allocation) => allocation.id === editingId) ?? null,
@@ -334,6 +346,7 @@ export function TargetAllocationTable({
             periodId={periodId}
             kpiDefinitionId={kpiDefinitionId}
             measurementType={measurementType}
+            measurementConfig={measurementConfig}
             units={units}
             users={users}
             initialAllocation={editingInitial}
@@ -372,6 +385,17 @@ export function TargetAllocationTable({
         )}
       </div>
 
+      {configuredCap != null && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          KPI cap enabled: {configuredCap}
+          {measurementType !== "RATING" && (
+            <span className="ml-2">
+              Top-level allocated total: {topLevelAllocatedTotal}/{configuredCap}
+            </span>
+          )}
+        </div>
+      )}
+
       {feedback && (
         <div className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm ${feedback.type === "success" ? "border-brand/20 bg-brand/5 text-brand" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
           {feedback.type === "success" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
@@ -384,6 +408,7 @@ export function TargetAllocationTable({
           periodId={periodId}
           kpiDefinitionId={kpiDefinitionId}
           measurementType={measurementType}
+          measurementConfig={measurementConfig}
           units={units}
           users={users}
           onDone={() => { setAddingNew(false); showFeedback("success", "Target allocated."); void fetchData(); }}
@@ -423,6 +448,7 @@ function AllocationForm({
   periodId,
   kpiDefinitionId,
   measurementType,
+  measurementConfig,
   units,
   users,
   parentAllocationId,
@@ -546,7 +572,7 @@ function AllocationForm({
 
     try {
       if (isEditing && initialAllocation) {
-        const validation = validateDraft(sharedDraft, measurementType);
+        const validation = validateDraft(sharedDraft, measurementType, measurementConfig);
         if (validation) {
           setError(validation);
           setSubmitting(false);
@@ -573,7 +599,7 @@ function AllocationForm({
 
       const allocations = selectedIds.map((id) => {
         const draft = currentDraft(id);
-        const validation = validateDraft(draft, measurementType);
+        const validation = validateDraft(draft, measurementType, measurementConfig);
         if (validation) throw new Error(`${labelMap.get(id) ?? id}: ${validation}`);
         return {
           ...(assignToType === "unit" ? { assignedToUnitId: id } : { assignedToUserId: id }),
@@ -694,11 +720,11 @@ function AllocationForm({
 
         {selectedCount > 0 ? (
           isEditing || useSharedValue ? (
-            <TargetEditor title={isEditing ? "Edit target" : "Target for selected assignees"} draft={sharedDraft} measurementType={measurementType} inputCls={inputCls} labelCls={labelCls} onChange={(patch) => setDraftPatch(selectedIds[0] ?? "", patch)} />
+            <TargetEditor title={isEditing ? "Edit target" : "Target for selected assignees"} draft={sharedDraft} measurementType={measurementType} measurementConfig={measurementConfig} inputCls={inputCls} labelCls={labelCls} onChange={(patch) => setDraftPatch(selectedIds[0] ?? "", patch)} />
           ) : (
             <div className="space-y-3">
               {selectedIds.map((id) => (
-                <TargetEditor key={id} title={labelMap.get(id) ?? id} caption="Individual target" draft={currentDraft(id)} measurementType={measurementType} inputCls={inputCls} labelCls={labelCls} onChange={(patch) => setDraftPatch(id, patch)} />
+                <TargetEditor key={id} title={labelMap.get(id) ?? id} caption="Individual target" draft={currentDraft(id)} measurementType={measurementType} measurementConfig={measurementConfig} inputCls={inputCls} labelCls={labelCls} onChange={(patch) => setDraftPatch(id, patch)} />
               ))}
             </div>
           )
@@ -866,6 +892,7 @@ function TargetEditor({
   caption,
   draft,
   measurementType,
+  measurementConfig,
   inputCls,
   labelCls,
   onChange,
@@ -874,19 +901,25 @@ function TargetEditor({
   caption?: string;
   draft: Draft;
   measurementType: string;
+  measurementConfig: MeasurementConfig | null;
   inputCls: string;
   labelCls: string;
   onChange: (patch: Partial<Draft>) => void;
 }) {
+  const configuredCap = getMeasurementCapValue(measurementType, measurementConfig);
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <div className="mb-3">
         <p className="text-sm font-semibold text-slate-900">{title}</p>
         {caption ? <p className="text-xs text-slate-400">{caption}</p> : null}
+        {configuredCap != null && (
+          <p className="mt-1 text-xs text-amber-700">Cap: {configuredCap}</p>
+        )}
       </div>
       <TargetFields
         draft={draft}
         measurementType={measurementType}
+        measurementConfig={measurementConfig}
         inputCls={inputCls}
         labelCls={labelCls}
         onChange={onChange}
@@ -898,16 +931,20 @@ function TargetEditor({
 function TargetFields({
   draft,
   measurementType,
+  measurementConfig,
   inputCls,
   labelCls,
   onChange,
 }: {
   draft: Draft;
   measurementType: string;
+  measurementConfig: MeasurementConfig | null;
   inputCls: string;
   labelCls: string;
   onChange: (patch: Partial<Draft>) => void;
 }) {
+  const configuredCap = getMeasurementCapValue(measurementType, measurementConfig);
+
   if (["NUMERIC", "PERCENTAGE", "CURRENCY"].includes(measurementType)) {
     return (
       <div>
@@ -915,6 +952,14 @@ function TargetFields({
         <input
           type="number"
           step="any"
+          min={measurementType === "PERCENTAGE" ? 0 : undefined}
+          max={
+            configuredCap != null
+              ? configuredCap
+              : measurementType === "PERCENTAGE"
+                ? 100
+                : undefined
+          }
           value={draft.targetValue}
           onChange={(event) => onChange({ targetValue: event.target.value })}
           placeholder="0"
@@ -1008,10 +1053,10 @@ function TargetFields({
         <input
           type="number"
           min={1}
-          max={10}
+          max={configuredCap ?? 10}
           value={draft.targetRating}
           onChange={(event) => onChange({ targetRating: event.target.value })}
-          placeholder="1-10"
+          placeholder={`1-${configuredCap ?? 10}`}
           className={inputCls}
         />
       </div>
@@ -1113,10 +1158,22 @@ function buildUnitTree(units: UnitOption[], visibleIds: string[]) {
   return roots;
 }
 
-function validateDraft(draft: Draft, measurementType: string) {
+function validateDraft(
+  draft: Draft,
+  measurementType: string,
+  measurementConfig: MeasurementConfig | null,
+) {
+  const configuredCap = getMeasurementCapValue(measurementType, measurementConfig);
   if (["NUMERIC", "PERCENTAGE", "CURRENCY"].includes(measurementType)) {
     if (!draft.targetValue.trim()) return "Enter a target value.";
-    if (!Number.isFinite(Number(draft.targetValue))) return "Enter a valid number.";
+    const value = Number(draft.targetValue);
+    if (!Number.isFinite(value)) return "Enter a valid number.";
+    if (measurementType === "PERCENTAGE" && (value < 0 || value > 100)) {
+      return "Percentage targets must be between 0 and 100.";
+    }
+    if (configuredCap != null && value > configuredCap) {
+      return `Target value cannot exceed the KPI cap (${configuredCap}).`;
+    }
     return null;
   }
   if (measurementType === "DATE_TARGET") return draft.targetDate ? null : "Select a target date.";
@@ -1127,6 +1184,9 @@ function validateDraft(draft: Draft, measurementType: string) {
     if (!draft.targetRating.trim()) return "Enter a target rating.";
     const rating = Number(draft.targetRating);
     if (!Number.isInteger(rating) || rating < 1 || rating > 10) return "Rating targets must be an integer from 1 to 10.";
+    if (configuredCap != null && rating > configuredCap) {
+      return `Target rating cannot exceed the KPI cap (${configuredCap}).`;
+    }
     return null;
   }
   return "Unsupported KPI measurement type.";

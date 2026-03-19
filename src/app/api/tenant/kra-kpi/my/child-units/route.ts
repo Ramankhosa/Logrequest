@@ -1,7 +1,10 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { getMyChildUnits } from "@/lib/kra-kpi/my-kpi-service";
+import {
+  getMyChildUnits,
+  isUserHeadOfUnit,
+} from "@/lib/kra-kpi/my-kpi-service";
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -18,6 +21,18 @@ export async function GET(request: Request) {
     return NextResponse.json(
       { status: "error", message: "unitId is required." },
       { status: 400 },
+    );
+  }
+
+  const isHead = await isUserHeadOfUnit(
+    session.user.tenantId,
+    session.user.id,
+    unitId,
+  );
+  if (!isHead) {
+    return NextResponse.json(
+      { status: "error", message: "Only heads of the requested unit can view its child units." },
+      { status: 403 },
     );
   }
 

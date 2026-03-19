@@ -4,7 +4,12 @@ import { useState } from "react";
 import { Loader2, Check, X, AlertCircle } from "lucide-react";
 import { TooltipHint } from "./tooltip-hint";
 import { TOOLTIPS, ACHIEVEMENT_TEMPLATES } from "@/lib/kra-kpi/shared";
-import type { AchievementFieldConfig, AchievementFormConfig } from "@/lib/kra-kpi/shared";
+import {
+  getMeasurementCapValue,
+  type AchievementFieldConfig,
+  type AchievementFormConfig,
+  type MeasurementConfig,
+} from "@/lib/kra-kpi/shared";
 
 const MEASUREMENT_TYPES = [
   { value: "NUMERIC", label: "Numeric" },
@@ -46,6 +51,7 @@ type KpiFormProps = {
     unitLabel: string | null;
     weightage: number;
     defaultTarget: number | null;
+    measurementConfig: MeasurementConfig | null;
     scoringMethod: string;
     scoringDirection: string;
     isPerCapita: boolean;
@@ -60,13 +66,67 @@ type KpiFormProps = {
   onCancel: () => void;
 };
 
+function supportsEditableMaxCap(measurementType: string): boolean {
+  return (
+    measurementType === "NUMERIC" ||
+    measurementType === "PERCENTAGE" ||
+    measurementType === "CURRENCY"
+  );
+}
+
+function buildMeasurementConfig(
+  measurementType: string,
+  existingConfig: MeasurementConfig | null | undefined,
+  enforceMaxCap: boolean,
+  maxCap: string,
+): MeasurementConfig | undefined {
+  const capValue = maxCap.trim() ? Number(maxCap) : null;
+
+  switch (measurementType) {
+    case "NUMERIC": {
+      const next =
+        existingConfig?.type === "NUMERIC"
+          ? { ...existingConfig }
+          : { type: "NUMERIC" as const, decimalPlaces: 0 };
+      if (enforceMaxCap && capValue != null) next.maxValue = capValue;
+      else delete next.maxValue;
+      return Object.keys(next).length > 1 ? next : undefined;
+    }
+    case "PERCENTAGE": {
+      const next =
+        existingConfig?.type === "PERCENTAGE"
+          ? { ...existingConfig }
+          : { type: "PERCENTAGE" as const, minValue: 0, maxValue: 100, decimalPlaces: 1 };
+      next.maxValue = enforceMaxCap && capValue != null ? capValue : 100;
+      return Object.keys(next).length > 1 ? next : undefined;
+    }
+    case "CURRENCY": {
+      const next =
+        existingConfig?.type === "CURRENCY"
+          ? { ...existingConfig }
+          : { type: "CURRENCY" as const, currencyCode: "INR", minValue: 0, decimalPlaces: 2 };
+      if (enforceMaxCap && capValue != null) next.maxValue = capValue;
+      else delete next.maxValue;
+      return Object.keys(next).length > 1 ? next : undefined;
+    }
+    default:
+      return existingConfig?.type === measurementType ? existingConfig : undefined;
+  }
+}
+
 export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDone, onCancel }: KpiFormProps) {
+  const initialCapValue = getMeasurementCapValue(
+    initial?.measurementType ?? "NUMERIC",
+    initial?.measurementConfig ?? null,
+  );
   const [title, setTitle] = useState(initial?.title ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [measurementType, setMeasurementType] = useState(initial?.measurementType ?? "NUMERIC");
   const [unitLabel, setUnitLabel] = useState(initial?.unitLabel ?? "");
   const [weightage, setWeightage] = useState(initial?.weightage ?? 0);
   const [defaultTarget, setDefaultTarget] = useState<string>(initial?.defaultTarget?.toString() ?? "");
+  const [enforceMaxCap, setEnforceMaxCap] = useState(initialCapValue != null);
+  const [maxCap, setMaxCap] = useState(initialCapValue != null ? String(initialCapValue) : "");
   const [scoringMethod, setScoringMethod] = useState(initial?.scoringMethod ?? "LINEAR");
   const [scoringDirection, setScoringDirection] = useState(initial?.scoringDirection ?? "ASCENDING");
   const [isPerCapita, setIsPerCapita] = useState(initial?.isPerCapita ?? false);
@@ -129,6 +189,33 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
       return;
     }
 
+    const capSupported = supportsEditableMaxCap(measurementType);
+    if (capSupported && enforceMaxCap) {
+      if (!maxCap.trim()) {
+        setError("Enter the maximum KPI cap.");
+        setSubmitting(false);
+        return;
+      }
+
+      const parsedCap = Number(maxCap);
+      if (!Number.isFinite(parsedCap) || parsedCap < 0) {
+        setError("Enter a valid maximum KPI cap.");
+        setSubmitting(false);
+        return;
+      }
+      if (measurementType === "PERCENTAGE" && parsedCap > 100) {
+        setError("Percentage KPI caps cannot exceed 100.");
+        setSubmitting(false);
+        return;
+      }
+
+      if (defaultTarget.trim() && Number(defaultTarget) > parsedCap) {
+        setError("Default target cannot exceed the configured maximum cap.");
+        setSubmitting(false);
+        return;
+      }
+    }
+
     try {
       const url = mode === "create"
         ? "/api/tenant/kra-kpi/kpis"
@@ -138,6 +225,16 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         customFields.length > 0
           ? { templateKey: templateKey || undefined, fields: customFields }
           : null;
+      const existingMeasurementConfig =
+        initial?.measurementConfig?.type === measurementType
+          ? initial.measurementConfig
+          : null;
+      const measurementConfig = buildMeasurementConfig(
+        measurementType,
+        existingMeasurementConfig,
+        enforceMaxCap,
+        maxCap,
+      );
 
       const body: Record<string, unknown> = {
         ...(mode === "create" && { kraDefinitionId }),
@@ -146,7 +243,8 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         measurementType,
         unitLabel: unitLabel.trim() || (mode === "edit" ? null : undefined),
         weightage,
-        defaultTarget: defaultTarget ? Number(defaultTarget) : (mode === "edit" ? null : undefined),
+        defaultTarget: defaultTarget.trim() ? Number(defaultTarget) : (mode === "edit" ? null : undefined),
+        measurementConfig: measurementConfig ?? (mode === "edit" ? null : undefined),
         scoringMethod,
         scoringDirection,
         isPerCapita,
@@ -180,6 +278,7 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   const borderColor = mode === "create" ? "border-brand/20 bg-brand/5" : "border-blue-200 bg-blue-50/50";
   const labelCls = "mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500";
   const inputCls = "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-brand focus:ring-1 focus:ring-brand/30";
+  const capSupported = supportsEditableMaxCap(measurementType);
 
   return (
     <form onSubmit={handleSubmit} className={`rounded-xl border ${borderColor} p-4`}>
@@ -237,6 +336,40 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
           <label className={labelCls}>Default target</label>
           <input type="number" step="any" placeholder="Optional" value={defaultTarget} onChange={(e) => setDefaultTarget(e.target.value)} className={inputCls} />
         </div>
+
+        {capSupported && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-3 sm:col-span-2 lg:col-span-3">
+            <label className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={enforceMaxCap}
+                onChange={(e) => setEnforceMaxCap(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/30"
+              />
+              Enforce maximum KPI cap
+            </label>
+            <p className="mt-1 text-xs text-slate-500">
+              When enabled, target allocations cannot exceed this KPI cap.
+            </p>
+            {enforceMaxCap && (
+              <div className="mt-3 max-w-xs">
+                <label className={labelCls}>
+                  {measurementType === "PERCENTAGE" ? "Maximum percentage cap" : "Maximum target cap"}
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  min={0}
+                  max={measurementType === "PERCENTAGE" ? 100 : undefined}
+                  placeholder={measurementType === "PERCENTAGE" ? "0-100" : "Optional"}
+                  value={maxCap}
+                  onChange={(e) => setMaxCap(e.target.value)}
+                  className={inputCls}
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         <div>
           <label className={labelCls}>

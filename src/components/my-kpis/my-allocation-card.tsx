@@ -39,6 +39,7 @@ export function MyAllocationCard({
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [showChildren, setShowChildren] = useState(false);
+  const [now] = useState(() => Date.now());
 
   const ach = a.achievement;
   const ctx = context ?? { userId: "", headOfUnits: [], memberOfUnits: [] };
@@ -52,8 +53,9 @@ export function MyAllocationCard({
     parentAllocationId: a.parentAllocationId,
   };
 
-  const canRecordFlag = canRecord(allocInfo, ctx, a.periodState);
-  const canCascadeFlag = canCascade(allocInfo, ctx);
+  const targetConfigured = hasConfiguredTarget(a);
+  const canRecordFlag = targetConfigured && canRecord(allocInfo, ctx, a.periodState);
+  const canCascadeFlag = targetConfigured && canCascade(allocInfo, ctx);
   const mustCascadeFlag = mustCascade(allocInfo, ctx);
   const showBothChoice = showBothChoiceUI(allocInfo, ctx);
 
@@ -62,7 +64,7 @@ export function MyAllocationCard({
 
   // Deadline
   const daysRemaining = a.achievementDeadline
-    ? Math.ceil((new Date(a.achievementDeadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+    ? Math.ceil((new Date(a.achievementDeadline).getTime() - now) / (1000 * 60 * 60 * 24))
     : null;
 
   // Score color
@@ -162,14 +164,16 @@ export function MyAllocationCard({
         )}
 
         {/* Target updated warning */}
-        {ach && ach.state === "SUBMITTED" && a.targetValue != null && (
+        {ach &&
+          (ach.state === "SUBMITTED" || ach.state === "RECOMMENDED") &&
+          a.targetValue != null && (
           <TargetUpdateWarning allocation={a} />
         )}
 
         {/* Actions */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Record */}
-          {canRecordFlag && !ach && (
+          {!showBothChoice && canRecordFlag && !ach && (
             <button
               onClick={onRecordAchievement}
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
@@ -180,7 +184,7 @@ export function MyAllocationCard({
           )}
 
           {/* Edit draft */}
-          {canRecordFlag && ach?.state === "DRAFT" && (
+          {!showBothChoice && canRecordFlag && ach?.state === "DRAFT" && (
             <button
               onClick={onRecordAchievement}
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
@@ -190,7 +194,7 @@ export function MyAllocationCard({
           )}
 
           {/* Edit rejected */}
-          {canRecordFlag && ach?.state === "REJECTED" && (
+          {!showBothChoice && canRecordFlag && ach?.state === "REJECTED" && (
             <button
               onClick={onRecordAchievement}
               className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
@@ -205,7 +209,7 @@ export function MyAllocationCard({
           )}
 
           {/* Cascade */}
-          {canCascadeFlag && (
+          {!showBothChoice && canCascadeFlag && (
             <button
               onClick={onCascade}
               className="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
@@ -360,7 +364,8 @@ function getPeriodMessage(state: string): string | null {
 function TargetUpdateWarning({ allocation }: { allocation: MyAllocationView }) {
   const ach = allocation.achievement;
   if (!ach) return null;
-  if (new Date(allocation.createdAt) > new Date(ach.createdAt)) {
+  const latestSubmitAt = getLatestSubmitTimestamp(ach.verificationLog) ?? ach.createdAt;
+  if (new Date(allocation.updatedAt) > new Date(latestSubmitAt)) {
     return (
       <div className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1">
         <AlertTriangle className="h-3 w-3 inline mr-1" />
@@ -399,4 +404,26 @@ function WithdrawButton({ achievementId, onDone }: { achievementId: string; onDo
       {loading ? "..." : "Withdraw"}
     </button>
   );
+}
+
+function hasConfiguredTarget(allocation: MyAllocationView) {
+  return (
+    allocation.targetValue != null ||
+    allocation.targetDate != null ||
+    allocation.targetMilestone != null ||
+    allocation.targetGrade != null ||
+    allocation.targetBoolean != null ||
+    allocation.targetRating != null
+  );
+}
+
+function getLatestSubmitTimestamp(
+  log: NonNullable<MyAllocationView["achievement"]>["verificationLog"] | undefined,
+) {
+  if (!log) return null;
+
+  const submitEntries = log.filter((entry) => entry.level === "SUBMIT");
+  if (submitEntries.length === 0) return null;
+
+  return submitEntries[submitEntries.length - 1]?.at ?? null;
 }

@@ -1,4 +1,4 @@
-import type { Role } from "@prisma/client";
+import type { KraDefinitionState, Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult, KraDefinitionView } from "./shared";
@@ -27,8 +27,13 @@ const updateKraSchema = z.object({
   sortOrder: z.number().int().min(0).max(9999).optional(),
 });
 
+const changeKraStateSchema = z.object({
+  state: z.enum(["DRAFT", "ACTIVE"]),
+});
+
 export type CreateKraInput = z.input<typeof createKraSchema>;
 export type UpdateKraInput = z.input<typeof updateKraSchema>;
+export type ChangeKraStateInput = z.input<typeof changeKraStateSchema>;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -58,27 +63,38 @@ export async function listKras(
     include: {
       period: { select: { name: true } },
       category: { select: { displayLabel: true } },
-      kpiDefinitions: { select: { weightage: true } },
+      kpiDefinitions: {
+        where: { state: { not: "ARCHIVED" } },
+        select: { weightage: true, state: true },
+      },
     },
     orderBy: [{ sortOrder: "asc" }, { title: "asc" }],
   });
 
-  return kras.map((k) => ({
-    id: k.id,
-    tenantId: k.tenantId,
-    periodId: k.periodId,
-    periodName: k.period.name,
-    categoryId: k.categoryId,
-    categoryLabel: k.category?.displayLabel ?? null,
-    title: k.title,
-    description: k.description,
-    weightage: k.weightage,
-    state: k.state,
-    sortOrder: k.sortOrder,
-    kpiCount: k.kpiDefinitions.length,
-    kpiWeightageSum: k.kpiDefinitions.reduce((sum, kpi) => sum + kpi.weightage, 0),
-    createdAt: k.createdAt,
-  }));
+  return kras.map((k) => {
+    const activeKpis = k.kpiDefinitions.filter((kpi) => kpi.state === "ACTIVE");
+    const draftKpiCount = k.kpiDefinitions.filter((kpi) => kpi.state === "DRAFT").length;
+
+    return {
+      id: k.id,
+      tenantId: k.tenantId,
+      periodId: k.periodId,
+      periodName: k.period.name,
+      categoryId: k.categoryId,
+      categoryLabel: k.category?.displayLabel ?? null,
+      title: k.title,
+      description: k.description,
+      weightage: k.weightage,
+      state: k.state,
+      sortOrder: k.sortOrder,
+      kpiCount: k.kpiDefinitions.length,
+      kpiWeightageSum: k.kpiDefinitions.reduce((sum, kpi) => sum + kpi.weightage, 0),
+      activeKpiCount: activeKpis.length,
+      activeKpiWeightageSum: activeKpis.reduce((sum, kpi) => sum + kpi.weightage, 0),
+      draftKpiCount,
+      createdAt: k.createdAt,
+    };
+  });
 }
 
 // ── Get KRA ──────────────────────────────────────────────────────────────────
@@ -92,10 +108,16 @@ export async function getKra(
     include: {
       period: { select: { name: true } },
       category: { select: { displayLabel: true } },
-      kpiDefinitions: { select: { weightage: true } },
+      kpiDefinitions: {
+        where: { state: { not: "ARCHIVED" } },
+        select: { weightage: true, state: true },
+      },
     },
   });
   if (!k) return null;
+
+  const activeKpis = k.kpiDefinitions.filter((kpi) => kpi.state === "ACTIVE");
+  const draftKpiCount = k.kpiDefinitions.filter((kpi) => kpi.state === "DRAFT").length;
 
   return {
     id: k.id,
@@ -111,6 +133,9 @@ export async function getKra(
     sortOrder: k.sortOrder,
     kpiCount: k.kpiDefinitions.length,
     kpiWeightageSum: k.kpiDefinitions.reduce((sum, kpi) => sum + kpi.weightage, 0),
+    activeKpiCount: activeKpis.length,
+    activeKpiWeightageSum: activeKpis.reduce((sum, kpi) => sum + kpi.weightage, 0),
+    draftKpiCount,
     createdAt: k.createdAt,
   };
 }
@@ -295,9 +320,10 @@ export async function updateKra(
 
 // ── Activate KRA ─────────────────────────────────────────────────────────────
 
-export async function activateKra(
+export async function changeKraState(
   kraId: string,
   tenantId: string,
+  input: ChangeKraStateInput,
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
@@ -305,44 +331,95 @@ export async function activateKra(
     return { status: "error", message: "Insufficient permissions." };
   }
 
+  const parsed = changeKraStateSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid input." };
+  }
+
+  const nextState = parsed.data.state as KraDefinitionState;
+
   const kra = await prisma.kraDefinition.findFirst({
     where: { id: kraId, tenantId },
     include: {
-      kpiDefinitions: { where: { state: { not: "ARCHIVED" } }, select: { weightage: true } },
+      period: { select: { state: true } },
+      kpiDefinitions: {
+        where: { state: { not: "ARCHIVED" } },
+        select: {
+          id: true,
+          weightage: true,
+          state: true,
+          _count: {
+            select: {
+              targetAllocations: true,
+              achievements: true,
+            },
+          },
+        },
+      },
     },
   });
   if (!kra) {
     return { status: "error", message: "KRA not found." };
   }
 
-  if (kra.state !== "DRAFT") {
-    return { status: "error", message: `KRA is already in "${kra.state}" state.` };
+  if (kra.state === "ARCHIVED") {
+    return { status: "error", message: "Cannot change the state of an archived KRA." };
   }
-
-  // Validate: KPI weightages must sum to KRA's weightage
-  const kpiSum = kra.kpiDefinitions.reduce((s, k) => s + k.weightage, 0);
-  if (kra.kpiDefinitions.length === 0 && kra.weightage !== 0) {
+  if (!canModifyKraInPeriodState(kra.period.state)) {
     return {
       status: "error",
-      message: `Cannot activate KRA "${kra.title}" because it has no KPIs yet. Add KPI definitions totaling ${kra.weightage} before activating.`,
+      message: `Cannot change KRA state while the period is in "${kra.period.state}" state.`,
     };
   }
-  if (kpiSum !== kra.weightage) {
-    const delta = kra.weightage - kpiSum;
-    const guidance =
-      delta > 0
-        ? `${delta} remaining. Add or increase KPI weightage before activating.`
-        : `${Math.abs(delta)} over. Reduce KPI weightage before activating.`;
+  if (kra.state === nextState) {
+    return { status: "error", message: `KRA is already in "${nextState}" state.` };
+  }
+
+  const kpiSum = kra.kpiDefinitions.reduce((s, k) => s + k.weightage, 0);
+  if (nextState === "ACTIVE") {
+    if (kra.kpiDefinitions.length === 0 && kra.weightage !== 0) {
+      return {
+        status: "error",
+        message: `Cannot activate KRA "${kra.title}" because it has no KPIs yet. Add KPI definitions totaling ${kra.weightage} before activating.`,
+      };
+    }
+    if (kpiSum !== kra.weightage) {
+      const delta = kra.weightage - kpiSum;
+      const guidance =
+        delta > 0
+          ? `${delta} remaining. Add or increase KPI weightage before activating.`
+          : `${Math.abs(delta)} over. Reduce KPI weightage before activating.`;
+      return {
+        status: "error",
+        message: `Cannot activate KRA "${kra.title}": KPI weightages sum to ${kpiSum}, but KRA weightage is ${kra.weightage}. ${guidance}`,
+      };
+    }
+  }
+
+  if (
+    nextState === "DRAFT" &&
+    kra.kpiDefinitions.some(
+      (kpi) => kpi._count.targetAllocations > 0 || kpi._count.achievements > 0,
+    )
+  ) {
     return {
       status: "error",
-      message: `Cannot activate KRA "${kra.title}": KPI weightages sum to ${kpiSum}, but KRA weightage is ${kra.weightage}. ${guidance}`,
+      message: "Cannot move KRA back to DRAFT once child KPIs have targets or achievements. Remove them first.",
     };
   }
 
   await prisma.$transaction(async (tx) => {
     await tx.kraDefinition.update({
       where: { id: kraId },
-      data: { state: "ACTIVE" },
+      data: { state: nextState },
+    });
+
+    await tx.kpiDefinition.updateMany({
+      where: {
+        kraDefinitionId: kraId,
+        state: { not: "ARCHIVED" },
+      },
+      data: { state: nextState },
     });
 
     await tx.auditLog.create({
@@ -352,14 +429,35 @@ export async function activateKra(
         actorRole,
         targetType: "KraDefinition",
         targetId: kraId,
-        action: "ACTIVATE",
-        previousState: { state: "DRAFT" },
-        newState: { state: "ACTIVE" },
+        action: "STATE_CHANGE",
+        previousState: { state: kra.state },
+        newState: { state: nextState },
       },
     });
   });
 
-  return { status: "success", message: `KRA "${kra.title}" activated.` };
+  return {
+    status: "success",
+    message:
+      nextState === "ACTIVE"
+        ? `KRA "${kra.title}" activated. All non-archived KPIs are now ACTIVE.`
+        : `KRA "${kra.title}" moved to DRAFT. All non-archived KPIs are now DRAFT.`,
+  };
+}
+
+export async function activateKra(
+  kraId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role
+): Promise<KraKpiActionResult> {
+  return changeKraState(
+    kraId,
+    tenantId,
+    { state: "ACTIVE" },
+    actorUserId,
+    actorRole,
+  );
 }
 
 // ── Archive KRA ──────────────────────────────────────────────────────────────

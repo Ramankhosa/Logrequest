@@ -12,6 +12,7 @@ import {
   Zap,
   Archive,
   ChevronRight,
+  Undo2,
 } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
 import { KraDefinitionForm } from "./kra-definition-form";
@@ -30,6 +31,9 @@ type KraView = {
   sortOrder: number;
   kpiCount: number;
   kpiWeightageSum: number;
+  activeKpiCount: number;
+  activeKpiWeightageSum: number;
+  draftKpiCount: number;
 };
 
 type CategoryOption = { id: string; displayLabel: string };
@@ -81,8 +85,16 @@ export function KraDefinitionList({
     setTimeout(() => setFeedback(null), 3500);
   };
 
-  const handleAction = async (kraId: string, action: "activate" | "archive" | "delete") => {
-    const labels: Record<string, string> = { activate: "Activate", archive: "Archive", delete: "Delete" };
+  const handleAction = async (
+    kraId: string,
+    action: "activate" | "draft" | "archive" | "delete",
+  ) => {
+    const labels: Record<string, string> = {
+      activate: "Activate",
+      draft: "Move to Draft",
+      archive: "Archive",
+      delete: "Delete",
+    };
     if (!window.confirm(`${labels[action]} this KRA?`)) return;
     setActionId(kraId);
 
@@ -90,9 +102,9 @@ export function KraDefinitionList({
       let url: string;
       let method: string;
 
-      if (action === "activate") {
-        url = `/api/tenant/kra-kpi/kras/${kraId}/activate`;
-        method = "POST";
+      if (action === "activate" || action === "draft") {
+        url = `/api/tenant/kra-kpi/kras/${kraId}/state`;
+        method = "PATCH";
       } else if (action === "delete") {
         url = `/api/tenant/kra-kpi/kras/${kraId}`;
         method = "DELETE";
@@ -103,9 +115,16 @@ export function KraDefinitionList({
 
       const res = await fetch(url, {
         method,
-        ...(action === "archive" && {
+        ...((action === "archive" || action === "activate" || action === "draft") && {
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ state: "ARCHIVED" }),
+          body: JSON.stringify({
+            state:
+              action === "archive"
+                ? "ARCHIVED"
+                : action === "activate"
+                  ? "ACTIVE"
+                  : "DRAFT",
+          }),
         }),
       });
       const data = await res.json();
@@ -206,18 +225,30 @@ export function KraDefinitionList({
                   <div className="mt-0.5 flex items-center gap-3 text-[11px] text-slate-400">
                     <span className="font-semibold text-slate-600">Weight: {kra.weightage}</span>
                     <span>{kra.kpiCount} KPI(s)</span>
-                    <span className={kra.kpiWeightageSum === kra.weightage ? "text-emerald-500" : "text-amber-500"}>
-                      KPI sum: {kra.kpiWeightageSum}/{kra.weightage}
+                    <span className={kra.activeKpiWeightageSum === kra.weightage ? "text-emerald-500" : "text-amber-500"}>
+                      Active KPI sum: {kra.activeKpiWeightageSum}/{kra.weightage}
                     </span>
+                    {kra.draftKpiCount > 0 && <span>Draft KPIs: {kra.draftKpiCount}</span>}
                   </div>
                   {needsAttention && (
                     <p className="mt-1 text-[11px] text-amber-600">{activationHint}</p>
                   )}
                 </div>
-                <div className={`flex shrink-0 items-center gap-1 transition-opacity ${needsAttention ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+                <div className="flex shrink-0 items-center gap-1">
                   {kra.state === "DRAFT" && (
                     <button type="button" onClick={() => handleAction(kra.id, "activate")} disabled={!canActivate || actionId === kra.id} className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${canActivate ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"}`} title={canActivate ? "Activate" : activationHint}>
                       {actionId === kra.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />} Activate
+                    </button>
+                  )}
+                  {kra.state === "ACTIVE" && (
+                    <button
+                      type="button"
+                      onClick={() => handleAction(kra.id, "draft")}
+                      disabled={actionId === kra.id}
+                      className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="Move KRA and its KPIs back to draft"
+                    >
+                      {actionId === kra.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Undo2 className="h-3 w-3" />} Draft
                     </button>
                   )}
                   {kra.state !== "ARCHIVED" && (

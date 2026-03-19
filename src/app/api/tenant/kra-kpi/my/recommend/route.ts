@@ -57,6 +57,7 @@ export async function POST(request: Request) {
       body.approved,
       body.note ?? null,
       session.user.id,
+      (session.user.role ?? "TENANT_USER") as Role,
     );
   }
 

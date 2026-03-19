@@ -21,6 +21,7 @@ import {
 } from "@/lib/kra-kpi/kra-service";
 import {
   createKpi,
+  changeKpiState,
   updateKpi,
   validateKpiWeightages,
 } from "@/lib/kra-kpi/kpi-service";
@@ -148,6 +149,57 @@ async function createPublishedStructure(ctx: ActorContext) {
     rootUnitId: published!.units.find((unit) => unit.code === "UNIV")!.id,
     cseUnitId: published!.units.find((unit) => unit.code === "CSE")!.id,
   };
+}
+
+async function assignFacultyToUnit(input: {
+  tenantId: string;
+  versionId: string;
+  unitId: string;
+  userId: string;
+  createdByUserId: string;
+}) {
+  let professorRole = await prisma.orgRoleDefinition.findFirst({
+    where: {
+      tenantId: input.tenantId,
+      roleKey: "PROFESSOR",
+    },
+  });
+
+  if (!professorRole) {
+    professorRole = await prisma.orgRoleDefinition.create({
+      data: {
+        tenantId: input.tenantId,
+        roleKey: "PROFESSOR",
+        displayLabel: "Professor",
+        isUnitHead: false,
+        approvalAuthority: false,
+        maxPerUnit: -1,
+        sortOrder: 50,
+        createdByUserId: input.createdByUserId,
+      },
+    });
+  }
+
+  await prisma.userOrgAssignment.create({
+    data: {
+      versionId: input.versionId,
+      unitId: input.unitId,
+      userId: input.userId,
+      assignmentType: "PRIMARY",
+      isPrimary: true,
+    },
+  });
+
+  await prisma.orgRoleAssignment.create({
+    data: {
+      versionId: input.versionId,
+      unitId: input.unitId,
+      userId: input.userId,
+      roleDefinitionId: professorRole.id,
+      roleName: professorRole.displayLabel,
+      scope: "NODE",
+    },
+  });
 }
 
 async function createOpenNumericFixture(
@@ -341,6 +393,20 @@ describe("KRA/KPI service integration", () => {
         tenantId: fixture.tenant.id,
         userId: facultyTwo.id,
         role: "TENANT_USER",
+        createdByUserId: fixture.actor.id,
+      });
+      await assignFacultyToUnit({
+        tenantId: fixture.tenant.id,
+        versionId: fixture.structure.versionId,
+        unitId: fixture.structure.cseUnitId,
+        userId: facultyOne.id,
+        createdByUserId: fixture.actor.id,
+      });
+      await assignFacultyToUnit({
+        tenantId: fixture.tenant.id,
+        versionId: fixture.structure.versionId,
+        unitId: fixture.structure.cseUnitId,
+        userId: facultyTwo.id,
         createdByUserId: fixture.actor.id,
       });
 
@@ -941,6 +1007,192 @@ describe("KRA/KPI service integration", () => {
     });
   });
 
+  test("enforces KPI caps across top-level allocations and updates", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createOpenNumericFixture(tracker);
+
+      const capResult = await updateKpi(
+        fixture.kpi.id,
+        fixture.context.tenantId,
+        {
+          defaultTarget: 10,
+          measurementConfig: {
+            type: "NUMERIC",
+            decimalPlaces: 0,
+            maxValue: 10,
+          },
+        },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(capResult.status).toBe("success");
+
+      const firstAllocation = await createAllocation(
+        fixture.context.tenantId,
+        {
+          periodId: fixture.period.id,
+          kpiDefinitionId: fixture.kpi.id,
+          assignedToUnitId: fixture.structure.cseUnitId,
+          targetValue: 7,
+          notes: "cap-first-allocation",
+        },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(firstAllocation.status).toBe("success");
+
+      const overCapAllocation = await createAllocation(
+        fixture.context.tenantId,
+        {
+          periodId: fixture.period.id,
+          kpiDefinitionId: fixture.kpi.id,
+          assignedToUnitId: fixture.structure.rootUnitId,
+          targetValue: 4,
+          notes: "cap-over-allocation",
+        },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(overCapAllocation.status).toBe("error");
+      expect(overCapAllocation.message).toContain("Total top-level allocations");
+
+      const validSecondAllocation = await createAllocation(
+        fixture.context.tenantId,
+        {
+          periodId: fixture.period.id,
+          kpiDefinitionId: fixture.kpi.id,
+          assignedToUnitId: fixture.structure.rootUnitId,
+          targetValue: 3,
+          notes: "cap-second-allocation",
+        },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(validSecondAllocation.status).toBe("success");
+
+      const cseAllocation = await prisma.targetAllocation.findFirst({
+        where: {
+          tenantId: fixture.context.tenantId,
+          notes: "cap-first-allocation",
+        },
+      });
+      expect(cseAllocation).toBeTruthy();
+
+      const perItemCapUpdate = await updateAllocation(
+        cseAllocation!.id,
+        fixture.context.tenantId,
+        {
+          targetValue: 11,
+        },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(perItemCapUpdate.status).toBe("error");
+      expect(perItemCapUpdate.message).toContain("cannot exceed the KPI cap");
+
+      const rootAllocation = await prisma.targetAllocation.findFirst({
+        where: {
+          tenantId: fixture.context.tenantId,
+          notes: "cap-second-allocation",
+        },
+      });
+      expect(rootAllocation).toBeTruthy();
+
+      const totalCapUpdate = await updateAllocation(
+        rootAllocation!.id,
+        fixture.context.tenantId,
+        {
+          targetValue: 4,
+        },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(totalCapUpdate.status).toBe("error");
+      expect(totalCapUpdate.message).toContain("Total top-level allocations");
+    });
+  });
+
+  test("allows KPI draft-active toggles and keeps allocations and summary aligned", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createOpenNumericFixture(tracker);
+
+      const initialSummary = await getPeriodSummary(
+        fixture.period.id,
+        fixture.context.tenantId,
+      );
+      expect(initialSummary?.totalKpis).toBe(1);
+
+      const moveToDraft = await changeKpiState(
+        fixture.kpi.id,
+        fixture.context.tenantId,
+        { state: "DRAFT" },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(moveToDraft.status).toBe("success");
+
+      const draftSummary = await getPeriodSummary(
+        fixture.period.id,
+        fixture.context.tenantId,
+      );
+      expect(draftSummary?.totalKpis).toBe(0);
+
+      const blockedAllocation = await createAllocation(
+        fixture.context.tenantId,
+        {
+          periodId: fixture.period.id,
+          kpiDefinitionId: fixture.kpi.id,
+          assignedToUnitId: fixture.structure.cseUnitId,
+          targetValue: 5,
+          notes: "draft-allocation-blocked",
+        },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(blockedAllocation.status).toBe("error");
+      expect(blockedAllocation.message).toContain("not ACTIVE");
+
+      const moveBackToActive = await changeKpiState(
+        fixture.kpi.id,
+        fixture.context.tenantId,
+        { state: "ACTIVE" },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(moveBackToActive.status).toBe("success");
+
+      const reactivatedSummary = await getPeriodSummary(
+        fixture.period.id,
+        fixture.context.tenantId,
+      );
+      expect(reactivatedSummary?.totalKpis).toBe(1);
+
+      const validAllocation = await createAllocation(
+        fixture.context.tenantId,
+        {
+          periodId: fixture.period.id,
+          kpiDefinitionId: fixture.kpi.id,
+          assignedToUnitId: fixture.structure.cseUnitId,
+          targetValue: 5,
+          notes: "active-allocation-created",
+        },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(validAllocation.status).toBe("success");
+
+      const blockedDraftReturn = await changeKpiState(
+        fixture.kpi.id,
+        fixture.context.tenantId,
+        { state: "DRAFT" },
+        fixture.context.actorUserId,
+        fixture.context.actorRole,
+      );
+      expect(blockedDraftReturn.status).toBe("error");
+      expect(blockedDraftReturn.message).toContain("targets or achievements exist");
+    });
+  });
+
   test("rejects numeric cascades when child totals do not match the parent target", async () => {
     await withIsolatedDb(async (tracker) => {
       const fixture = await createOpenNumericFixture(tracker);
@@ -975,6 +1227,13 @@ describe("KRA/KPI service integration", () => {
         tenantId: fixture.tenant.id,
         userId: faculty.id,
         role: "TENANT_USER",
+        createdByUserId: fixture.actor.id,
+      });
+      await assignFacultyToUnit({
+        tenantId: fixture.tenant.id,
+        versionId: fixture.structure.versionId,
+        unitId: fixture.structure.cseUnitId,
+        userId: faculty.id,
         createdByUserId: fixture.actor.id,
       });
 

@@ -22,6 +22,7 @@ import { z } from "zod";
 export type KraKpiActionResult = {
   status: "idle" | "success" | "error";
   message: string;
+  id?: string;
 };
 
 export const initialKraKpiActionResult: KraKpiActionResult = {
@@ -49,6 +50,7 @@ export const currencyMeasurementConfigSchema = z.object({
   type: z.literal("CURRENCY"),
   currencyCode: z.string().length(3).default("INR"),
   minValue: z.number().min(0).default(0),
+  maxValue: z.number().optional(),
   decimalPlaces: z.number().int().min(0).max(2).default(2),
 });
 
@@ -94,6 +96,61 @@ export const measurementConfigSchema = z.discriminatedUnion("type", [
 ]);
 
 export type MeasurementConfig = z.infer<typeof measurementConfigSchema>;
+
+export function supportsMeasurementCap(
+  measurementType: KpiMeasurementType | string,
+): boolean {
+  return (
+    measurementType === "NUMERIC" ||
+    measurementType === "PERCENTAGE" ||
+    measurementType === "CURRENCY" ||
+    measurementType === "RATING"
+  );
+}
+
+export function getMeasurementCapValue(
+  measurementType: KpiMeasurementType | string,
+  measurementConfig: MeasurementConfig | null | undefined,
+): number | null {
+  if (!measurementConfig) return null;
+
+  switch (measurementType) {
+    case "NUMERIC":
+      return measurementConfig.type === "NUMERIC" && measurementConfig.maxValue != null
+        ? measurementConfig.maxValue
+        : null;
+    case "PERCENTAGE":
+      return measurementConfig.type === "PERCENTAGE" && measurementConfig.maxValue != null
+        ? measurementConfig.maxValue
+        : null;
+    case "CURRENCY":
+      return measurementConfig.type === "CURRENCY" && measurementConfig.maxValue != null
+        ? measurementConfig.maxValue
+        : null;
+    case "RATING":
+      return measurementConfig.type === "RATING" && measurementConfig.maxRating != null
+        ? measurementConfig.maxRating
+        : null;
+    default:
+      return null;
+  }
+}
+
+export function getMeasurementCapField(
+  measurementType: KpiMeasurementType | string,
+): "targetValue" | "targetRating" | null {
+  if (
+    measurementType === "NUMERIC" ||
+    measurementType === "PERCENTAGE" ||
+    measurementType === "CURRENCY"
+  ) {
+    return "targetValue";
+  }
+  if (measurementType === "RATING") {
+    return "targetRating";
+  }
+  return null;
+}
 
 // ── Scoring Config Zod Schemas (discriminated unions) ────────────────────────
 
@@ -177,6 +234,9 @@ export type KraDefinitionView = {
   sortOrder: number;
   kpiCount: number;
   kpiWeightageSum: number;
+  activeKpiCount: number;
+  activeKpiWeightageSum: number;
+  draftKpiCount: number;
   createdAt: Date;
 };
 
@@ -184,6 +244,7 @@ export type KpiDefinitionView = {
   id: string;
   kraDefinitionId: string;
   kraTitle: string;
+  kraState: KraDefinitionState;
   title: string;
   description: string | null;
   measurementType: KpiMeasurementType;
@@ -231,6 +292,7 @@ export type TargetAllocationView = {
   childCount: number;
   achievementCount: number;
   createdAt: Date;
+  updatedAt: Date;
 };
 
 export type AchievementView = {
@@ -372,6 +434,8 @@ export function buildFormDataValidator(fields: AchievementFieldConfig[]) {
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const f of fields) {
     let fieldSchema: z.ZodTypeAny;
+    const pattern = f.pattern ? new RegExp(f.pattern) : null;
+
     switch (f.type) {
       case "NUMBER":
         fieldSchema = f.required ? z.number() : z.number().optional().nullable();
@@ -394,15 +458,60 @@ export function buildFormDataValidator(fields: AchievementFieldConfig[]) {
           ? z.string().email(`${f.label} must be a valid email`)
           : z.union([z.string().email(), z.literal("")]).optional().nullable();
         break;
+      case "SELECT":
+        fieldSchema = (
+          f.required
+            ? z.string().min(1, `${f.label} is required`)
+            : z.string().optional().nullable()
+        ).superRefine((value, ctx) => {
+          if (
+            value != null &&
+            value !== "" &&
+            f.options &&
+            !f.options.includes(value)
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${f.label} must be one of the allowed options`,
+            });
+          }
+        });
+        break;
       case "MULTI_SELECT":
-        fieldSchema = f.required
-          ? z.array(z.string()).min(1, `${f.label} requires at least one selection`)
-          : z.array(z.string()).optional().nullable();
+        fieldSchema = (
+          f.required
+            ? z.array(z.string()).min(1, `${f.label} requires at least one selection`)
+            : z.array(z.string()).optional().nullable()
+        ).superRefine((values, ctx) => {
+          if (
+            values != null &&
+            f.options &&
+            values.some((value) => !f.options?.includes(value))
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${f.label} contains an invalid selection`,
+            });
+          }
+        });
         break;
       default:
-        fieldSchema = f.required
+        fieldSchema = (f.required
           ? z.string().min(1, `${f.label} is required`)
-          : z.string().optional().nullable();
+          : z.string().optional().nullable()
+        ).superRefine((value, ctx) => {
+          if (
+            value != null &&
+            value !== "" &&
+            pattern &&
+            !pattern.test(value)
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${f.label} has an invalid format`,
+            });
+          }
+        });
         break;
     }
     shape[f.key] = fieldSchema;
@@ -539,6 +648,7 @@ export type MyAllocationView = TargetAllocationView & {
   categoryLabel: string | null;
   categoryKey: string | null;
   measurementType: KpiMeasurementType;
+  measurementConfig: MeasurementConfig | null;
   unitLabel: string | null;
   kpiWeightage: number;
   defaultTarget: number | null;
@@ -552,6 +662,7 @@ export type MyAllocationView = TargetAllocationView & {
   achievementFormConfig: AchievementFormConfig | null;
   periodState: AssessmentPeriodState;
   periodName: string;
+  periodStartDate: Date;
   achievementDeadline: Date | null;
   periodEndDate: Date;
   reviewFrequency: ReviewCycleFrequency;
@@ -563,6 +674,8 @@ export type MyAllocationView = TargetAllocationView & {
 
 export type ChildAllocationSummary = {
   id: string;
+  assignedToUserId: string | null;
+  assignedToUnitId: string | null;
   assignedToUserName: string | null;
   assignedToUnitName: string | null;
   targetValue: number | null;

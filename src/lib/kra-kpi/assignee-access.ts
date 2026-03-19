@@ -32,7 +32,6 @@ export function canRecord(
   if (periodState !== "IN_PROGRESS" && periodState !== "UNDER_REVIEW") {
     return false;
   }
-  if (alloc.state === "LOCKED") return false;
 
   const isUnitHead = alloc.assignedToUnitId
     ? ctx.headOfUnits.some((u) => u.unitId === alloc.assignedToUnitId)
@@ -94,6 +93,7 @@ export function showBothChoiceUI(
 ): boolean {
   if (!alloc.assignedToUnitId) return false;
   if (alloc.allocationType !== "BOTH") return false;
+  if (alloc.state === "LOCKED") return false;
   if (alloc.childCount > 0) return false;
 
   return ctx.headOfUnits.some((u) => u.unitId === alloc.assignedToUnitId);

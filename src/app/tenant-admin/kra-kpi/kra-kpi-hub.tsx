@@ -11,6 +11,7 @@ import {
   Tag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { MeasurementConfig } from "@/lib/kra-kpi/shared";
 import { AssessmentPeriodList } from "@/components/tenant/kra-kpi/assessment-period-list";
 import { KraCategoryList } from "@/components/tenant/kra-kpi/kra-category-list";
 import { KraDefinitionList } from "@/components/tenant/kra-kpi/kra-definition-list";
@@ -37,12 +38,19 @@ type KraView = {
   title: string;
   weightage: number;
   periodId: string;
+  state: string;
+  activeKpiCount: number;
+  activeKpiWeightageSum: number;
+  draftKpiCount: number;
 };
 
 type KpiView = {
   id: string;
   title: string;
   measurementType: string;
+  measurementConfig: MeasurementConfig | null;
+  state: string;
+  kraState: string;
 };
 
 export function KraKpiHub() {
@@ -86,6 +94,28 @@ export function KraKpiHub() {
     } catch { /* ignore */ }
   }, []);
 
+  useEffect(() => {
+    if (!selectedKraId) {
+      return;
+    }
+    if (!kras.some((kra) => kra.id === selectedKraId)) {
+      setSelectedKraId(null);
+      setSelectedKpiId(null);
+      setKpis([]);
+      setShowAchievementForm(false);
+    }
+  }, [kras, selectedKraId]);
+
+  useEffect(() => {
+    if (!selectedKpiId) {
+      return;
+    }
+    if (!kpis.some((kpi) => kpi.id === selectedKpiId)) {
+      setSelectedKpiId(null);
+      setShowAchievementForm(false);
+    }
+  }, [kpis, selectedKpiId]);
+
   const handleSelectPeriod = (periodId: string, nextTab?: Tab) => {
     const period = periods.find((p) => p.id === periodId);
     setSelectedPeriodId(periodId);
@@ -126,6 +156,18 @@ export function KraKpiHub() {
   const selectedKraWeightage = selectedKra?.weightage ?? 0;
   const selectedKpiTitle = selectedKpi?.title ?? null;
   const selectedKpiMeasurementType = selectedKpi?.measurementType ?? "NUMERIC";
+  const selectedKpiMeasurementConfig = selectedKpi?.measurementConfig ?? null;
+  const isSelectedKpiLive =
+    selectedKpi?.state === "ACTIVE" && selectedKpi.kraState === "ACTIVE";
+  const selectableKpis = kpis.filter(
+    (kpi) => kpi.state === "ACTIVE" && kpi.kraState === "ACTIVE",
+  );
+
+  useEffect(() => {
+    if (selectedKraId) {
+      void fetchKpis(selectedKraId);
+    }
+  }, [fetchKpis, kras, selectedKraId]);
 
   const selectCls = "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:border-brand focus:ring-1 focus:ring-brand/30";
 
@@ -191,7 +233,7 @@ export function KraKpiHub() {
                 className={selectCls}
               >
                 <option value="">Select KPI...</option>
-                {kpis.map((k: KpiView) => <option key={k.id} value={k.id}>{k.title}</option>)}
+                {selectableKpis.map((k: KpiView) => <option key={k.id} value={k.id}>{k.title}</option>)}
               </select>
             </div>
           )}
@@ -229,6 +271,7 @@ export function KraKpiHub() {
             kraTitle={selectedKraTitle ?? undefined}
             kraWeightage={selectedKraWeightage}
             onBack={() => setActiveTab("kras")}
+            onKpisLoaded={setKpis}
           />
         )}
         {activeTab === "kpis" && !selectedKraId && (
@@ -237,12 +280,13 @@ export function KraKpiHub() {
           </div>
         )}
 
-        {activeTab === "targets" && selectedPeriodId && selectedKpiId && (
+        {activeTab === "targets" && selectedPeriodId && selectedKpiId && isSelectedKpiLive && (
           <TargetAllocationTable
             periodId={selectedPeriodId}
             kpiDefinitionId={selectedKpiId}
             kpiTitle={selectedKpiTitle ?? undefined}
             measurementType={selectedKpiMeasurementType}
+            measurementConfig={selectedKpiMeasurementConfig}
           />
         )}
         {activeTab === "targets" && (!selectedPeriodId || !selectedKpiId) && (
@@ -250,11 +294,16 @@ export function KraKpiHub() {
             Select a period, KRA, and KPI to view target allocations
           </div>
         )}
+        {activeTab === "targets" && selectedPeriodId && selectedKpiId && !isSelectedKpiLive && (
+          <div className="py-12 text-center text-sm text-slate-400">
+            Select an ACTIVE KPI to manage target allocations
+          </div>
+        )}
 
         {activeTab === "achievements" && selectedPeriodId && (
           <div className="space-y-5">
             <div className="flex items-center justify-between">
-              {!showAchievementForm && selectedKpiId && (
+              {!showAchievementForm && selectedKpiId && isSelectedKpiLive && (
                 <button
                   type="button"
                   onClick={() => setShowAchievementForm(true)}
@@ -264,7 +313,7 @@ export function KraKpiHub() {
                 </button>
               )}
             </div>
-            {showAchievementForm && selectedPeriodId && selectedKpiId && (
+            {showAchievementForm && selectedPeriodId && selectedKpiId && isSelectedKpiLive && (
               <AchievementForm
                 periodId={selectedPeriodId}
                 kpiDefinitionId={selectedKpiId}
@@ -273,7 +322,7 @@ export function KraKpiHub() {
                 onCancel={() => setShowAchievementForm(false)}
               />
             )}
-            <AchievementReviewList periodId={selectedPeriodId} kpiDefinitionId={selectedKpiId ?? undefined} />
+            <AchievementReviewList periodId={selectedPeriodId} kpiDefinitionId={isSelectedKpiLive ? selectedKpiId ?? undefined : undefined} />
           </div>
         )}
         {activeTab === "achievements" && !selectedPeriodId && (

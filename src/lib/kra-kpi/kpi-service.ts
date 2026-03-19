@@ -1,8 +1,18 @@
-import type { Role } from "@prisma/client";
+import type { Role, KpiDefinitionState } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import type { KraKpiActionResult, KpiDefinitionView, AchievementFormConfig } from "./shared";
-import { measurementConfigSchema, scoringConfigSchema, achievementFormConfigSchema } from "./shared";
+import type {
+  KraKpiActionResult,
+  KpiDefinitionView,
+  AchievementFormConfig,
+  MeasurementConfig,
+} from "./shared";
+import {
+  measurementConfigSchema,
+  scoringConfigSchema,
+  achievementFormConfigSchema,
+  getMeasurementCapValue,
+} from "./shared";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -72,8 +82,13 @@ const updateKpiSchema = z.object({
   sortOrder: z.number().int().min(0).max(9999).optional(),
 });
 
+const changeKpiStateSchema = z.object({
+  state: z.enum(["DRAFT", "ACTIVE"]),
+});
+
 export type CreateKpiInput = z.input<typeof createKpiSchema>;
 export type UpdateKpiInput = z.input<typeof updateKpiSchema>;
+export type ChangeKpiStateInput = z.input<typeof changeKpiStateSchema>;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -89,6 +104,59 @@ function canModifyKpiInPeriodState(state: string): boolean {
   return state === "DRAFT" || state === "OPEN" || state === "UNDER_REVIEW";
 }
 
+function validateMeasurementSettings(
+  measurementType: string,
+  measurementConfig: MeasurementConfig | null | undefined,
+  defaultTarget: number | null | undefined,
+): string | null {
+  if (!measurementConfig) {
+    return null;
+  }
+
+  if (measurementConfig.type !== measurementType) {
+    return `Measurement config type "${measurementConfig.type}" does not match measurement type "${measurementType}".`;
+  }
+
+  switch (measurementConfig.type) {
+    case "NUMERIC":
+    case "PERCENTAGE":
+    case "CURRENCY":
+      if (
+        measurementConfig.minValue != null &&
+        measurementConfig.maxValue != null &&
+        measurementConfig.maxValue < measurementConfig.minValue
+      ) {
+        return "Maximum cap cannot be lower than the configured minimum value.";
+      }
+      break;
+    case "RATING":
+      if (measurementConfig.maxRating < measurementConfig.minRating) {
+        return "Maximum rating cap cannot be lower than the minimum rating.";
+      }
+      break;
+    default:
+      break;
+  }
+
+  const capValue = getMeasurementCapValue(measurementType, measurementConfig);
+  if (capValue != null) {
+    if (capValue < 0) {
+      return "Maximum cap must be zero or greater.";
+    }
+    if (
+      defaultTarget != null &&
+      (measurementType === "NUMERIC" ||
+        measurementType === "PERCENTAGE" ||
+        measurementType === "CURRENCY") &&
+      defaultTarget > capValue
+    ) {
+      return "Default target cannot exceed the configured maximum cap.";
+    }
+  }
+
+  return null;
+}
+
 // ── List KPIs ────────────────────────────────────────────────────────────────
 
 export async function listKpis(
@@ -101,7 +169,7 @@ export async function listKpis(
       ...(kraDefinitionId && { kraDefinitionId }),
     },
     include: {
-      kraDefinition: { select: { title: true, tenantId: true } },
+      kraDefinition: { select: { title: true, tenantId: true, state: true } },
       startingUnit: { select: { name: true } },
       _count: { select: { targetAllocations: true } },
     },
@@ -112,6 +180,7 @@ export async function listKpis(
     id: k.id,
     kraDefinitionId: k.kraDefinitionId,
     kraTitle: k.kraDefinition.title,
+    kraState: k.kraDefinition.state,
     title: k.title,
     description: k.description,
     measurementType: k.measurementType,
@@ -145,7 +214,7 @@ export async function getKpi(
   const k = await prisma.kpiDefinition.findFirst({
     where: { id: kpiId, kraDefinition: { tenantId } },
     include: {
-      kraDefinition: { select: { title: true, tenantId: true } },
+      kraDefinition: { select: { title: true, tenantId: true, state: true } },
       startingUnit: { select: { name: true } },
       _count: { select: { targetAllocations: true } },
     },
@@ -156,6 +225,7 @@ export async function getKpi(
     id: k.id,
     kraDefinitionId: k.kraDefinitionId,
     kraTitle: k.kraDefinition.title,
+    kraState: k.kraDefinition.state,
     title: k.title,
     description: k.description,
     measurementType: k.measurementType,
@@ -243,14 +313,16 @@ export async function createKpi(
     };
   }
 
-  // Validate measurementConfig matches measurementType
-  if (data.measurementConfig) {
-    if (data.measurementConfig.type !== data.measurementType) {
-      return {
-        status: "error",
-        message: `Measurement config type "${data.measurementConfig.type}" does not match measurement type "${data.measurementType}".`,
-      };
-    }
+  const measurementSettingsError = validateMeasurementSettings(
+    data.measurementType,
+    data.measurementConfig as MeasurementConfig | undefined,
+    data.defaultTarget,
+  );
+  if (measurementSettingsError) {
+    return {
+      status: "error",
+      message: measurementSettingsError,
+    };
   }
 
   // Validate scoringConfig matches scoringMethod
@@ -380,6 +452,28 @@ export async function updateKpi(
     }
   }
 
+  const nextMeasurementType = data.measurementType ?? kpi.measurementType;
+  const nextMeasurementConfig =
+    data.measurementConfig !== undefined
+      ? (data.measurementConfig as MeasurementConfig | null)
+      : data.measurementType !== undefined &&
+          data.measurementType !== kpi.measurementType
+        ? null
+      : (kpi.measurementConfig as MeasurementConfig | null);
+  const nextDefaultTarget =
+    data.defaultTarget !== undefined ? data.defaultTarget : kpi.defaultTarget;
+  const measurementSettingsError = validateMeasurementSettings(
+    nextMeasurementType,
+    nextMeasurementConfig,
+    nextDefaultTarget,
+  );
+  if (measurementSettingsError) {
+    return {
+      status: "error",
+      message: measurementSettingsError,
+    };
+  }
+
   await prisma.$transaction(async (tx) => {
     // Build update payload — use Prisma's unchecked input to avoid relation type conflicts
     const updateData: Record<string, unknown> = {};
@@ -426,6 +520,101 @@ export async function updateKpi(
   });
 
   return { status: "success", message: "KPI updated." };
+}
+
+export async function changeKpiState(
+  kpiId: string,
+  tenantId: string,
+  input: ChangeKpiStateInput,
+  actorUserId: string,
+  actorRole: Role,
+): Promise<KraKpiActionResult> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", message: "Insufficient permissions." };
+  }
+
+  const parsed = changeKpiStateSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid input." };
+  }
+
+  const nextState = parsed.data.state as KpiDefinitionState;
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiId, kraDefinition: { tenantId } },
+    include: {
+      kraDefinition: {
+        select: {
+          state: true,
+          period: { select: { state: true } },
+        },
+      },
+      _count: {
+        select: {
+          targetAllocations: true,
+          achievements: true,
+        },
+      },
+    },
+  });
+  if (!kpi) {
+    return { status: "error", message: "KPI not found." };
+  }
+
+  if (kpi.state === "ARCHIVED") {
+    return { status: "error", message: "Cannot change the state of an archived KPI." };
+  }
+  if (kpi.kraDefinition.state === "ARCHIVED") {
+    return { status: "error", message: "Cannot change KPI state under an archived KRA." };
+  }
+  if (!canModifyKpiInPeriodState(kpi.kraDefinition.period.state)) {
+    return {
+      status: "error",
+      message: `Cannot change KPI state while the period is in "${kpi.kraDefinition.period.state}" state.`,
+    };
+  }
+  if (kpi.state === nextState) {
+    return { status: "error", message: `KPI is already in "${nextState}" state.` };
+  }
+  if (nextState === "ACTIVE" && kpi.kraDefinition.state !== "ACTIVE") {
+    return {
+      status: "error",
+      message: "Activate the parent KRA before activating this KPI.",
+    };
+  }
+  if (
+    nextState === "DRAFT" &&
+    (kpi._count.targetAllocations > 0 || kpi._count.achievements > 0)
+  ) {
+    return {
+      status: "error",
+      message: "Cannot move KPI back to DRAFT once targets or achievements exist. Remove them first.",
+    };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.kpiDefinition.update({
+      where: { id: kpiId },
+      data: { state: nextState },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "KpiDefinition",
+        targetId: kpiId,
+        action: "STATE_CHANGE",
+        previousState: { state: kpi.state },
+        newState: { state: nextState },
+      },
+    });
+  });
+
+  return {
+    status: "success",
+    message: `KPI "${kpi.title}" moved to ${nextState}.`,
+  };
 }
 
 // ── Delete KPI ───────────────────────────────────────────────────────────────

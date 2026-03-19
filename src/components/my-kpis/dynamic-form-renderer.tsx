@@ -54,6 +54,7 @@ function renderField(
           value={(value as string) ?? ""}
           onChange={(e) => onChange(e.target.value)}
           placeholder={field.placeholder}
+          pattern={field.pattern}
           disabled={readOnly}
         />
       );
