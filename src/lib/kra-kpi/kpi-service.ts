@@ -1,8 +1,8 @@
 import type { Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import type { KraKpiActionResult, KpiDefinitionView } from "./shared";
-import { measurementConfigSchema, scoringConfigSchema } from "./shared";
+import type { KraKpiActionResult, KpiDefinitionView, AchievementFormConfig } from "./shared";
+import { measurementConfigSchema, scoringConfigSchema, achievementFormConfigSchema } from "./shared";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -35,6 +35,8 @@ const createKpiSchema = z.object({
   isPerCapita: z.boolean().default(false),
   allocationType: z.enum(["DEPARTMENT", "INDIVIDUAL", "BOTH"]).default("BOTH"),
   startingUnitId: z.string().trim().min(1, "Select a starting unit."),
+  achievementTemplateKey: z.string().trim().max(50).optional(),
+  achievementFormConfig: achievementFormConfigSchema.optional(),
   guidanceNotes: z.string().trim().max(2000).optional(),
   sortOrder: z.number().int().min(0).max(9999).default(0),
 });
@@ -64,6 +66,8 @@ const updateKpiSchema = z.object({
   isPerCapita: z.boolean().optional(),
   allocationType: z.enum(["DEPARTMENT", "INDIVIDUAL", "BOTH"]).optional(),
   startingUnitId: z.string().trim().min(1, "Select a starting unit.").optional(),
+  achievementTemplateKey: z.string().trim().max(50).nullable().optional(),
+  achievementFormConfig: achievementFormConfigSchema.nullable().optional(),
   guidanceNotes: z.string().trim().max(2000).nullable().optional(),
   sortOrder: z.number().int().min(0).max(9999).optional(),
 });
@@ -122,6 +126,8 @@ export async function listKpis(
     allocationType: k.allocationType,
     startingUnitId: k.startingUnitId,
     startingUnitName: k.startingUnit.name,
+    achievementTemplateKey: k.achievementTemplateKey,
+    achievementFormConfig: k.achievementFormConfig as AchievementFormConfig | null,
     state: k.state,
     sortOrder: k.sortOrder,
     guidanceNotes: k.guidanceNotes,
@@ -164,6 +170,8 @@ export async function getKpi(
     allocationType: k.allocationType,
     startingUnitId: k.startingUnitId,
     startingUnitName: k.startingUnit.name,
+    achievementTemplateKey: k.achievementTemplateKey,
+    achievementFormConfig: k.achievementFormConfig as AchievementFormConfig | null,
     state: k.state,
     sortOrder: k.sortOrder,
     guidanceNotes: k.guidanceNotes,
@@ -272,6 +280,8 @@ export async function createKpi(
         isPerCapita: data.isPerCapita,
         allocationType: data.allocationType,
         startingUnitId: data.startingUnitId,
+        achievementTemplateKey: data.achievementTemplateKey,
+        achievementFormConfig: data.achievementFormConfig as object | undefined,
         guidanceNotes: data.guidanceNotes,
         sortOrder: data.sortOrder,
       },
@@ -388,6 +398,10 @@ export async function updateKpi(
     if (data.isPerCapita !== undefined) updateData.isPerCapita = data.isPerCapita;
     if (data.allocationType !== undefined) updateData.allocationType = data.allocationType;
     if (data.startingUnitId !== undefined) updateData.startingUnitId = data.startingUnitId;
+    if (data.achievementTemplateKey !== undefined)
+      updateData.achievementTemplateKey = data.achievementTemplateKey;
+    if (data.achievementFormConfig !== undefined)
+      updateData.achievementFormConfig = data.achievementFormConfig as object | null;
     if (data.guidanceNotes !== undefined) updateData.guidanceNotes = data.guidanceNotes;
     if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder;
 

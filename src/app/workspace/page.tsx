@@ -5,6 +5,7 @@ import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
 import { getShellIdentity } from "@/lib/auth/access";
 import { requireTenantUser } from "@/lib/auth/session";
+import { getNavigationForRole } from "@/lib/navigation";
 
 export default async function WorkspacePage() {
   const context = await requireTenantUser();
@@ -14,6 +15,7 @@ export default async function WorkspacePage() {
       eyebrow="Workspace"
       title="Authenticated access is active"
       description="This page confirms that tenant user login, organization context, and route protection are working against the current membership state."
+      navigationGroups={getNavigationForRole(context.role, context.isSuperadmin)}
       userSummary={getShellIdentity(context)}
     >
       <section className="grid gap-4 md:grid-cols-3">

@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { Loader2, Check, X, AlertCircle } from "lucide-react";
 import { TooltipHint } from "./tooltip-hint";
-import { TOOLTIPS } from "@/lib/kra-kpi/shared";
+import { TOOLTIPS, ACHIEVEMENT_TEMPLATES } from "@/lib/kra-kpi/shared";
+import type { AchievementFieldConfig, AchievementFormConfig } from "@/lib/kra-kpi/shared";
 
 const MEASUREMENT_TYPES = [
   { value: "NUMERIC", label: "Numeric" },
@@ -52,6 +53,8 @@ type KpiFormProps = {
     startingUnitId: string;
     guidanceNotes: string | null;
     sortOrder: number;
+    achievementTemplateKey?: string | null;
+    achievementFormConfig?: AchievementFormConfig | null;
   };
   onDone: () => void;
   onCancel: () => void;
@@ -71,8 +74,29 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   const [startingUnitId, setStartingUnitId] = useState(initial?.startingUnitId ?? "");
   const [guidanceNotes, setGuidanceNotes] = useState(initial?.guidanceNotes ?? "");
   const [sortOrder, setSortOrder] = useState(initial?.sortOrder ?? 0);
+  const [templateKey, setTemplateKey] = useState(initial?.achievementTemplateKey ?? "");
+  const [customFields, setCustomFields] = useState<AchievementFieldConfig[]>(
+    initial?.achievementFormConfig?.fields ?? []
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleTemplateSelect = (key: string) => {
+    setTemplateKey(key);
+    if (key && ACHIEVEMENT_TEMPLATES[key]) {
+      setCustomFields([...ACHIEVEMENT_TEMPLATES[key].fields]);
+    } else {
+      setCustomFields([]);
+    }
+  };
+
+  const TEMPLATE_OPTIONS = [
+    { value: "", label: "No Template" },
+    ...Object.entries(ACHIEVEMENT_TEMPLATES).map(([key, tmpl]) => ({
+      value: key,
+      label: tmpl.label,
+    })),
+  ];
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,6 +134,11 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         ? "/api/tenant/kra-kpi/kpis"
         : `/api/tenant/kra-kpi/kpis/${initial!.id}`;
 
+      const formConfig: AchievementFormConfig | null =
+        customFields.length > 0
+          ? { templateKey: templateKey || undefined, fields: customFields }
+          : null;
+
       const body: Record<string, unknown> = {
         ...(mode === "create" && { kraDefinitionId }),
         title: trimmedTitle,
@@ -123,6 +152,8 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         isPerCapita,
         allocationType,
         startingUnitId,
+        achievementTemplateKey: templateKey || (mode === "edit" ? null : undefined),
+        achievementFormConfig: formConfig ?? (mode === "edit" ? null : undefined),
         guidanceNotes: guidanceNotes.trim() || (mode === "edit" ? null : undefined),
         sortOrder,
       };
@@ -240,6 +271,28 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         <div>
           <label className={labelCls}>Sort order</label>
           <input type="number" value={sortOrder} onChange={(e) => setSortOrder(Number(e.target.value))} min={0} max={9999} className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand/30" />
+        </div>
+
+        {/* Achievement Template */}
+        <div className="sm:col-span-2 lg:col-span-3 border-t border-slate-200 pt-3 mt-1">
+          <label className={labelCls}>Achievement Template</label>
+          <select value={templateKey} onChange={(e) => handleTemplateSelect(e.target.value)} className={inputCls}>
+            {TEMPLATE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+          {customFields.length > 0 && (
+            <div className="mt-2 space-y-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Template Fields ({customFields.length})</span>
+              <div className="max-h-40 overflow-y-auto rounded-md border border-slate-100 bg-white p-2 space-y-1">
+                {customFields.map((f, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs text-slate-600">
+                    <span className="font-medium">{f.label}</span>
+                    <span className="text-slate-400">({f.type})</span>
+                    {f.required && <span className="text-rose-500">*</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

@@ -30,6 +30,7 @@ export const tenantNavigationGroups: NavigationGroup[] = [
     defaultOpen: true,
     items: [
       { href: "/tenant-admin", label: "Dashboard", icon: "layout-dashboard" },
+      { href: "/my-kpis", label: "My KPIs", icon: "clipboard-check" },
       { href: "/tenant-admin/users", label: "Users", icon: "users" },
       { href: "/tenant-admin/structure", label: "Organization", icon: "network" },
       { href: "/tenant-admin/personnel", label: "Personnel", icon: "contact" },
@@ -44,6 +45,33 @@ export const tenantNavigationGroups: NavigationGroup[] = [
     ],
   },
 ];
+
+export const userNavigationGroups: NavigationGroup[] = [
+  {
+    label: "My Work",
+    defaultOpen: true,
+    items: [
+      { href: "/workspace", label: "Dashboard", icon: "layout-dashboard" },
+      { href: "/my-kpis", label: "My KPIs", icon: "clipboard-check" },
+    ],
+  },
+  {
+    label: "Platform",
+    items: [
+      { href: "/insights", label: "Insights", icon: "bar-chart-2" },
+    ],
+  },
+];
+
+/**
+ * Returns the right navigation groups for the given role context.
+ * Use this when the page is accessible to multiple roles.
+ */
+export function getNavigationForRole(role: string | null, isSuperadmin: boolean): NavigationGroup[] {
+  if (isSuperadmin) return superadminNavigationGroups;
+  if (role === "TENANT_OWNER" || role === "TENANT_ADMIN") return tenantNavigationGroups;
+  return userNavigationGroups;
+}
 
 export const superadminNavigationGroups: NavigationGroup[] = [
   {

@@ -198,8 +198,22 @@ enum TargetAllocationState {
 enum AchievementState {
   DRAFT            // being filled in
   SUBMITTED        // submitted for verification
+  RECOMMENDED      // dept head has endorsed
   VERIFIED         // approved
-  REJECTED         // sent back with reason
+  REJECTED         // sent back with reason (displayed as "Not Approved" in UI)
+}
+
+enum AchievementFieldType {
+  TEXT
+  TEXTAREA
+  NUMBER
+  DATE
+  URL
+  EMAIL
+  SELECT
+  MULTI_SELECT
+  BOOLEAN
+  FILE_LINK
 }
 
 enum ScoringMethod {
@@ -312,6 +326,7 @@ model Tenant {
   achievements          Achievement[]
   policy                TenantPolicy?
   roleDefinitions       OrgRoleDefinition[]
+  notifications         Notification[]
   personnelPolicy       TenantPersonnelPolicy?
   leaveTypeDefinitions  LeaveTypeDefinition[]
   leaveRecords          LeaveRecord[]
@@ -364,6 +379,7 @@ model User {
   managerLines        ReportingLine[]      @relation("OrgManagerLines")
   memberLines         ReportingLine[]      @relation("OrgMemberLines")
   targetAllocations   TargetAllocation[]   @relation("TargetUser")
+  notifications       Notification[]
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
@@ -767,6 +783,9 @@ model KpiDefinition {
   // ── Allocation ──
   allocationType    KpiAllocationType  @default(BOTH)
   startingUnitId    String             // originating department
+  // ── Achievement Template ──
+  achievementTemplateKey  String?    // "PUBLICATION", "PATENT", etc.
+  achievementFormConfig   Json?      // [{key, label, type, required, options?, pattern?}]
   // ── State ──
   state             KpiDefinitionState @default(DRAFT)
   sortOrder         Int                @default(0)
@@ -840,12 +859,18 @@ model Achievement {
   evidenceLinks         String[]           // URLs for now, file uploads in R2
   // Scoring
   computedScore         Float?             // 0-100
-  // Verification (simple in R1, reverse-route chain in R2)
+  // Dynamic form data (R1.1a)
+  achievementFormData       Json?      // filled-in custom fields per KPI template
+  // 2-level verification (R1.1a)
   state                 AchievementState   @default(DRAFT)
+  recommendedByUserId       String?
+  recommendedAt             DateTime?
+  recommendationNote        String?
   verifiedByUserId      String?
   verifiedAt            DateTime?
   verificationNote      String?
   rejectionReason       String?
+  verificationLog           Json?      // [{level, userId, userName, action, note, at}]
   reportingDate         DateTime           @default(now())
   createdAt             DateTime           @default(now())
   updatedAt             DateTime           @updatedAt
@@ -857,6 +882,25 @@ model Achievement {
   @@index([targetAllocationId])
   @@index([reportedByUserId, periodId])
   @@index([tenantId, state])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String   // recipient
+  type        String   // "KPI_ALLOCATED", "ACHIEVEMENT_VERIFIED", etc.
+  title       String
+  message     String
+  entityType  String?  // "Achievement", "TargetAllocation"
+  entityId    String?
+  linkUrl     String?  // deep link to the relevant page
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@index([tenantId, userId])
 }
 
 // ── Module 3: Personnel Lifecycle ────────────────────────────────────────────

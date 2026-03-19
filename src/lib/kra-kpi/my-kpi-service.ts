@@ -1,0 +1,639 @@
+import { prisma } from "@/lib/prisma";
+import { getUserAssignments } from "@/lib/org-structure/roles-service";
+import type {
+  MyKpiContext,
+  MyAllocationView,
+  AchievementView,
+  ReviewQueueItem,
+  MyDashboardSummary,
+  ChildAllocationSummary,
+  AchievementFormConfig,
+  VerificationLogEntry,
+} from "./shared";
+
+// ── Build MyKpiContext ───────────────────────────────────────────────────────
+
+export async function getMyKpiContext(
+  tenantId: string,
+  userId: string,
+): Promise<MyKpiContext> {
+  const assignments = await getUserAssignments(tenantId, userId);
+
+  const headOfUnits = assignments
+    .filter((a) => a.isUnitHead)
+    .map((a) => ({ unitId: a.unitId, unitName: a.unitName, unitCode: a.unitCode }));
+
+  const memberOfUnits = assignments.map((a) => ({
+    unitId: a.unitId,
+    unitName: a.unitName,
+    unitCode: a.unitCode,
+  }));
+
+  return { userId, headOfUnits, memberOfUnits };
+}
+
+// ── Get My Allocations ───────────────────────────────────────────────────────
+
+export async function getMyAllocations(
+  tenantId: string,
+  userId: string,
+  periodId: string,
+): Promise<MyAllocationView[]> {
+  const ctx = await getMyKpiContext(tenantId, userId);
+  const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
+  const allUnitIds = ctx.memberOfUnits.map((u) => u.unitId);
+
+  // Fetch allocations where:
+  // 1. assigned to user directly, OR
+  // 2. assigned to a unit the user heads (dept-level)
+  const allocations = await prisma.targetAllocation.findMany({
+    where: {
+      tenantId,
+      periodId,
+      OR: [
+        { assignedToUserId: userId },
+        ...(headUnitIds.length > 0
+          ? [{ assignedToUnitId: { in: headUnitIds } }]
+          : []),
+      ],
+    },
+    include: {
+      kpiDefinition: {
+        include: {
+          kraDefinition: {
+            select: {
+              id: true,
+              title: true,
+              weightage: true,
+              category: { select: { displayLabel: true, categoryKey: true } },
+            },
+          },
+          startingUnit: { select: { id: true, name: true } },
+        },
+      },
+      assignedToUnit: { select: { name: true } },
+      assignedToUser: { select: { firstName: true, lastName: true } },
+      parentAllocation: { select: { targetValue: true } },
+      childAllocations: {
+        include: {
+          assignedToUser: { select: { firstName: true, lastName: true } },
+          assignedToUnit: { select: { name: true } },
+          achievements: {
+            where: { reportedByUserId: { not: undefined } },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: {
+              state: true,
+              actualValue: true,
+              computedScore: true,
+            },
+          },
+        },
+      },
+      achievements: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        include: { kpiDefinition: { select: { title: true } } },
+      },
+      period: {
+        select: {
+          state: true,
+          name: true,
+          achievementDeadline: true,
+          endDate: true,
+          reviewFrequency: true,
+        },
+      },
+      _count: { select: { childAllocations: true, achievements: true } },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  // Filter out: KPI DRAFT or 0 weightage
+  const filtered = allocations.filter((a) => {
+    const kpi = a.kpiDefinition;
+    if (kpi.state === "DRAFT") return false;
+    if (kpi.weightage === 0) return false;
+    return true;
+  });
+
+  // Build user name lookup for achievement views
+  const reporterIds = filtered
+    .flatMap((a) => a.achievements.map((ach) => ach.reportedByUserId))
+    .filter(Boolean);
+  const reporters = reporterIds.length > 0
+    ? await prisma.user.findMany({
+        where: { id: { in: [...new Set(reporterIds)] } },
+        select: { id: true, firstName: true, lastName: true },
+      })
+    : [];
+  const reporterMap = new Map(
+    reporters.map((u) => [u.id, `${u.firstName} ${u.lastName}`]),
+  );
+
+  return filtered.map((a): MyAllocationView => {
+    const kpi = a.kpiDefinition;
+    const kra = kpi.kraDefinition;
+    const latestAch = a.achievements[0] ?? null;
+    const isHead = headUnitIds.includes(a.assignedToUnitId ?? "");
+    const section: "department" | "individual" = a.assignedToUnitId && isHead
+      ? "department"
+      : "individual";
+
+    const childSummaries: ChildAllocationSummary[] = a.childAllocations.map((c) => {
+      const childAch = c.achievements[0] ?? null;
+      return {
+        id: c.id,
+        assignedToUserName: c.assignedToUser
+          ? `${c.assignedToUser.firstName} ${c.assignedToUser.lastName}`
+          : null,
+        assignedToUnitName: c.assignedToUnit?.name ?? null,
+        targetValue: c.targetValue,
+        achievementState: childAch?.state ?? null,
+        actualValue: childAch?.actualValue ?? null,
+        computedScore: childAch?.computedScore ?? null,
+      };
+    });
+
+    const achievementView: AchievementView | null = latestAch
+      ? {
+          id: latestAch.id,
+          tenantId: latestAch.tenantId,
+          periodId: latestAch.periodId,
+          kpiDefinitionId: latestAch.kpiDefinitionId,
+          kpiTitle: latestAch.kpiDefinition.title,
+          targetAllocationId: latestAch.targetAllocationId,
+          reportedByUserId: latestAch.reportedByUserId,
+          reportedByUserName: reporterMap.get(latestAch.reportedByUserId) ?? "Unknown",
+          actualValue: latestAch.actualValue,
+          actualDate: latestAch.actualDate,
+          actualMilestone: latestAch.actualMilestone,
+          actualGrade: latestAch.actualGrade,
+          actualBoolean: latestAch.actualBoolean,
+          actualRating: latestAch.actualRating,
+          evidenceDescription: latestAch.evidenceDescription,
+          evidenceLinks: latestAch.evidenceLinks,
+          achievementFormData: latestAch.achievementFormData as Record<string, unknown> | null,
+          computedScore: latestAch.computedScore,
+          state: latestAch.state,
+          recommendedByUserId: latestAch.recommendedByUserId,
+          recommendedAt: latestAch.recommendedAt,
+          recommendationNote: latestAch.recommendationNote,
+          verifiedByUserId: latestAch.verifiedByUserId,
+          verifiedAt: latestAch.verifiedAt,
+          verificationNote: latestAch.verificationNote,
+          rejectionReason: latestAch.rejectionReason,
+          verificationLog: (latestAch.verificationLog as VerificationLogEntry[]) ?? [],
+          reportingDate: latestAch.reportingDate,
+          createdAt: latestAch.createdAt,
+        }
+      : null;
+
+    return {
+      id: a.id,
+      tenantId: a.tenantId,
+      periodId: a.periodId,
+      kpiDefinitionId: a.kpiDefinitionId,
+      kpiTitle: kpi.title,
+      assignedToUnitId: a.assignedToUnitId,
+      assignedToUnitName: a.assignedToUnit?.name ?? null,
+      assignedToUserId: a.assignedToUserId,
+      assignedToUserName: a.assignedToUser
+        ? `${a.assignedToUser.firstName} ${a.assignedToUser.lastName}`
+        : null,
+      allocatedByUserId: a.allocatedByUserId,
+      targetValue: a.targetValue,
+      targetDate: a.targetDate,
+      targetMilestone: a.targetMilestone,
+      targetGrade: a.targetGrade,
+      targetBoolean: a.targetBoolean,
+      targetRating: a.targetRating,
+      state: a.state,
+      lockedAt: a.lockedAt,
+      parentAllocationId: a.parentAllocationId,
+      notes: a.notes,
+      childCount: a._count.childAllocations,
+      achievementCount: a._count.achievements,
+      createdAt: a.createdAt,
+      // Extended fields
+      kraTitle: kra.title,
+      kraWeightage: kra.weightage,
+      categoryLabel: kra.category?.displayLabel ?? null,
+      categoryKey: kra.category?.categoryKey ?? null,
+      measurementType: kpi.measurementType,
+      unitLabel: kpi.unitLabel,
+      kpiWeightage: kpi.weightage,
+      defaultTarget: kpi.defaultTarget,
+      scoringDirection: kpi.scoringDirection,
+      isPerCapita: kpi.isPerCapita,
+      allocationType: kpi.allocationType,
+      startingUnitId: kpi.startingUnit.id,
+      startingUnitName: kpi.startingUnit.name,
+      guidanceNotes: kpi.guidanceNotes,
+      achievementTemplateKey: kpi.achievementTemplateKey,
+      achievementFormConfig: kpi.achievementFormConfig as AchievementFormConfig | null,
+      periodState: a.period.state,
+      periodName: a.period.name,
+      achievementDeadline: a.period.achievementDeadline,
+      periodEndDate: a.period.endDate,
+      reviewFrequency: a.period.reviewFrequency,
+      achievement: achievementView,
+      parentTargetValue: a.parentAllocation?.targetValue ?? null,
+      section,
+      childAllocations: childSummaries,
+    };
+  });
+}
+
+// ── Get Review Queue ─────────────────────────────────────────────────────────
+
+export async function getMyReviewQueue(
+  tenantId: string,
+  userId: string,
+  periodId: string,
+): Promise<ReviewQueueItem[]> {
+  const ctx = await getMyKpiContext(tenantId, userId);
+  if (ctx.headOfUnits.length === 0) return [];
+
+  const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
+  const items: ReviewQueueItem[] = [];
+
+  // Level 1: Recommendation queue — SUBMITTED achievements for units the user heads
+  const submittedAchievements = await prisma.achievement.findMany({
+    where: {
+      tenantId,
+      periodId,
+      state: "SUBMITTED",
+      OR: [
+        { targetAllocation: { assignedToUnitId: { in: headUnitIds } } },
+        {
+          targetAllocation: {
+            parentAllocation: { assignedToUnitId: { in: headUnitIds } },
+          },
+        },
+        {
+          targetAllocation: { assignedToUserId: { not: null } },
+          reportedByUserId: { not: userId },
+        },
+      ],
+    },
+    include: {
+      kpiDefinition: {
+        select: {
+          title: true,
+          measurementType: true,
+          unitLabel: true,
+          startingUnitId: true,
+          achievementFormConfig: true,
+        },
+      },
+      targetAllocation: {
+        select: { targetValue: true, assignedToUnitId: true, assignedToUserId: true },
+      },
+    },
+  });
+
+  // Filter: only include items where user is actually head of the unit
+  for (const ach of submittedAchievements) {
+    const alloc = ach.targetAllocation;
+    if (!alloc) continue;
+
+    // Check the user is head of the unit this allocation belongs to
+    const unitId = alloc.assignedToUnitId;
+    const isHeadOfAllocUnit = unitId ? headUnitIds.includes(unitId) : false;
+
+    // Or if it's an individual allocation cascaded from a unit they head
+    let isHeadOfParentUnit = false;
+    if (!isHeadOfAllocUnit && alloc.assignedToUserId) {
+      const parentAlloc = await prisma.targetAllocation.findFirst({
+        where: {
+          childAllocations: { some: { id: { not: undefined } } },
+          assignedToUnitId: { in: headUnitIds },
+          achievements: { some: { id: ach.id } },
+        },
+      });
+      if (!parentAlloc) {
+        // Try finding via the target allocation's parent
+        const ta = await prisma.targetAllocation.findFirst({
+          where: { id: ach.targetAllocationId ?? "" },
+          select: { parentAllocation: { select: { assignedToUnitId: true } } },
+        });
+        isHeadOfParentUnit = ta?.parentAllocation?.assignedToUnitId
+          ? headUnitIds.includes(ta.parentAllocation.assignedToUnitId)
+          : false;
+      } else {
+        isHeadOfParentUnit = true;
+      }
+    }
+
+    if (!isHeadOfAllocUnit && !isHeadOfParentUnit) continue;
+
+    const reporter = await prisma.user.findUnique({
+      where: { id: ach.reportedByUserId },
+      select: { firstName: true, lastName: true },
+    });
+    const membership = await prisma.membership.findFirst({
+      where: { tenantId, userId: ach.reportedByUserId },
+      select: { designation: true },
+    });
+
+    items.push({
+      achievementId: ach.id,
+      facultyUserId: ach.reportedByUserId,
+      facultyName: reporter ? `${reporter.firstName} ${reporter.lastName}` : "Unknown",
+      facultyDesignation: membership?.designation ?? null,
+      kpiTitle: ach.kpiDefinition.title,
+      kpiDefinitionId: ach.kpiDefinitionId,
+      targetValue: alloc.targetValue,
+      actualValue: ach.actualValue,
+      measurementType: ach.kpiDefinition.measurementType,
+      unitLabel: ach.kpiDefinition.unitLabel,
+      achievementState: ach.state,
+      achievementFormData: ach.achievementFormData as Record<string, unknown> | null,
+      achievementFormConfig: ach.kpiDefinition.achievementFormConfig as AchievementFormConfig | null,
+      evidenceDescription: ach.evidenceDescription,
+      evidenceLinks: ach.evidenceLinks,
+      verificationLog: (ach.verificationLog as VerificationLogEntry[]) ?? [],
+      reportingDate: ach.reportingDate,
+      reviewLevel: "RECOMMEND",
+      startingUnitId: ach.kpiDefinition.startingUnitId,
+    });
+  }
+
+  // Level 2: Verification queue — RECOMMENDED achievements for KPIs starting from units the user heads
+  const recommendedAchievements = await prisma.achievement.findMany({
+    where: {
+      tenantId,
+      periodId,
+      state: "RECOMMENDED",
+      kpiDefinition: { startingUnitId: { in: headUnitIds } },
+    },
+    include: {
+      kpiDefinition: {
+        select: {
+          title: true,
+          measurementType: true,
+          unitLabel: true,
+          startingUnitId: true,
+          achievementFormConfig: true,
+        },
+      },
+      targetAllocation: {
+        select: { targetValue: true },
+      },
+    },
+  });
+
+  for (const ach of recommendedAchievements) {
+    const reporter = await prisma.user.findUnique({
+      where: { id: ach.reportedByUserId },
+      select: { firstName: true, lastName: true },
+    });
+    const membership = await prisma.membership.findFirst({
+      where: { tenantId, userId: ach.reportedByUserId },
+      select: { designation: true },
+    });
+
+    items.push({
+      achievementId: ach.id,
+      facultyUserId: ach.reportedByUserId,
+      facultyName: reporter ? `${reporter.firstName} ${reporter.lastName}` : "Unknown",
+      facultyDesignation: membership?.designation ?? null,
+      kpiTitle: ach.kpiDefinition.title,
+      kpiDefinitionId: ach.kpiDefinitionId,
+      targetValue: ach.targetAllocation?.targetValue ?? null,
+      actualValue: ach.actualValue,
+      measurementType: ach.kpiDefinition.measurementType,
+      unitLabel: ach.kpiDefinition.unitLabel,
+      achievementState: ach.state,
+      achievementFormData: ach.achievementFormData as Record<string, unknown> | null,
+      achievementFormConfig: ach.kpiDefinition.achievementFormConfig as AchievementFormConfig | null,
+      evidenceDescription: ach.evidenceDescription,
+      evidenceLinks: ach.evidenceLinks,
+      verificationLog: (ach.verificationLog as VerificationLogEntry[]) ?? [],
+      reportingDate: ach.reportingDate,
+      reviewLevel: "VERIFY",
+      startingUnitId: ach.kpiDefinition.startingUnitId,
+    });
+  }
+
+  return items;
+}
+
+// ── Get Dashboard Summary ────────────────────────────────────────────────────
+
+export async function getMyDashboardSummary(
+  tenantId: string,
+  userId: string,
+  periodId: string,
+): Promise<MyDashboardSummary | null> {
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+    select: { name: true },
+  });
+  if (!period) return null;
+
+  const allocs = await getMyAllocations(tenantId, userId, periodId);
+
+  const statusCounts: Record<string, number> = {
+    notStarted: 0,
+    inProgress: 0,
+    pendingReview: 0,
+    completed: 0,
+    notApproved: 0,
+    needsCascade: 0,
+  };
+
+  const kraMap = new Map<string, {
+    kraId: string;
+    kraTitle: string;
+    kraWeightage: number;
+    kpis: { weightage: number; score: number | null; verified: boolean }[];
+  }>();
+
+  let pendingReviewCount = 0;
+
+  for (const a of allocs) {
+    const ach = a.achievement;
+
+    if (!ach) {
+      if (a.section === "department" && (a.allocationType === "INDIVIDUAL" || a.allocationType === "BOTH") && a.childCount === 0) {
+        statusCounts.needsCascade++;
+      } else {
+        statusCounts.notStarted++;
+      }
+    } else {
+      switch (ach.state) {
+        case "DRAFT": statusCounts.inProgress++; break;
+        case "SUBMITTED":
+        case "RECOMMENDED": statusCounts.pendingReview++; pendingReviewCount++; break;
+        case "VERIFIED": statusCounts.completed++; break;
+        case "REJECTED": statusCounts.notApproved++; break;
+      }
+    }
+
+    // Build KRA breakdown
+    const kraKey = a.kraTitle;
+    if (!kraMap.has(kraKey)) {
+      kraMap.set(kraKey, {
+        kraId: kraKey,
+        kraTitle: a.kraTitle,
+        kraWeightage: a.kraWeightage,
+        kpis: [],
+      });
+    }
+    kraMap.get(kraKey)!.kpis.push({
+      weightage: a.kpiWeightage,
+      score: ach?.state === "VERIFIED" ? ach.computedScore : null,
+      verified: ach?.state === "VERIFIED",
+    });
+  }
+
+  // Compute weighted score
+  let weightedScore = 0;
+  let maxPossible = 0;
+  const kraBreakdown: MyDashboardSummary["kraBreakdown"] = [];
+
+  for (const [, kra] of kraMap) {
+    let kraScore = 0;
+    let kraVerified = 0;
+    let kraScoreSum = 0;
+    for (const kpi of kra.kpis) {
+      maxPossible += kpi.weightage;
+      if (kpi.verified && kpi.score != null) {
+        weightedScore += (kpi.score * kpi.weightage) / 100;
+        kraScoreSum += kpi.score;
+        kraVerified++;
+      }
+    }
+
+    kraScore = kraVerified > 0 ? kraScoreSum / kraVerified : 0;
+    kraBreakdown.push({
+      kraId: kra.kraId,
+      kraTitle: kra.kraTitle,
+      kraWeightage: kra.kraWeightage,
+      kpiCount: kra.kpis.length,
+      verifiedCount: kraVerified,
+      avgScore: Math.round(kraScore * 100) / 100,
+    });
+  }
+
+  const overallPercentage = maxPossible > 0
+    ? Math.round((weightedScore / maxPossible) * 100 * 100) / 100
+    : 0;
+
+  return {
+    periodId,
+    periodName: period.name,
+    totalAllocations: allocs.length,
+    statusCounts,
+    overallWeightedScore: Math.round(weightedScore * 100) / 100,
+    maxPossibleScore: maxPossible,
+    overallPercentage,
+    kraBreakdown,
+    pendingReviewCount,
+  };
+}
+
+// ── Get Unit Members (for cascade) ───────────────────────────────────────────
+
+export async function getMyUnitMembers(
+  tenantId: string,
+  unitId: string,
+): Promise<{ userId: string; userName: string; isUnitHead: boolean }[]> {
+  const version = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId,
+      state: { in: ["PUBLISHED", "VALIDATED"] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!version) return [];
+
+  const assignments = await prisma.orgRoleAssignment.findMany({
+    where: {
+      versionId: version.id,
+      unitId,
+      isActive: true,
+    },
+    include: {
+      user: { select: { id: true, firstName: true, lastName: true } },
+      roleDefinition: { select: { isUnitHead: true } },
+    },
+  });
+
+  const userMap = new Map<string, { userId: string; userName: string; isUnitHead: boolean }>();
+  for (const a of assignments) {
+    const existing = userMap.get(a.userId);
+    const isHead = a.roleDefinition?.isUnitHead ?? false;
+    if (!existing) {
+      userMap.set(a.userId, {
+        userId: a.userId,
+        userName: `${a.user.firstName} ${a.user.lastName}`,
+        isUnitHead: isHead,
+      });
+    } else if (isHead) {
+      existing.isUnitHead = true;
+    }
+  }
+
+  return Array.from(userMap.values());
+}
+
+// ── Get Child Units (for cascade to sub-units) ──────────────────────────────
+
+export async function getMyChildUnits(
+  tenantId: string,
+  unitId: string,
+): Promise<{ unitId: string; unitName: string; unitCode: string }[]> {
+  const children = await prisma.orgUnit.findMany({
+    where: { parentId: unitId, tenantId },
+    select: { id: true, name: true, code: true },
+    orderBy: { sortOrder: "asc" },
+  });
+
+  return children.map((c) => ({
+    unitId: c.id,
+    unitName: c.name,
+    unitCode: c.code,
+  }));
+}
+
+// ── Pending Action Count (for nav badge) ─────────────────────────────────────
+
+export async function getMyPendingCount(
+  tenantId: string,
+  userId: string,
+): Promise<number> {
+  const ctx = await getMyKpiContext(tenantId, userId);
+  if (ctx.headOfUnits.length === 0) return 0;
+
+  const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
+
+  const [submittedCount, recommendedCount] = await Promise.all([
+    prisma.achievement.count({
+      where: {
+        tenantId,
+        state: "SUBMITTED",
+        OR: [
+          { targetAllocation: { assignedToUnitId: { in: headUnitIds } } },
+          {
+            targetAllocation: {
+              parentAllocation: { assignedToUnitId: { in: headUnitIds } },
+            },
+          },
+        ],
+      },
+    }),
+    prisma.achievement.count({
+      where: {
+        tenantId,
+        state: "RECOMMENDED",
+        kpiDefinition: { startingUnitId: { in: headUnitIds } },
+      },
+    }),
+  ]);
+
+  return submittedCount + recommendedCount;
+}

@@ -4,6 +4,7 @@ import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
 import { getShellIdentity } from "@/lib/auth/access";
 import { requireTenantAdmin } from "@/lib/auth/session";
+import { tenantNavigationGroups } from "@/lib/navigation";
 import { importRoadmap } from "@/lib/data";
 
 export default async function ImportsPage() {
@@ -14,6 +15,7 @@ export default async function ImportsPage() {
       eyebrow="Bulk Import"
       title="Bulk-import workflow deferred, provisioning model preserved"
       description="The live Excel and CSV parser is intentionally postponed. The schema and UX lane remain in place so bulk-imported users can later flow into the same login, invitation, membership, and audit model as manually provisioned users."
+      navigationGroups={tenantNavigationGroups}
       userSummary={getShellIdentity(context)}
     >
       <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">

@@ -9,6 +9,7 @@ import type {
   KpiAllocationType,
   TargetAllocationState,
   AchievementState,
+  AchievementFieldType,
   ScoringMethod,
   ScoringDirection,
   MilestoneStatus,
@@ -197,6 +198,8 @@ export type KpiDefinitionView = {
   allocationType: KpiAllocationType;
   startingUnitId: string;
   startingUnitName: string;
+  achievementTemplateKey: string | null;
+  achievementFormConfig: AchievementFormConfig | null;
   state: KpiDefinitionState;
   sortOrder: number;
   guidanceNotes: string | null;
@@ -247,12 +250,17 @@ export type AchievementView = {
   actualRating: number | null;
   evidenceDescription: string | null;
   evidenceLinks: string[];
+  achievementFormData: Record<string, unknown> | null;
   computedScore: number | null;
   state: AchievementState;
+  recommendedByUserId: string | null;
+  recommendedAt: Date | null;
+  recommendationNote: string | null;
   verifiedByUserId: string | null;
   verifiedAt: Date | null;
   verificationNote: string | null;
   rejectionReason: string | null;
+  verificationLog: VerificationLogEntry[];
   reportingDate: Date;
   createdAt: Date;
 };
@@ -323,4 +331,283 @@ export const MILESTONE_SCORE_MAP: Record<MilestoneStatus, number> = {
   NOT_STARTED: 0,
   IN_PROGRESS: 50,
   COMPLETED: 100,
+};
+
+// ── Achievement Form Field / Template Config (R1.1a) ─────────────────────────
+
+export const ACHIEVEMENT_FIELD_TYPES: AchievementFieldType[] = [
+  "TEXT", "TEXTAREA", "NUMBER", "DATE", "URL", "EMAIL",
+  "SELECT", "MULTI_SELECT", "BOOLEAN", "FILE_LINK",
+];
+
+export const achievementFieldSchema = z.object({
+  key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*$/),
+  label: z.string().min(1).max(100),
+  type: z.enum([
+    "TEXT", "TEXTAREA", "NUMBER", "DATE", "URL", "EMAIL",
+    "SELECT", "MULTI_SELECT", "BOOLEAN", "FILE_LINK",
+  ]),
+  required: z.boolean().default(false),
+  options: z.array(z.string()).optional(),
+  pattern: z.string().optional(),
+  placeholder: z.string().optional(),
+  helpText: z.string().optional(),
+  sortOrder: z.number().int().default(0),
+});
+
+export type AchievementFieldConfig = z.infer<typeof achievementFieldSchema>;
+
+export const achievementFormConfigSchema = z.object({
+  templateKey: z.string().optional(),
+  fields: z.array(achievementFieldSchema).min(1).max(30),
+});
+
+export type AchievementFormConfig = z.infer<typeof achievementFormConfigSchema>;
+
+/**
+ * Builds a Zod schema dynamically from an AchievementFormConfig to validate
+ * the user-filled form data at save time.
+ */
+export function buildFormDataValidator(fields: AchievementFieldConfig[]) {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const f of fields) {
+    let fieldSchema: z.ZodTypeAny;
+    switch (f.type) {
+      case "NUMBER":
+        fieldSchema = f.required ? z.number() : z.number().optional().nullable();
+        break;
+      case "BOOLEAN":
+        fieldSchema = f.required ? z.boolean() : z.boolean().optional().nullable();
+        break;
+      case "DATE":
+        fieldSchema = f.required
+          ? z.string().min(1, `${f.label} is required`)
+          : z.string().optional().nullable();
+        break;
+      case "URL":
+        fieldSchema = f.required
+          ? z.string().url(`${f.label} must be a valid URL`)
+          : z.union([z.string().url(), z.literal("")]).optional().nullable();
+        break;
+      case "EMAIL":
+        fieldSchema = f.required
+          ? z.string().email(`${f.label} must be a valid email`)
+          : z.union([z.string().email(), z.literal("")]).optional().nullable();
+        break;
+      case "MULTI_SELECT":
+        fieldSchema = f.required
+          ? z.array(z.string()).min(1, `${f.label} requires at least one selection`)
+          : z.array(z.string()).optional().nullable();
+        break;
+      default:
+        fieldSchema = f.required
+          ? z.string().min(1, `${f.label} is required`)
+          : z.string().optional().nullable();
+        break;
+    }
+    shape[f.key] = fieldSchema;
+  }
+  return z.object(shape).passthrough();
+}
+
+// ── Predefined Achievement Templates ─────────────────────────────────────────
+
+export type AchievementTemplate = {
+  label: string;
+  fields: AchievementFieldConfig[];
+};
+
+export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
+  PUBLICATION: {
+    label: "Research Publication",
+    fields: [
+      { key: "paperTitle", label: "Paper Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "journalName", label: "Journal / Conference", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "issn", label: "ISSN / ISBN", type: "TEXT", required: false, sortOrder: 2 },
+      { key: "volume", label: "Volume", type: "TEXT", required: false, sortOrder: 3 },
+      { key: "issue", label: "Issue", type: "TEXT", required: false, sortOrder: 4 },
+      { key: "doi", label: "DOI", type: "TEXT", required: false, placeholder: "10.xxxx/...", sortOrder: 5 },
+      { key: "indexing", label: "Indexing", type: "MULTI_SELECT", required: true,
+        options: ["Scopus", "Web of Science", "UGC CARE List", "PubMed", "IEEE Xplore", "Other"], sortOrder: 6 },
+      { key: "publicationDate", label: "Publication Date", type: "DATE", required: true, sortOrder: 7 },
+      { key: "pdfLink", label: "Paper PDF / URL", type: "URL", required: true, sortOrder: 8 },
+      { key: "coAuthors", label: "Co-Authors", type: "TEXTAREA", required: false, sortOrder: 9 },
+    ],
+  },
+  PATENT: {
+    label: "Patent",
+    fields: [
+      { key: "patentTitle", label: "Patent Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "applicationNumber", label: "Application Number", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "patentOffice", label: "Patent Office", type: "SELECT", required: true,
+        options: ["Indian Patent Office", "USPTO", "EPO", "WIPO", "Other"], sortOrder: 2 },
+      { key: "filingDate", label: "Filing Date", type: "DATE", required: true, sortOrder: 3 },
+      { key: "status", label: "Status", type: "SELECT", required: true,
+        options: ["Filed", "Published", "Granted", "Abandoned"], sortOrder: 4 },
+      { key: "grantDate", label: "Grant Date", type: "DATE", required: false, sortOrder: 5 },
+      { key: "inventors", label: "Inventors", type: "TEXTAREA", required: true, sortOrder: 6 },
+      { key: "certificateLink", label: "Certificate / Proof", type: "URL", required: false, sortOrder: 7 },
+    ],
+  },
+  GRANT: {
+    label: "Research Grant",
+    fields: [
+      { key: "projectTitle", label: "Project Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "fundingAgency", label: "Funding Agency", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "sanctionedAmount", label: "Sanctioned Amount", type: "NUMBER", required: true, sortOrder: 2 },
+      { key: "duration", label: "Duration (months)", type: "NUMBER", required: false, sortOrder: 3 },
+      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 4 },
+      { key: "sanctionLetterLink", label: "Sanction Letter", type: "URL", required: true, sortOrder: 5 },
+    ],
+  },
+  CONFERENCE: {
+    label: "Conference Participation",
+    fields: [
+      { key: "conferenceName", label: "Conference Name", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "paperTitle", label: "Paper Title", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "presentationType", label: "Presentation Type", type: "SELECT", required: true,
+        options: ["Oral", "Poster", "Keynote", "Invited Talk", "Workshop"], sortOrder: 2 },
+      { key: "location", label: "Location", type: "TEXT", required: false, sortOrder: 3 },
+      { key: "date", label: "Date", type: "DATE", required: true, sortOrder: 4 },
+      { key: "proceedingsLink", label: "Proceedings / Certificate", type: "URL", required: false, sortOrder: 5 },
+    ],
+  },
+  MOU: {
+    label: "MoU / Collaboration",
+    fields: [
+      { key: "partnerOrg", label: "Partner Organization", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "scope", label: "Scope of MoU", type: "TEXTAREA", required: true, sortOrder: 1 },
+      { key: "signedDate", label: "Signed Date", type: "DATE", required: true, sortOrder: 2 },
+      { key: "validUntil", label: "Valid Until", type: "DATE", required: false, sortOrder: 3 },
+      { key: "signedCopyLink", label: "Signed Copy", type: "URL", required: true, sortOrder: 4 },
+    ],
+  },
+  TRAINING: {
+    label: "Training / FDP",
+    fields: [
+      { key: "programName", label: "Program Name", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "organizer", label: "Organized By", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "role", label: "Role", type: "SELECT", required: true,
+        options: ["Participant", "Resource Person", "Coordinator", "Organizer"], sortOrder: 2 },
+      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 3 },
+      { key: "endDate", label: "End Date", type: "DATE", required: true, sortOrder: 4 },
+      { key: "hours", label: "Duration (hours)", type: "NUMBER", required: false, sortOrder: 5 },
+      { key: "certificateLink", label: "Certificate", type: "URL", required: true, sortOrder: 6 },
+    ],
+  },
+  CERTIFICATION: {
+    label: "Certification / Accreditation",
+    fields: [
+      { key: "certName", label: "Certification Name", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "issuingBody", label: "Issuing Body", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "validFrom", label: "Valid From", type: "DATE", required: true, sortOrder: 2 },
+      { key: "validTo", label: "Valid To", type: "DATE", required: false, sortOrder: 3 },
+      { key: "certificateLink", label: "Certificate", type: "URL", required: true, sortOrder: 4 },
+    ],
+  },
+  GENERIC: {
+    label: "General Achievement",
+    fields: [
+      { key: "description", label: "Description", type: "TEXTAREA", required: true, sortOrder: 0 },
+      { key: "proofLink", label: "Supporting Document / Link", type: "URL", required: false, sortOrder: 1 },
+    ],
+  },
+};
+
+// ── Verification Log Entry Type ──────────────────────────────────────────────
+
+export type VerificationLogEntry = {
+  level: "SUBMIT" | "RECOMMEND" | "VERIFY" | "REJECT" | "SEND_BACK" | "WITHDRAW";
+  userId: string;
+  userName: string;
+  action: string;
+  note?: string;
+  at: string; // ISO date string
+};
+
+// ── Extended View Types for R1.1a ────────────────────────────────────────────
+
+export type MyKpiContext = {
+  userId: string;
+  headOfUnits: { unitId: string; unitName: string; unitCode: string }[];
+  memberOfUnits: { unitId: string; unitName: string; unitCode: string }[];
+};
+
+export type MyAllocationView = TargetAllocationView & {
+  kraTitle: string;
+  kraWeightage: number;
+  categoryLabel: string | null;
+  categoryKey: string | null;
+  measurementType: KpiMeasurementType;
+  unitLabel: string | null;
+  kpiWeightage: number;
+  defaultTarget: number | null;
+  scoringDirection: ScoringDirection;
+  isPerCapita: boolean;
+  allocationType: KpiAllocationType;
+  startingUnitId: string;
+  startingUnitName: string;
+  guidanceNotes: string | null;
+  achievementTemplateKey: string | null;
+  achievementFormConfig: AchievementFormConfig | null;
+  periodState: AssessmentPeriodState;
+  periodName: string;
+  achievementDeadline: Date | null;
+  periodEndDate: Date;
+  reviewFrequency: ReviewCycleFrequency;
+  achievement: AchievementView | null;
+  parentTargetValue: number | null;
+  section: "department" | "individual";
+  childAllocations: ChildAllocationSummary[];
+};
+
+export type ChildAllocationSummary = {
+  id: string;
+  assignedToUserName: string | null;
+  assignedToUnitName: string | null;
+  targetValue: number | null;
+  achievementState: AchievementState | null;
+  actualValue: number | null;
+  computedScore: number | null;
+};
+
+export type ReviewQueueItem = {
+  achievementId: string;
+  facultyUserId: string;
+  facultyName: string;
+  facultyDesignation: string | null;
+  kpiTitle: string;
+  kpiDefinitionId: string;
+  targetValue: number | null;
+  actualValue: number | null;
+  measurementType: KpiMeasurementType;
+  unitLabel: string | null;
+  achievementState: AchievementState;
+  achievementFormData: Record<string, unknown> | null;
+  achievementFormConfig: AchievementFormConfig | null;
+  evidenceDescription: string | null;
+  evidenceLinks: string[];
+  verificationLog: VerificationLogEntry[];
+  reportingDate: Date;
+  reviewLevel: "RECOMMEND" | "VERIFY";
+  startingUnitId: string;
+};
+
+export type MyDashboardSummary = {
+  periodId: string;
+  periodName: string;
+  totalAllocations: number;
+  statusCounts: Record<string, number>;
+  overallWeightedScore: number;
+  maxPossibleScore: number;
+  overallPercentage: number;
+  kraBreakdown: {
+    kraId: string;
+    kraTitle: string;
+    kraWeightage: number;
+    kpiCount: number;
+    verifiedCount: number;
+    avgScore: number;
+  }[];
+  pendingReviewCount: number;
 };

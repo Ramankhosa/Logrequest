@@ -6,6 +6,7 @@ import { Panel } from "@/components/panel";
 import { aiBriefing, insightMetrics, riskAlerts } from "@/lib/data";
 import { getShellIdentity } from "@/lib/auth/access";
 import { requireTenantUser } from "@/lib/auth/session";
+import { getNavigationForRole } from "@/lib/navigation";
 
 const metricIcons = [ChartColumnIncreasing, ShieldAlert, AlertTriangle, Bot];
 
@@ -17,6 +18,7 @@ export default async function InsightsPage() {
       eyebrow="Intelligent Dashboards"
       title="Business intelligence with readable next actions"
       description="The dashboard layer highlights entitlement drift, adoption trends, and access risks. AI support is framed as explanation and summarization, not interruption."
+      navigationGroups={getNavigationForRole(context.role, context.isSuperadmin)}
       userSummary={getShellIdentity(context)}
     >
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">

@@ -119,7 +119,7 @@ export function AchievementReviewList({
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-slate-900">Achievements & Verification</h3>
         <div className="flex gap-1">
-          {["ALL", "DRAFT", "SUBMITTED", "VERIFIED", "REJECTED"].map((s) => (
+          {["ALL", "DRAFT", "SUBMITTED", "RECOMMENDED", "VERIFIED", "REJECTED"].map((s) => (
             <button key={s} type="button" onClick={() => setFilter(s)} className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${filter === s ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}>
               {s === "ALL" ? "All" : s.charAt(0) + s.slice(1).toLowerCase()}
             </button>

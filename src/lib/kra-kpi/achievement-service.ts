@@ -1,9 +1,15 @@
 import type { Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import type { KraKpiActionResult, AchievementView } from "./shared";
+import type {
+  KraKpiActionResult,
+  AchievementView,
+  VerificationLogEntry,
+  AchievementFormConfig,
+} from "./shared";
 import { computeScore } from "./scoring-service";
 import type { MeasurementConfig, ScoringConfig } from "./shared";
+import { buildFormDataValidator } from "./shared";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -26,6 +32,7 @@ const createAchievementSchema = z.object({
   actualRating: z.number().int().min(1).max(10).optional(),
   evidenceDescription: z.string().trim().max(2000).optional(),
   evidenceLinks: z.array(z.string().url()).max(10).default([]),
+  achievementFormData: z.record(z.string(), z.unknown()).optional(),
   reportingDate: z.coerce.date().optional(),
 });
 
@@ -40,6 +47,7 @@ const updateAchievementSchema = z.object({
   actualRating: z.number().int().min(1).max(10).optional(),
   evidenceDescription: z.string().trim().max(2000).nullable().optional(),
   evidenceLinks: z.array(z.string().url()).max(10).optional(),
+  achievementFormData: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type CreateAchievementInput = z.input<typeof createAchievementSchema>;
@@ -78,12 +86,17 @@ function mapAchievementView(
     actualRating: a.actualRating,
     evidenceDescription: a.evidenceDescription,
     evidenceLinks: a.evidenceLinks,
+    achievementFormData: a.achievementFormData as Record<string, unknown> | null,
     computedScore: a.computedScore,
     state: a.state,
+    recommendedByUserId: a.recommendedByUserId,
+    recommendedAt: a.recommendedAt,
+    recommendationNote: a.recommendationNote,
     verifiedByUserId: a.verifiedByUserId,
     verifiedAt: a.verifiedAt,
     verificationNote: a.verificationNote,
     rejectionReason: a.rejectionReason,
+    verificationLog: (a.verificationLog as VerificationLogEntry[]) ?? [],
     reportingDate: a.reportingDate,
     createdAt: a.createdAt,
   };
@@ -108,7 +121,7 @@ export async function listAchievements(
       ...(filters.kpiDefinitionId && { kpiDefinitionId: filters.kpiDefinitionId }),
       ...(filters.targetAllocationId && { targetAllocationId: filters.targetAllocationId }),
       ...(filters.reportedByUserId && { reportedByUserId: filters.reportedByUserId }),
-      ...(filters.state && { state: filters.state as "DRAFT" | "SUBMITTED" | "VERIFIED" | "REJECTED" }),
+      ...(filters.state && { state: filters.state as "DRAFT" | "SUBMITTED" | "RECOMMENDED" | "VERIFIED" | "REJECTED" }),
     },
     include: {
       kpiDefinition: { select: { title: true } },
@@ -166,8 +179,9 @@ export async function recordAchievement(
   }
 
   // Verify target allocation if provided
+  let allocation: Awaited<ReturnType<typeof prisma.targetAllocation.findFirst>> = null;
   if (data.targetAllocationId) {
-    const allocation = await prisma.targetAllocation.findFirst({
+    allocation = await prisma.targetAllocation.findFirst({
       where: { id: data.targetAllocationId, tenantId },
     });
     if (!allocation) {
@@ -175,35 +189,60 @@ export async function recordAchievement(
     }
   }
 
+  // Duplicate prevention: block if a non-VERIFIED achievement already exists for this allocation
+  if (data.targetAllocationId) {
+    const existing = await prisma.achievement.findFirst({
+      where: {
+        targetAllocationId: data.targetAllocationId,
+        reportedByUserId: actorUserId,
+        state: { in: ["DRAFT", "SUBMITTED", "RECOMMENDED"] },
+      },
+    });
+    if (existing) {
+      return {
+        status: "error",
+        message: "Achievement already exists for this allocation. Edit the existing one.",
+      };
+    }
+  }
+
+  // Validate achievementFormData against KPI's form config if present
+  const formConfig = kpi.achievementFormConfig as AchievementFormConfig | null;
+  if (formConfig && data.achievementFormData) {
+    const validator = buildFormDataValidator(formConfig.fields);
+    const formResult = validator.safeParse(data.achievementFormData);
+    if (!formResult.success) {
+      return {
+        status: "error",
+        message: formResult.error.issues[0]?.message ?? "Invalid form data.",
+      };
+    }
+  }
+
   // Compute score if we have target data
   let computedScoreValue: number | null = null;
-  if (data.targetAllocationId) {
-    const allocation = await prisma.targetAllocation.findFirst({
-      where: { id: data.targetAllocationId },
-    });
-    if (allocation) {
-      computedScoreValue = computeScore(
-        kpi.measurementType,
-        kpi.scoringMethod,
-        kpi.scoringDirection,
-        kpi.scoringConfig as ScoringConfig | null,
-        kpi.measurementConfig as MeasurementConfig | null,
-        {
-          targetValue: allocation.targetValue,
-          targetDate: allocation.targetDate,
-          targetMilestone: allocation.targetMilestone,
-          targetGrade: allocation.targetGrade,
-          targetBoolean: allocation.targetBoolean,
-          targetRating: allocation.targetRating,
-          actualValue: data.actualValue,
-          actualDate: data.actualDate,
-          actualMilestone: data.actualMilestone,
-          actualGrade: data.actualGrade,
-          actualBoolean: data.actualBoolean,
-          actualRating: data.actualRating,
-        }
-      );
-    }
+  if (allocation) {
+    computedScoreValue = computeScore(
+      kpi.measurementType,
+      kpi.scoringMethod,
+      kpi.scoringDirection,
+      kpi.scoringConfig as ScoringConfig | null,
+      kpi.measurementConfig as MeasurementConfig | null,
+      {
+        targetValue: allocation.targetValue,
+        targetDate: allocation.targetDate,
+        targetMilestone: allocation.targetMilestone,
+        targetGrade: allocation.targetGrade,
+        targetBoolean: allocation.targetBoolean,
+        targetRating: allocation.targetRating,
+        actualValue: data.actualValue,
+        actualDate: data.actualDate,
+        actualMilestone: data.actualMilestone,
+        actualGrade: data.actualGrade,
+        actualBoolean: data.actualBoolean,
+        actualRating: data.actualRating,
+      }
+    );
   }
 
   await prisma.$transaction(async (tx) => {
@@ -222,6 +261,7 @@ export async function recordAchievement(
         actualRating: data.actualRating,
         evidenceDescription: data.evidenceDescription,
         evidenceLinks: data.evidenceLinks,
+        achievementFormData: data.achievementFormData as object | undefined,
         computedScore: computedScoreValue,
         reportingDate: data.reportingDate ?? new Date(),
       },
@@ -330,8 +370,11 @@ export async function updateAchievement(
           evidenceDescription: data.evidenceDescription,
         }),
         ...(data.evidenceLinks !== undefined && { evidenceLinks: data.evidenceLinks }),
+        ...(data.achievementFormData !== undefined && {
+          achievementFormData: data.achievementFormData as object,
+        }),
         computedScore: newScore,
-        state: "DRAFT", // Reset to draft if was rejected
+        state: "DRAFT",
         rejectionReason: null,
       },
     });
@@ -374,15 +417,32 @@ export async function submitForVerification(
     };
   }
 
-  // Only the reporter can submit
   if (achievement.reportedByUserId !== actorUserId && !isAdminOrOwner(actorRole)) {
     return { status: "error", message: "Only the reporter or admin can submit." };
   }
 
+  const actor = await prisma.user.findUnique({
+    where: { id: actorUserId },
+    select: { firstName: true, lastName: true },
+  });
+  const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
+
+  const existingLog = (achievement.verificationLog as VerificationLogEntry[]) ?? [];
+  const newLogEntry: VerificationLogEntry = {
+    level: "SUBMIT",
+    userId: actorUserId,
+    userName: actorName,
+    action: "submitted",
+    at: new Date().toISOString(),
+  };
+
   await prisma.$transaction(async (tx) => {
     await tx.achievement.update({
       where: { id: achievementId },
-      data: { state: "SUBMITTED" },
+      data: {
+        state: "SUBMITTED",
+        verificationLog: [...existingLog, newLogEntry] as unknown as object[],
+      },
     });
 
     await tx.auditLog.create({
@@ -402,7 +462,7 @@ export async function submitForVerification(
   return { status: "success", message: "Achievement submitted for verification." };
 }
 
-// ── Verify Achievement ───────────────────────────────────────────────────────
+// ── Verify Achievement (admin path — still works for R1 admin verify) ────────
 
 export async function verifyAchievement(
   achievementId: string,
@@ -412,35 +472,81 @@ export async function verifyAchievement(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
-    return { status: "error", message: "Insufficient permissions to verify." };
-  }
-
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
+    include: {
+      kpiDefinition: { select: { measurementType: true, scoringMethod: true, scoringDirection: true, scoringConfig: true, measurementConfig: true } },
+      targetAllocation: true,
+    },
   });
   if (!achievement) {
     return { status: "error", message: "Achievement not found." };
   }
 
-  if (achievement.state !== "SUBMITTED") {
+  // Admins can verify from SUBMITTED or RECOMMENDED
+  if (achievement.state !== "SUBMITTED" && achievement.state !== "RECOMMENDED") {
     return {
       status: "error",
       message: `Cannot verify — achievement is in "${achievement.state}" state.`,
     };
   }
 
+  const actor = await prisma.user.findUnique({
+    where: { id: actorUserId },
+    select: { firstName: true, lastName: true },
+  });
+  const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
+
   const newState = approved ? "VERIFIED" : "REJECTED";
+  const existingLog = (achievement.verificationLog as VerificationLogEntry[]) ?? [];
+  const logEntry: VerificationLogEntry = {
+    level: "VERIFY",
+    userId: actorUserId,
+    userName: actorName,
+    action: approved ? "verified" : "not approved",
+    note: note ?? undefined,
+    at: new Date().toISOString(),
+  };
+
+  // Recompute score on verify
+  let finalScore = achievement.computedScore;
+  if (approved && achievement.targetAllocation) {
+    const kpi = achievement.kpiDefinition;
+    const alloc = achievement.targetAllocation;
+    finalScore = computeScore(
+      kpi.measurementType,
+      kpi.scoringMethod,
+      kpi.scoringDirection,
+      kpi.scoringConfig as ScoringConfig | null,
+      kpi.measurementConfig as MeasurementConfig | null,
+      {
+        targetValue: alloc.targetValue,
+        targetDate: alloc.targetDate,
+        targetMilestone: alloc.targetMilestone,
+        targetGrade: alloc.targetGrade,
+        targetBoolean: alloc.targetBoolean,
+        targetRating: alloc.targetRating,
+        actualValue: achievement.actualValue,
+        actualDate: achievement.actualDate,
+        actualMilestone: achievement.actualMilestone,
+        actualGrade: achievement.actualGrade,
+        actualBoolean: achievement.actualBoolean,
+        actualRating: achievement.actualRating,
+      }
+    );
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.achievement.update({
       where: { id: achievementId },
       data: {
         state: newState,
-        verifiedByUserId: actorUserId,
-        verifiedAt: new Date(),
+        verifiedByUserId: approved ? actorUserId : null,
+        verifiedAt: approved ? new Date() : null,
         verificationNote: approved ? note : null,
         rejectionReason: !approved ? (note ?? "No reason provided") : null,
+        computedScore: approved ? finalScore : achievement.computedScore,
+        verificationLog: [...existingLog, logEntry] as unknown as object[],
       },
     });
 
@@ -452,7 +558,7 @@ export async function verifyAchievement(
         targetType: "Achievement",
         targetId: achievementId,
         action: approved ? "VERIFY" : "REJECT",
-        previousState: { state: "SUBMITTED" },
+        previousState: { state: achievement.state },
         newState: { state: newState, note },
       },
     });
@@ -462,8 +568,190 @@ export async function verifyAchievement(
     status: "success",
     message: approved
       ? "Achievement verified."
-      : "Achievement rejected. Reporter can revise and resubmit.",
+      : "Achievement not approved. Reporter can revise and resubmit.",
   };
+}
+
+// ── Recommend Achievement (Dept Head) ────────────────────────────────────────
+
+export async function recommendAchievement(
+  achievementId: string,
+  tenantId: string,
+  approved: boolean,
+  note: string | null,
+  actorUserId: string,
+): Promise<KraKpiActionResult> {
+  const achievement = await prisma.achievement.findFirst({
+    where: { id: achievementId, tenantId },
+  });
+  if (!achievement) {
+    return { status: "error", message: "Achievement not found." };
+  }
+
+  if (achievement.state !== "SUBMITTED") {
+    return {
+      status: "error",
+      message: `Cannot recommend — achievement is in "${achievement.state}" state.`,
+    };
+  }
+
+  const actor = await prisma.user.findUnique({
+    where: { id: actorUserId },
+    select: { firstName: true, lastName: true },
+  });
+  const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
+
+  const existingLog = (achievement.verificationLog as VerificationLogEntry[]) ?? [];
+
+  if (approved) {
+    const logEntry: VerificationLogEntry = {
+      level: "RECOMMEND",
+      userId: actorUserId,
+      userName: actorName,
+      action: "recommended",
+      note: note ?? undefined,
+      at: new Date().toISOString(),
+    };
+
+    await prisma.$transaction(async (tx) => {
+      await tx.achievement.update({
+        where: { id: achievementId },
+        data: {
+          state: "RECOMMENDED",
+          recommendedByUserId: actorUserId,
+          recommendedAt: new Date(),
+          recommendationNote: note,
+          verificationLog: [...existingLog, logEntry] as unknown as object[],
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          actorUserId,
+          actorRole: "TENANT_USER",
+          targetType: "Achievement",
+          targetId: achievementId,
+          action: "RECOMMEND",
+          previousState: { state: "SUBMITTED" },
+          newState: { state: "RECOMMENDED", note },
+        },
+      });
+    });
+
+    return { status: "success", message: "Achievement recommended for final verification." };
+  }
+
+  // Send back
+  const logEntry: VerificationLogEntry = {
+    level: "SEND_BACK",
+    userId: actorUserId,
+    userName: actorName,
+    action: "sent back",
+    note: note ?? undefined,
+    at: new Date().toISOString(),
+  };
+
+  await prisma.$transaction(async (tx) => {
+    await tx.achievement.update({
+      where: { id: achievementId },
+      data: {
+        state: "DRAFT",
+        rejectionReason: note ?? "Sent back by department head",
+        verificationLog: [...existingLog, logEntry] as unknown as object[],
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole: "TENANT_USER",
+        targetType: "Achievement",
+        targetId: achievementId,
+        action: "SEND_BACK",
+        previousState: { state: "SUBMITTED" },
+        newState: { state: "DRAFT", note },
+      },
+    });
+  });
+
+  return { status: "success", message: "Achievement sent back to reporter." };
+}
+
+// ── Withdraw Submission ──────────────────────────────────────────────────────
+
+export async function withdrawAchievement(
+  achievementId: string,
+  tenantId: string,
+  actorUserId: string,
+): Promise<KraKpiActionResult> {
+  const achievement = await prisma.achievement.findFirst({
+    where: { id: achievementId, tenantId },
+  });
+  if (!achievement) {
+    return { status: "error", message: "Achievement not found." };
+  }
+
+  if (achievement.state !== "SUBMITTED") {
+    return {
+      status: "error",
+      message: "Can only withdraw submissions that have not been acted on.",
+    };
+  }
+
+  if (achievement.reportedByUserId !== actorUserId) {
+    return { status: "error", message: "Only the reporter can withdraw." };
+  }
+
+  // Block if recommender has already acted
+  const log = (achievement.verificationLog as VerificationLogEntry[]) ?? [];
+  const hasRecommendation = log.some((e) => e.level === "RECOMMEND");
+  if (hasRecommendation) {
+    return {
+      status: "error",
+      message: "Cannot withdraw — already recommended by department head.",
+    };
+  }
+
+  const actor = await prisma.user.findUnique({
+    where: { id: actorUserId },
+    select: { firstName: true, lastName: true },
+  });
+  const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
+
+  const logEntry: VerificationLogEntry = {
+    level: "WITHDRAW",
+    userId: actorUserId,
+    userName: actorName,
+    action: "withdrawn",
+    at: new Date().toISOString(),
+  };
+
+  await prisma.$transaction(async (tx) => {
+    await tx.achievement.update({
+      where: { id: achievementId },
+      data: {
+        state: "DRAFT",
+        verificationLog: [...log, logEntry] as unknown as object[],
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole: "TENANT_USER",
+        targetType: "Achievement",
+        targetId: achievementId,
+        action: "WITHDRAW",
+        previousState: { state: "SUBMITTED" },
+        newState: { state: "DRAFT" },
+      },
+    });
+  });
+
+  return { status: "success", message: "Submission withdrawn. You can edit and resubmit." };
 }
 
 // ── Dashboard Summary ────────────────────────────────────────────────────────

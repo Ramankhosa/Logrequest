@@ -346,15 +346,20 @@ export async function unlockTarget(
  * Split a parent allocation into child allocations.
  * For NUMERIC/CURRENCY: child target values must sum to parent.
  * For others: target value is replicated to each child.
+ *
+ * Supports both admin callers (original R1 path) and head-of-unit callers (R1.1a).
+ * Set `allowHeadOfUnit: true` to skip the admin role check (caller must verify
+ * unit-head status before calling).
  */
 export async function cascadeTargets(
   parentAllocationId: string,
   tenantId: string,
   input: CascadeDistributionInput,
   actorUserId: string,
-  actorRole: Role
+  actorRole: Role,
+  options?: { allowHeadOfUnit?: boolean },
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!options?.allowHeadOfUnit && !isAdminOrOwner(actorRole)) {
     return { status: "error", message: "Insufficient permissions." };
   }
 
@@ -368,6 +373,7 @@ export async function cascadeTargets(
     where: { id: parentAllocationId, tenantId },
     include: {
       kpiDefinition: { select: { measurementType: true, allocationType: true } },
+      childAllocations: { select: { targetValue: true } },
     },
   });
   if (!parent) {
@@ -385,7 +391,6 @@ export async function cascadeTargets(
 
   const { measurementType, allocationType } = parent.kpiDefinition;
 
-  // Validate allocation type allows individual assignment
   if (allocationType === "DEPARTMENT") {
     const hasUserAssignments = distributions.some((d) => d.assignedToUserId);
     if (hasUserAssignments) {
@@ -396,13 +401,17 @@ export async function cascadeTargets(
     }
   }
 
-  // For summable types, validate child values sum to parent
+  // Incremental cascade: existing children + new must still sum to parent
   if (SUMMABLE_TYPES.includes(measurementType) && parent.targetValue != null) {
-    const childSum = distributions.reduce((sum, d) => sum + (d.targetValue ?? 0), 0);
-    if (Math.abs(childSum - parent.targetValue) > 0.01) {
+    const existingChildSum = parent.childAllocations.reduce(
+      (sum, c) => sum + (c.targetValue ?? 0), 0
+    );
+    const newChildSum = distributions.reduce((sum, d) => sum + (d.targetValue ?? 0), 0);
+    const totalChildSum = existingChildSum + newChildSum;
+    if (Math.abs(totalChildSum - parent.targetValue) > 0.01) {
       return {
         status: "error",
-        message: `Child target values must sum to parent (${parent.targetValue}). Current sum: ${childSum}.`,
+        message: `Child target values must sum to parent (${parent.targetValue}). Existing children: ${existingChildSum}, new: ${newChildSum}, total: ${totalChildSum}.`,
       };
     }
   }
