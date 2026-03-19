@@ -723,4 +723,12 @@ export type MyDashboardSummary = {
     avgScore: number;
   }[];
   pendingReviewCount: number;
+  additionalAchievements: {
+    total: number;
+    verified: number;
+    pending: number;
+    notApproved: number;
+  };
+  upcomingDeadlineCount: number;
+  overdueCount: number;
 };

@@ -14,6 +14,10 @@ import type {
 import { computeScore } from "./scoring-service";
 import type { MeasurementConfig, ScoringConfig } from "./shared";
 import { buildFormDataValidator } from "./shared";
+import {
+  createNotification,
+  resolveUnitHead,
+} from "@/lib/notifications/notification-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -695,6 +699,71 @@ export async function submitForVerification(
     });
   });
 
+  // Notify dept head (recommender) — find the unit head for the assignee's unit
+  try {
+    const fullAchievement = await prisma.achievement.findFirst({
+      where: { id: achievementId },
+      include: {
+        kpiDefinition: { select: { title: true, startingUnitId: true } },
+        targetAllocation: {
+          select: { assignedToUnitId: true, assignedToUserId: true },
+        },
+      },
+    });
+    if (fullAchievement) {
+      const kpiTitle = fullAchievement.kpiDefinition.title;
+      // Determine the dept head to notify
+      let deptHeadUserId: string | null = null;
+      const alloc = fullAchievement.targetAllocation;
+      if (alloc?.assignedToUnitId) {
+        deptHeadUserId = await resolveUnitHead(tenantId, alloc.assignedToUnitId);
+      } else if (alloc?.assignedToUserId) {
+        // Find units the assignee belongs to and get their head
+        const assignments = await prisma.orgRoleAssignment.findMany({
+          where: {
+            userId: alloc.assignedToUserId,
+            isActive: true,
+            version: { tenantId, state: { in: ["PUBLISHED", "VALIDATED"] } },
+          },
+          select: { unitId: true },
+          take: 1,
+        });
+        if (assignments[0]) {
+          deptHeadUserId = await resolveUnitHead(tenantId, assignments[0].unitId);
+        }
+      } else {
+        // Additional achievement — use reporter's primary unit
+        const assignments = await prisma.orgRoleAssignment.findMany({
+          where: {
+            userId: fullAchievement.reportedByUserId,
+            isActive: true,
+            version: { tenantId, state: { in: ["PUBLISHED", "VALIDATED"] } },
+          },
+          select: { unitId: true },
+          take: 1,
+        });
+        if (assignments[0]) {
+          deptHeadUserId = await resolveUnitHead(tenantId, assignments[0].unitId);
+        }
+      }
+
+      if (deptHeadUserId && deptHeadUserId !== actorUserId) {
+        await createNotification(
+          tenantId,
+          deptHeadUserId,
+          "ACHIEVEMENT_SUBMITTED",
+          "Achievement submitted for review",
+          `${actorName} submitted an achievement for '${kpiTitle}'`,
+          "Achievement",
+          achievementId,
+          "/my-kpis",
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[achievement-service] submitForVerification notification failed:", err);
+  }
+
   return { status: "success", message: "Achievement submitted for verification." };
 }
 
@@ -719,6 +788,7 @@ export async function verifyAchievement(
           scoringConfig: true,
           measurementConfig: true,
           startingUnitId: true,
+          title: true,
         },
       },
       targetAllocation: {
@@ -836,6 +906,40 @@ export async function verifyAchievement(
     });
   });
 
+  // Notify reporter
+  try {
+    const kpiTitle = achievement.kpiDefinition.title;
+    const reporterId = achievement.reportedByUserId;
+    if (reporterId !== actorUserId) {
+      if (approved) {
+        const scoreText = finalScore != null ? ` Score: ${Math.round(finalScore)}` : "";
+        await createNotification(
+          tenantId,
+          reporterId,
+          "ACHIEVEMENT_VERIFIED",
+          "Achievement verified",
+          `'${kpiTitle}' achievement has been verified!${scoreText}`,
+          "Achievement",
+          achievementId,
+          "/my-kpis",
+        );
+      } else {
+        await createNotification(
+          tenantId,
+          reporterId,
+          "ACHIEVEMENT_NOT_APPROVED",
+          "Achievement not approved",
+          `'${kpiTitle}' was not approved.${note ? ` Reason: ${note}` : ""}`,
+          "Achievement",
+          achievementId,
+          "/my-kpis",
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[achievement-service] verifyAchievement notification failed:", err);
+  }
+
   return {
     status: "success",
     message: approved
@@ -857,7 +961,7 @@ export async function recommendAchievement(
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
     include: {
-      kpiDefinition: { select: { startingUnitId: true } },
+      kpiDefinition: { select: { startingUnitId: true, title: true } },
       targetAllocation: {
         include: {
           parentAllocation: {
@@ -943,6 +1047,28 @@ export async function recommendAchievement(
       });
     });
 
+    // Notify source dept head (verifier)
+    try {
+      const sourceHeadUserId = await resolveUnitHead(
+        tenantId,
+        achievement.kpiDefinition.startingUnitId,
+      );
+      if (sourceHeadUserId && sourceHeadUserId !== actorUserId) {
+        await createNotification(
+          tenantId,
+          sourceHeadUserId,
+          "ACHIEVEMENT_RECOMMENDED",
+          "Achievement recommended for verification",
+          `${actorName} recommended an achievement for '${achievement.kpiDefinition?.title ?? ""}' — ready for your verification`,
+          "Achievement",
+          achievementId,
+          "/my-kpis",
+        );
+      }
+    } catch (err) {
+      console.warn("[achievement-service] recommendAchievement notify source head failed:", err);
+    }
+
     return { status: "success", message: "Achievement recommended for final verification." };
   }
 
@@ -979,6 +1105,26 @@ export async function recommendAchievement(
       },
     });
   });
+
+  // Notify reporter
+  try {
+    const kpiTitle = achievement.kpiDefinition.title;
+    const reporterId = achievement.reportedByUserId;
+    if (reporterId !== actorUserId) {
+      await createNotification(
+        tenantId,
+        reporterId,
+        "ACHIEVEMENT_SENT_BACK",
+        "Achievement sent back for revision",
+        `Your '${kpiTitle}' submission was sent back. ${note ? `Reason: ${note}` : "Please revise and resubmit."}`,
+        "Achievement",
+        achievementId,
+        "/my-kpis",
+      );
+    }
+  } catch (err) {
+    console.warn("[achievement-service] send-back notification failed:", err);
+  }
 
   return { status: "success", message: "Achievement sent back to reporter." };
 }
@@ -1156,5 +1302,171 @@ export async function getPeriodSummary(
     overallWeightedScore: Math.round(weightedScore * 100) / 100,
     maxPossibleScore: maxPossible,
     overallPercentage,
+  };
+}
+
+// ── Record Additional Achievement (no target allocation required) ─────────────
+
+export async function recordAdditionalAchievement(
+  tenantId: string,
+  input: CreateAchievementInput,
+  actorUserId: string,
+  actorRole: Role,
+): Promise<KraKpiActionResult> {
+  const parsed = createAchievementSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid input." };
+  }
+  const data = parsed.data;
+  const reportingDate = data.reportingDate ?? new Date();
+
+  // Verify period
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: data.periodId, tenantId },
+    select: { id: true, state: true, startDate: true, endDate: true, reviewFrequency: true },
+  });
+  if (!period) {
+    return { status: "error", message: "Period not found." };
+  }
+  if (period.state !== "IN_PROGRESS" && period.state !== "UNDER_REVIEW") {
+    return {
+      status: "error",
+      message: `Cannot record achievements in "${period.state}" period.`,
+    };
+  }
+
+  // Verify KPI
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: data.kpiDefinitionId, kraDefinition: { tenantId } },
+    include: { kraDefinition: { select: { state: true } } },
+  });
+  if (!kpi) {
+    return { status: "error", message: "KPI not found." };
+  }
+  if (kpi.state !== "ACTIVE") {
+    return { status: "error", message: "Cannot record achievements for a KPI that is not ACTIVE." };
+  }
+  if (kpi.kraDefinition.state !== "ACTIVE") {
+    return { status: "error", message: "Cannot record achievements while the parent KRA is not ACTIVE." };
+  }
+
+  // Block if user already has an allocated target for this KPI
+  const ctx = await getMyKpiContext(tenantId, actorUserId);
+  const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
+  const existingAllocation = await prisma.targetAllocation.findFirst({
+    where: {
+      tenantId,
+      periodId: data.periodId,
+      kpiDefinitionId: data.kpiDefinitionId,
+      OR: [
+        { assignedToUserId: actorUserId },
+        ...(headUnitIds.length > 0 ? [{ assignedToUnitId: { in: headUnitIds } }] : []),
+      ],
+    },
+  });
+  if (existingAllocation) {
+    return {
+      status: "error",
+      message: "You have an allocated target for this KPI. Use My Targets tab instead.",
+    };
+  }
+
+  // Block if user already has an existing (non-rejected) additional achievement for this KPI
+  const existingAdditional = await prisma.achievement.findFirst({
+    where: {
+      tenantId,
+      periodId: data.periodId,
+      kpiDefinitionId: data.kpiDefinitionId,
+      reportedByUserId: actorUserId,
+      targetAllocationId: null,
+      state: { not: "REJECTED" },
+    },
+  });
+  if (existingAdditional) {
+    return {
+      status: "error",
+      message: "You already have an additional achievement for this KPI. Edit the existing one.",
+    };
+  }
+
+  // Validate form data
+  const formConfig = kpi.achievementFormConfig as AchievementFormConfig | null;
+  const formValidationError = validateAchievementFormData(formConfig, data.achievementFormData);
+  if (formValidationError) {
+    return { status: "error", message: formValidationError };
+  }
+
+  // Compute score using defaultTarget if available (no allocation target)
+  let computedScoreValue: number | null = null;
+  if (kpi.defaultTarget != null && data.actualValue != null) {
+    computedScoreValue = computeScore(
+      kpi.measurementType,
+      kpi.scoringMethod,
+      kpi.scoringDirection,
+      kpi.scoringConfig as ScoringConfig | null,
+      kpi.measurementConfig as MeasurementConfig | null,
+      {
+        targetValue: kpi.defaultTarget,
+        targetDate: null,
+        targetMilestone: null,
+        targetGrade: null,
+        targetBoolean: null,
+        targetRating: null,
+        actualValue: data.actualValue,
+        actualDate: data.actualDate,
+        actualMilestone: data.actualMilestone,
+        actualGrade: data.actualGrade,
+        actualBoolean: data.actualBoolean,
+        actualRating: data.actualRating,
+      },
+    );
+  }
+
+  let createdAchievementId: string | undefined;
+  await prisma.$transaction(async (tx) => {
+    const achievement = await tx.achievement.create({
+      data: {
+        tenantId,
+        periodId: data.periodId,
+        kpiDefinitionId: data.kpiDefinitionId,
+        targetAllocationId: null,
+        reportedByUserId: actorUserId,
+        actualValue: data.actualValue,
+        actualDate: data.actualDate,
+        actualMilestone: data.actualMilestone,
+        actualGrade: data.actualGrade,
+        actualBoolean: data.actualBoolean,
+        actualRating: data.actualRating,
+        evidenceDescription: data.evidenceDescription,
+        evidenceLinks: data.evidenceLinks,
+        achievementFormData: data.achievementFormData as object | undefined,
+        computedScore: computedScoreValue,
+        reportingDate,
+      },
+    });
+    createdAchievementId = achievement.id;
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "Achievement",
+        targetId: achievement.id,
+        action: "CREATE",
+        newState: {
+          kpiDefinitionId: data.kpiDefinitionId,
+          actualValue: data.actualValue,
+          computedScore: computedScoreValue,
+          isAdditional: true,
+        },
+      },
+    });
+  });
+
+  return {
+    status: "success",
+    message: "Additional achievement recorded.",
+    id: createdAchievementId,
   };
 }

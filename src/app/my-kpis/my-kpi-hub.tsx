@@ -5,6 +5,8 @@ import {
   ClipboardList,
   CheckCircle2,
   LayoutDashboard,
+  PlusCircle,
+  Send,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
@@ -18,14 +20,16 @@ import { MyReviewItem } from "@/components/my-kpis/my-review-item";
 import { MyDashboard } from "@/components/my-kpis/my-dashboard";
 import { MyAchievementForm } from "@/components/my-kpis/my-achievement-form";
 import { MyCascadeForm } from "@/components/my-kpis/my-cascade-form";
+import { AdditionalAchievementsTab } from "@/components/my-kpis/additional-achievements-tab";
 import { hasReviewRole } from "@/lib/kra-kpi/assignee-access";
 
-type Tab = "targets" | "review" | "dashboard";
+type Tab = "targets" | "review" | "dashboard" | "additional";
 
 const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
   { key: "targets", label: "My Targets", icon: ClipboardList },
   { key: "review", label: "Review Queue", icon: CheckCircle2 },
   { key: "dashboard", label: "My Dashboard", icon: LayoutDashboard },
+  { key: "additional", label: "Additional Achievements", icon: PlusCircle },
 ];
 
 type StatusFilter =
@@ -51,9 +55,15 @@ export function MyKpiHub() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sourceDeptFilter, setSourceDeptFilter] = useState<string>("");
   const [categoryFilter, setCategoryFilter] = useState<string>("");
+  const [categoryPillFilter, setCategoryPillFilter] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<string>("default");
   const [deadlineFilter, setDeadlineFilter] = useState<DeadlineFilter>("all");
   const [todayTs] = useState(() => Date.now());
+
+  // Bulk submit state
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ submitted: number; failed: { id: string; reason: string }[] } | null>(null);
 
   // Achievement form state
   const [editingAllocation, setEditingAllocation] = useState<MyAllocationView | null>(null);
@@ -101,6 +111,34 @@ export function MyKpiHub() {
     setLoading(false);
   }
 
+  async function handleBulkSubmit() {
+    const draftIds = allocations
+      .filter((a) => a.achievement?.state === "DRAFT")
+      .map((a) => a.achievement!.id);
+    if (draftIds.length === 0) return;
+
+    setBulkSubmitting(true);
+    setBulkResult(null);
+    setShowBulkConfirm(false);
+
+    try {
+      const res = await fetch("/api/tenant/kra-kpi/my/bulk-submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ achievementIds: draftIds }),
+      });
+      const data = await res.json() as { submitted: number; failed: { id: string; reason: string }[] };
+      setBulkResult(data);
+      if (selectedPeriodId) {
+        void refreshData(selectedPeriodId);
+      }
+    } catch {
+      setBulkResult({ submitted: 0, failed: [{ id: "", reason: "Network error" }] });
+    } finally {
+      setBulkSubmitting(false);
+    }
+  }
+
   useEffect(() => {
     if (!selectedPeriodId) return;
 
@@ -113,7 +151,7 @@ export function MyKpiHub() {
 
   const canReview = ctx ? hasReviewRole(ctx) : false;
   const visibleTabs = TABS.filter((tab) => canReview || tab.key !== "review");
-  const effectiveActiveTab = canReview || activeTab !== "review" ? activeTab : "targets";
+  const effectiveActiveTab: Tab = (!canReview && activeTab === "review") ? "targets" : activeTab;
   const cycleInfo = allocations.length > 0
     ? getCurrentCycleInfo(allocations[0], todayTs)
     : null;
@@ -126,6 +164,7 @@ export function MyKpiHub() {
   const filteredAllocations = allocations.filter((a) => {
     if (sourceDeptFilter && a.startingUnitName !== sourceDeptFilter) return false;
     if (categoryFilter && a.categoryLabel !== categoryFilter) return false;
+    if (categoryPillFilter && a.categoryKey !== categoryPillFilter && a.categoryLabel !== categoryPillFilter) return false;
     if (deadlineFilter !== "all" && !matchesDeadlineFilter(a, deadlineFilter, todayTs, cycleInfo)) {
       return false;
     }
@@ -176,6 +215,30 @@ export function MyKpiHub() {
         a.childCount === 0
     ).length,
   };
+
+  // Category pills
+  const categoryPills = (() => {
+    const map = new Map<string, { label: string; key: string; count: number }>();
+    for (const a of allocations) {
+      const key = a.categoryKey ?? a.categoryLabel ?? "";
+      const label = a.categoryLabel ?? a.categoryKey ?? "Other";
+      if (key) {
+        const existing = map.get(key);
+        if (existing) {
+          existing.count++;
+        } else {
+          map.set(key, { label, key, count: 1 });
+        }
+      }
+    }
+    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+  })();
+
+  // Draft achievements count for bulk submit
+  const draftAchievementCount = allocations.filter((a) => a.achievement?.state === "DRAFT").length;
+
+  // Selected period state
+  const selectedPeriod = periods.find((p) => p.id === selectedPeriodId);
 
   const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
     { key: "all", label: "All" },
@@ -280,6 +343,83 @@ export function MyKpiHub() {
                   Next deadline: {cycleInfo.daysRemaining < 0 ? "Overdue" : `${cycleInfo.daysRemaining} days`}
                 </span>
               )}
+            </div>
+          )}
+
+          {/* Category Quick-Access Pills */}
+          {categoryPills.length > 1 && (
+            <div className="flex flex-wrap gap-2 items-center">
+              <button
+                onClick={() => setCategoryPillFilter(null)}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                  categoryPillFilter === null
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                )}
+              >
+                All ({allocations.length})
+              </button>
+              {categoryPills.map((pill) => (
+                <button
+                  key={pill.key}
+                  onClick={() => setCategoryPillFilter(pill.key === categoryPillFilter ? null : pill.key)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                    categoryPillFilter === pill.key
+                      ? "bg-slate-900 text-white"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  )}
+                >
+                  {pill.label} ({pill.count})
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Bulk Submit Button */}
+          {draftAchievementCount > 0 && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowBulkConfirm(true)}
+                disabled={bulkSubmitting}
+                className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-green-700 disabled:opacity-50"
+              >
+                <Send className="h-4 w-4" />
+                {bulkSubmitting ? "Submitting..." : `Submit All Drafts (${draftAchievementCount})`}
+              </button>
+              {bulkResult && (
+                <span className={cn(
+                  "text-sm",
+                  bulkResult.failed.length > 0 ? "text-amber-700" : "text-green-700"
+                )}>
+                  {bulkResult.submitted} submitted
+                  {bulkResult.failed.length > 0 && `, ${bulkResult.failed.length} failed`}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Bulk Submit Confirmation Dialog */}
+          {showBulkConfirm && (
+            <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+              <p className="text-sm font-medium text-gray-900 mb-3">
+                Submit {draftAchievementCount} draft achievement{draftAchievementCount !== 1 ? "s" : ""} for verification?
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { void handleBulkSubmit(); }}
+                  className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
+                >
+                  Yes, Submit All
+                </button>
+                <button
+                  onClick={() => setShowBulkConfirm(false)}
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
 
@@ -421,6 +561,18 @@ export function MyKpiHub() {
 
       {!loading && effectiveActiveTab === "dashboard" && (
         <MyDashboard summary={dashboardSummary} />
+      )}
+
+      {!loading && effectiveActiveTab === "additional" && selectedPeriodId && (
+        <AdditionalAchievementsTab
+          periodId={selectedPeriodId}
+          periodState={selectedPeriod?.state ?? ""}
+          onRefresh={() => {
+            if (selectedPeriodId) {
+              void refreshData(selectedPeriodId);
+            }
+          }}
+        />
       )}
     </div>
   );

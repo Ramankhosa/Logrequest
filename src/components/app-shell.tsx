@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Workflow, LogOut, KeyRound } from "lucide-react";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { SignOutButton } from "@/components/auth/sign-out-button";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import {
   defaultNavigationGroups,
   type NavigationGroup,
@@ -120,11 +121,10 @@ export function AppShell({
                 ) : null}
               </div>
 
-              {headerActions ? (
-                <div className="flex flex-wrap items-center gap-3">
-                  {headerActions}
-                </div>
-              ) : null}
+              <div className="flex flex-wrap items-center gap-3">
+                <NotificationBell />
+                {headerActions}
+              </div>
             </div>
           </header>
 

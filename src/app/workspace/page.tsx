@@ -3,6 +3,7 @@ import { AppShell } from "@/components/app-shell";
 import { MetricCard } from "@/components/metric-card";
 import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
+import { KraKpiSummaryCard } from "@/components/workspace/kra-kpi-summary-card";
 import { getShellIdentity } from "@/lib/auth/access";
 import { requireTenantUser } from "@/lib/auth/session";
 import { getNavigationForRole } from "@/lib/navigation";
@@ -55,6 +56,8 @@ export default async function WorkspacePage() {
           ) : null}
         </div>
       </Panel>
+
+      <KraKpiSummaryCard />
     </AppShell>
   );
 }

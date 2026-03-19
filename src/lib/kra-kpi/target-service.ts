@@ -8,6 +8,11 @@ import type {
 } from "./shared";
 import { getMeasurementCapValue } from "./shared";
 import { getUserAssignments } from "@/lib/org-structure/roles-service";
+import {
+  createNotification,
+  createBulkNotifications,
+  resolveAllocateeUserId,
+} from "@/lib/notifications/notification-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -422,6 +427,33 @@ export async function updateAllocation(
     });
   });
 
+  // Notify assignee
+  try {
+    const recipientId = await resolveAllocateeUserId(tenantId, {
+      assignedToUserId: allocation.assignedToUserId,
+      assignedToUnitId: allocation.assignedToUnitId,
+    });
+    if (recipientId && recipientId !== actorUserId) {
+      const kpiDef = await prisma.kpiDefinition.findFirst({
+        where: { id: allocation.kpiDefinitionId },
+        select: { title: true },
+      });
+      const newValue = data.targetValue !== undefined ? String(data.targetValue) : "updated";
+      await createNotification(
+        tenantId,
+        recipientId,
+        "TARGET_UPDATED",
+        "Target updated",
+        `Target for '${kpiDef?.title ?? "KPI"}' updated to ${newValue}`,
+        "TargetAllocation",
+        allocationId,
+        "/my-kpis",
+      );
+    }
+  } catch (err) {
+    console.warn("[target-service] updateAllocation notification failed:", err);
+  }
+
   return { status: "success", message: "Allocation updated." };
 }
 
@@ -747,6 +779,41 @@ export async function cascadeTargets(
     });
   });
 
+  // Notify each child assignee
+  try {
+    const kpiDef = await prisma.kpiDefinition.findFirst({
+      where: { id: parent.kpiDefinitionId },
+      select: { title: true },
+    });
+    const kpiTitle = kpiDef?.title ?? "KPI";
+
+    const recipientIds: string[] = [];
+    for (const dist of distributions) {
+      const recipientId = await resolveAllocateeUserId(tenantId, {
+        assignedToUserId: dist.assignedToUserId ?? null,
+        assignedToUnitId: dist.assignedToUnitId ?? null,
+      });
+      if (recipientId && recipientId !== actorUserId && !recipientIds.includes(recipientId)) {
+        recipientIds.push(recipientId);
+      }
+    }
+
+    if (recipientIds.length > 0) {
+      await createBulkNotifications(
+        tenantId,
+        recipientIds,
+        "KPI_CASCADED",
+        "KPI assigned to you",
+        `You've been assigned '${kpiTitle}'. Check My KPIs for your target.`,
+        "TargetAllocation",
+        parentAllocationId,
+        "/my-kpis",
+      );
+    }
+  } catch (err) {
+    console.warn("[target-service] cascadeTargets notification failed:", err);
+  }
+
   return {
     status: "success",
     message: `Target cascaded to ${distributions.length} allocation(s).`,
@@ -927,6 +994,32 @@ async function createAllocationRecords(input: {
       });
     }
   });
+
+  // Notify assignees after successful allocation
+  try {
+    const targetStr = allocations[0]?.targetValue != null ? String(allocations[0].targetValue) : "set";
+    for (const alloc of allocations) {
+      const recipientId = await resolveAllocateeUserId(tenantId, {
+        assignedToUserId: alloc.assignedToUserId ?? null,
+        assignedToUnitId: alloc.assignedToUnitId ?? null,
+      });
+      if (recipientId && recipientId !== actorUserId) {
+        const targetDisplay = alloc.targetValue != null ? String(alloc.targetValue) : targetStr;
+        await createNotification(
+          tenantId,
+          recipientId,
+          "KPI_ALLOCATED",
+          "KPI allocated to you",
+          `'${kpi.title}' has been allocated. Target: ${targetDisplay}`,
+          "TargetAllocation",
+          undefined,
+          "/my-kpis",
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[target-service] createAllocationRecords notification failed:", err);
+  }
 
   return {
     status: "success",

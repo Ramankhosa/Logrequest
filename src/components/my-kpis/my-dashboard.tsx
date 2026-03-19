@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { Clock, AlertTriangle } from "lucide-react";
 import type { MyDashboardSummary } from "@/lib/kra-kpi/shared";
 
 type Props = {
@@ -126,6 +127,54 @@ export function MyDashboard({ summary }: Props) {
           />
         </div>
       </div>
+
+      {/* Deadline alerts */}
+      {(s.upcomingDeadlineCount > 0 || s.overdueCount > 0) && (
+        <div className="rounded-lg border border-gray-200 bg-white p-4">
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">Deadline Status</h3>
+          <div className="flex flex-wrap gap-3">
+            {s.overdueCount > 0 && (
+              <div className="flex items-center gap-2 rounded-lg bg-red-50 border border-red-100 px-3 py-2">
+                <AlertTriangle className="h-4 w-4 text-red-500" />
+                <span className="text-sm text-red-700 font-medium">{s.overdueCount} overdue</span>
+              </div>
+            )}
+            {s.upcomingDeadlineCount > 0 && (
+              <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-100 px-3 py-2">
+                <Clock className="h-4 w-4 text-amber-500" />
+                <span className="text-sm text-amber-700 font-medium">{s.upcomingDeadlineCount} due this week</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Additional Contributions */}
+      {s.additionalAchievements && s.additionalAchievements.total > 0 && (
+        <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+          <div className="border-b border-gray-200 bg-gray-50 px-4 py-3">
+            <h3 className="text-sm font-semibold text-gray-700">Additional Contributions</h3>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+            <div className="rounded-lg bg-gray-50 p-3 text-center">
+              <div className="text-xl font-bold text-gray-700">{s.additionalAchievements.total}</div>
+              <div className="text-xs text-gray-500 mt-0.5">Total</div>
+            </div>
+            <div className="rounded-lg bg-green-50 p-3 text-center">
+              <div className="text-xl font-bold text-green-600">{s.additionalAchievements.verified}</div>
+              <div className="text-xs text-gray-500 mt-0.5">Verified</div>
+            </div>
+            <div className="rounded-lg bg-blue-50 p-3 text-center">
+              <div className="text-xl font-bold text-blue-600">{s.additionalAchievements.pending}</div>
+              <div className="text-xs text-gray-500 mt-0.5">Pending Review</div>
+            </div>
+            <div className="rounded-lg bg-red-50 p-3 text-center">
+              <div className="text-xl font-bold text-red-600">{s.additionalAchievements.notApproved}</div>
+              <div className="text-xs text-gray-500 mt-0.5">Not Approved</div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

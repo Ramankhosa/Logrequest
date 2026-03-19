@@ -10,6 +10,7 @@ import type {
   AchievementFormConfig,
   VerificationLogEntry,
   MeasurementConfig,
+  KpiDefinitionView,
 } from "./shared";
 
 // ── Build MyKpiContext ───────────────────────────────────────────────────────
@@ -542,6 +543,43 @@ export async function getMyDashboardSummary(
     ? Math.round((weightedScore / maxPossible) * 100 * 100) / 100
     : 0;
 
+  // Additional achievements (targetAllocationId IS NULL)
+  const additionalAchievementsList = await prisma.achievement.findMany({
+    where: {
+      tenantId,
+      periodId,
+      reportedByUserId: userId,
+      targetAllocationId: null,
+    },
+    select: { state: true },
+  });
+
+  const additionalAchievements = {
+    total: additionalAchievementsList.length,
+    verified: additionalAchievementsList.filter((a) => a.state === "VERIFIED").length,
+    pending: additionalAchievementsList.filter(
+      (a) => a.state === "SUBMITTED" || a.state === "RECOMMENDED",
+    ).length,
+    notApproved: additionalAchievementsList.filter((a) => a.state === "REJECTED").length,
+  };
+
+  // Upcoming deadline count (within 7 days) and overdue count
+  const today = new Date();
+  const in7Days = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
+  let upcomingDeadlineCount = 0;
+  let overdueCount = 0;
+
+  for (const a of allocs) {
+    if (a.achievement?.state === "VERIFIED") continue;
+    if (!a.achievementDeadline) continue;
+    const deadline = new Date(a.achievementDeadline);
+    if (deadline < today) {
+      overdueCount++;
+    } else if (deadline <= in7Days) {
+      upcomingDeadlineCount++;
+    }
+  }
+
   return {
     periodId,
     periodName: period.name,
@@ -552,6 +590,9 @@ export async function getMyDashboardSummary(
     overallPercentage,
     kraBreakdown,
     pendingReviewCount,
+    additionalAchievements,
+    upcomingDeadlineCount,
+    overdueCount,
   };
 }
 
@@ -684,4 +725,183 @@ export async function getMyPendingCount(
   });
 
   return submittedCount + recommendedCount;
+}
+
+// ── Available KPIs for Additional Achievements ───────────────────────────────
+
+export type AvailableKpiView = {
+  kpiId: string;
+  kpiTitle: string;
+  kpiDescription: string | null;
+  kpiWeightage: number;
+  measurementType: string;
+  unitLabel: string | null;
+  achievementTemplateKey: string | null;
+  achievementFormConfig: AchievementFormConfig | null;
+  kraId: string;
+  kraTitle: string;
+  categoryKey: string | null;
+  categoryLabel: string | null;
+  startingUnitId: string;
+  startingUnitName: string;
+  isAllocated: boolean;
+  hasExistingAdditional: boolean;
+};
+
+export async function getAvailableKpis(
+  tenantId: string,
+  userId: string,
+  periodId: string,
+  search?: string,
+  categoryKey?: string,
+): Promise<AvailableKpiView[]> {
+  // Validate period
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+    select: { state: true },
+  });
+  if (!period) return [];
+
+  // Get user's existing allocations for this period
+  const ctx = await getMyKpiContext(tenantId, userId);
+  const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
+
+  const userAllocations = await prisma.targetAllocation.findMany({
+    where: {
+      tenantId,
+      periodId,
+      OR: [
+        { assignedToUserId: userId },
+        ...(headUnitIds.length > 0 ? [{ assignedToUnitId: { in: headUnitIds } }] : []),
+      ],
+    },
+    select: { kpiDefinitionId: true },
+  });
+  const allocatedKpiIds = new Set(userAllocations.map((a) => a.kpiDefinitionId));
+
+  // Get user's existing additional achievements
+  const existingAdditional = await prisma.achievement.findMany({
+    where: {
+      tenantId,
+      periodId,
+      reportedByUserId: userId,
+      targetAllocationId: null,
+      state: { not: "REJECTED" },
+    },
+    select: { kpiDefinitionId: true },
+  });
+  const additionalKpiIds = new Set(existingAdditional.map((a) => a.kpiDefinitionId));
+
+  // Find all ACTIVE KPIs in the period
+  const kpis = await prisma.kpiDefinition.findMany({
+    where: {
+      state: "ACTIVE",
+      kraDefinition: {
+        tenantId,
+        periodId,
+        state: "ACTIVE",
+        ...(categoryKey
+          ? { category: { categoryKey } }
+          : {}),
+      },
+      ...(search
+        ? {
+            OR: [
+              { title: { contains: search, mode: "insensitive" } },
+              { description: { contains: search, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    },
+    include: {
+      kraDefinition: {
+        include: {
+          category: { select: { categoryKey: true, displayLabel: true } },
+        },
+      },
+      startingUnit: { select: { id: true, name: true } },
+    },
+    orderBy: [
+      { kraDefinition: { sortOrder: "asc" } },
+      { sortOrder: "asc" },
+    ],
+  });
+
+  return kpis.map((kpi): AvailableKpiView => ({
+    kpiId: kpi.id,
+    kpiTitle: kpi.title,
+    kpiDescription: kpi.description,
+    kpiWeightage: kpi.weightage,
+    measurementType: kpi.measurementType,
+    unitLabel: kpi.unitLabel,
+    achievementTemplateKey: kpi.achievementTemplateKey,
+    achievementFormConfig: kpi.achievementFormConfig as AchievementFormConfig | null,
+    kraId: kpi.kraDefinitionId,
+    kraTitle: kpi.kraDefinition.title,
+    categoryKey: kpi.kraDefinition.category?.categoryKey ?? null,
+    categoryLabel: kpi.kraDefinition.category?.displayLabel ?? null,
+    startingUnitId: kpi.startingUnit.id,
+    startingUnitName: kpi.startingUnit.name,
+    isAllocated: allocatedKpiIds.has(kpi.id),
+    hasExistingAdditional: additionalKpiIds.has(kpi.id),
+  }));
+}
+
+// ── List Additional Achievements ─────────────────────────────────────────────
+
+export async function listAdditionalAchievements(
+  tenantId: string,
+  userId: string,
+  periodId: string,
+): Promise<AchievementView[]> {
+  const achievements = await prisma.achievement.findMany({
+    where: {
+      tenantId,
+      periodId,
+      reportedByUserId: userId,
+      targetAllocationId: null,
+    },
+    include: {
+      kpiDefinition: { select: { title: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { firstName: true, lastName: true },
+  });
+  const userName = user ? `${user.firstName} ${user.lastName}` : "Unknown";
+
+  return achievements.map((a): AchievementView => ({
+    id: a.id,
+    tenantId: a.tenantId,
+    periodId: a.periodId,
+    kpiDefinitionId: a.kpiDefinitionId,
+    kpiTitle: a.kpiDefinition.title,
+    targetAllocationId: a.targetAllocationId,
+    reportedByUserId: a.reportedByUserId,
+    reportedByUserName: userName,
+    actualValue: a.actualValue,
+    actualDate: a.actualDate,
+    actualMilestone: a.actualMilestone,
+    actualGrade: a.actualGrade,
+    actualBoolean: a.actualBoolean,
+    actualRating: a.actualRating,
+    evidenceDescription: a.evidenceDescription,
+    evidenceLinks: a.evidenceLinks,
+    achievementFormData: a.achievementFormData as Record<string, unknown> | null,
+    computedScore: a.computedScore,
+    state: a.state,
+    recommendedByUserId: a.recommendedByUserId,
+    recommendedAt: a.recommendedAt,
+    recommendationNote: a.recommendationNote,
+    verifiedByUserId: a.verifiedByUserId,
+    verifiedAt: a.verifiedAt,
+    verificationNote: a.verificationNote,
+    rejectionReason: a.rejectionReason,
+    verificationLog: (a.verificationLog as VerificationLogEntry[]) ?? [],
+    reportingDate: a.reportingDate,
+    createdAt: a.createdAt,
+  }));
 }
