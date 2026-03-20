@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Loader2, Check, X, AlertCircle, Plus, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Loader2, Check, X, AlertCircle } from "lucide-react";
 import { TooltipHint } from "./tooltip-hint";
 import { TOOLTIPS, ACHIEVEMENT_TEMPLATES } from "@/lib/kra-kpi/shared";
 import {
@@ -9,7 +9,6 @@ import {
   type AchievementFieldConfig,
   type AchievementFormConfig,
   type MeasurementConfig,
-  type KpiTargetUnitView,
 } from "@/lib/kra-kpi/shared";
 
 const MEASUREMENT_TYPES = [
@@ -98,7 +97,6 @@ function supportsEditableMaxCap(measurementType: string): boolean {
     measurementType === "CURRENCY"
   );
 }
-
 function buildMeasurementConfig(
   measurementType: string,
   existingConfig: MeasurementConfig | null | undefined,
@@ -607,15 +605,6 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
                 </div>
               )}
             </div>
-
-            {/* Target Departments (edit mode only) */}
-            {mode === "edit" && initial?.id && (
-              <TargetDepartmentsPicker
-                kpiId={initial.id}
-                startingUnitId={startingUnitId}
-                units={units}
-              />
-            )}
           </div>
         )}
       </div>
@@ -633,163 +622,5 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         </div>
       )}
     </form>
-  );
-}
-
-function TargetDepartmentsPicker({
-  kpiId,
-  startingUnitId,
-  units,
-}: {
-  kpiId: string;
-  startingUnitId: string;
-  units: { id: string; name: string }[];
-}) {
-  const [targetUnits, setTargetUnits] = useState<KpiTargetUnitView[]>([]);
-  const [addUnitId, setAddUnitId] = useState("");
-  const [addShare, setAddShare] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<string | null>(null);
-
-  const fetchTargetUnits = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/tenant/kra-kpi/kpis/${kpiId}/target-units`);
-      if (res.ok) {
-        const data = await res.json();
-        setTargetUnits(data.targetUnits ?? []);
-      }
-    } catch { /* ignore */ }
-  }, [kpiId]);
-
-  useEffect(() => { void fetchTargetUnits(); }, [fetchTargetUnits]);
-
-  const handleAdd = async () => {
-    if (!addUnitId) return;
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const res = await fetch(`/api/tenant/kra-kpi/kpis/${kpiId}/target-units`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          unitId: addUnitId,
-          targetShare: addShare.trim() ? Number(addShare) : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (data.status === "success") {
-        setAddUnitId("");
-        setAddShare("");
-        void fetchTargetUnits();
-      } else {
-        setFeedback(data.message);
-      }
-    } catch {
-      setFeedback("Failed to add.");
-    }
-    setBusy(false);
-  };
-
-  const handleRemove = async (unitId: string) => {
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const res = await fetch(`/api/tenant/kra-kpi/kpis/${kpiId}/target-units`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unitId }),
-      });
-      const data = await res.json();
-      if (data.status === "success") {
-        void fetchTargetUnits();
-      } else {
-        setFeedback(data.message);
-      }
-    } catch {
-      setFeedback("Failed to remove.");
-    }
-    setBusy(false);
-  };
-
-  const availableUnits = units.filter(
-    (u) => u.id !== startingUnitId && !targetUnits.some((tu) => tu.unitId === u.id)
-  );
-  const totalShare = targetUnits.reduce((s, tu) => s + (tu.targetShare ?? 0), 0);
-
-  return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-        Target Departments
-      </p>
-      <p className="mb-3 text-[11px] text-slate-400">
-        Which departments should receive this KPI? Leave empty to allocate manually.
-      </p>
-
-      {targetUnits.length > 0 && (
-        <div className="mb-3 space-y-1">
-          {targetUnits.map((tu) => (
-            <div key={tu.id} className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm">
-              <div>
-                <span className="font-medium text-slate-700">{tu.unitName}</span>
-                {tu.targetShare != null && (
-                  <span className="ml-2 text-xs text-slate-400">Share: {tu.targetShare}%</span>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => handleRemove(tu.unitId)}
-                disabled={busy}
-                className="text-slate-400 hover:text-rose-500 disabled:opacity-50"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
-          {totalShare > 0 && (
-            <p className={`text-xs ${Math.abs(totalShare - 100) < 0.01 ? "text-emerald-600" : "text-amber-600"}`}>
-              Total share: {totalShare}%{Math.abs(totalShare - 100) < 0.01 ? " ✓" : " (should be 100%)"}
-            </p>
-          )}
-        </div>
-      )}
-
-      <div className="flex items-end gap-2">
-        <div className="flex-1">
-          <select
-            value={addUnitId}
-            onChange={(e) => setAddUnitId(e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand"
-          >
-            <option value="">Add department...</option>
-            {availableUnits.map((u) => (
-              <option key={u.id} value={u.id}>{u.name}</option>
-            ))}
-          </select>
-        </div>
-        <div className="w-20">
-          <input
-            type="number"
-            placeholder="%"
-            value={addShare}
-            onChange={(e) => setAddShare(e.target.value)}
-            min={0}
-            max={100}
-            className="w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm outline-none focus:border-brand"
-          />
-        </div>
-        <button
-          type="button"
-          onClick={handleAdd}
-          disabled={!addUnitId || busy}
-          className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-        >
-          <Plus className="h-3.5 w-3.5" /> Add
-        </button>
-      </div>
-
-      {feedback && (
-        <p className="mt-1.5 text-xs text-rose-600">{feedback}</p>
-      )}
-    </div>
   );
 }

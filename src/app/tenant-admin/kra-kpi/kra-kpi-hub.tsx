@@ -80,6 +80,31 @@ export function KraKpiHub() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchPeriods(); }, [fetchPeriods]);
 
+  useEffect(() => {
+    if (!selectedPeriodId) {
+      if (selectedPeriodName !== null) {
+        setSelectedPeriodName(null);
+      }
+      return;
+    }
+
+    const selectedPeriod = periods.find((period) => period.id === selectedPeriodId);
+    if (!selectedPeriod) {
+      setSelectedPeriodId(null);
+      setSelectedPeriodName(null);
+      setSelectedKraId(null);
+      setSelectedKpiId(null);
+      setKras([]);
+      setKpis([]);
+      setShowAchievementForm(false);
+      return;
+    }
+
+    if (selectedPeriod.name !== selectedPeriodName) {
+      setSelectedPeriodName(selectedPeriod.name);
+    }
+  }, [periods, selectedPeriodId, selectedPeriodName]);
+
   const fetchKras = useCallback(async (periodId: string) => {
     try {
       const res = await fetch(`/api/tenant/kra-kpi/kras?periodId=${periodId}`);
@@ -243,7 +268,10 @@ export function KraKpiHub() {
       {/* Tab content */}
       <section className="rounded-[1.75rem] border border-slate-200/80 bg-white/60 p-6">
         {activeTab === "periods" && (
-          <AssessmentPeriodList onSelectPeriod={(periodId) => handleSelectPeriod(periodId, "kras")} />
+          <AssessmentPeriodList
+            onSelectPeriod={(periodId) => handleSelectPeriod(periodId, "kras")}
+            onPeriodsChanged={setPeriods}
+          />
         )}
 
         {activeTab === "categories" && (
@@ -254,6 +282,7 @@ export function KraKpiHub() {
           <KraDefinitionList
             periodId={selectedPeriodId}
             periodName={selectedPeriodName ?? undefined}
+            availablePeriods={periods}
             onSelectKra={(kraId) => handleSelectKra(kraId, "kpis")}
             onKrasLoaded={setKras}
             onBack={() => setActiveTab("periods")}

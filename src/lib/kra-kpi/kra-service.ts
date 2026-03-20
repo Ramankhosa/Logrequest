@@ -1,4 +1,4 @@
-import type { KraDefinitionState, Role } from "@prisma/client";
+import { Prisma, type KraDefinitionState, type Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult, KraDefinitionView } from "./shared";
@@ -31,9 +31,14 @@ const changeKraStateSchema = z.object({
   state: z.enum(["DRAFT", "ACTIVE"]),
 });
 
+const copyKrasFromPeriodSchema = z.object({
+  sourcePeriodId: z.string().trim().min(1, "Select a source period."),
+});
+
 export type CreateKraInput = z.input<typeof createKraSchema>;
 export type UpdateKraInput = z.input<typeof updateKraSchema>;
 export type ChangeKraStateInput = z.input<typeof changeKraStateSchema>;
+export type CopyKrasFromPeriodInput = z.input<typeof copyKrasFromPeriodSchema>;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -47,6 +52,10 @@ function isAdminOrOwner(role: Role): boolean {
 
 function canModifyKraInPeriodState(state: string): boolean {
   return state === "DRAFT" || state === "OPEN" || state === "UNDER_REVIEW";
+}
+
+function toOptionalJsonInput(value: unknown): Prisma.InputJsonValue | undefined {
+  return value == null ? undefined : (value as Prisma.InputJsonValue);
 }
 
 // ── List KRAs ────────────────────────────────────────────────────────────────
@@ -232,6 +241,206 @@ export async function createKra(
 }
 
 // ── Update KRA ───────────────────────────────────────────────────────────────
+
+export async function copyKrasFromPeriod(
+  targetPeriodId: string,
+  tenantId: string,
+  input: CopyKrasFromPeriodInput,
+  actorUserId: string,
+  actorRole: Role,
+): Promise<KraKpiActionResult> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
+  }
+
+  const parsed = copyKrasFromPeriodSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Invalid input.",
+    };
+  }
+
+  const { sourcePeriodId } = parsed.data;
+  if (sourcePeriodId === targetPeriodId) {
+    return {
+      status: "error",
+      message: "Choose a different source period.",
+    };
+  }
+
+  const [sourcePeriod, targetPeriod] = await Promise.all([
+    prisma.assessmentPeriod.findFirst({
+      where: { id: sourcePeriodId, tenantId },
+      select: { id: true, name: true },
+    }),
+    prisma.assessmentPeriod.findFirst({
+      where: { id: targetPeriodId, tenantId },
+      select: { id: true, name: true, state: true },
+    }),
+  ]);
+
+  if (!sourcePeriod) {
+    return {
+      status: "error",
+      code: "PERIOD_NOT_FOUND",
+      message: "Source assessment period not found.",
+    };
+  }
+
+  if (!targetPeriod) {
+    return {
+      status: "error",
+      code: "PERIOD_NOT_FOUND",
+      message: "Assessment period not found.",
+    };
+  }
+
+  if (!canModifyKraInPeriodState(targetPeriod.state)) {
+    return {
+      status: "error",
+      code: "PERIOD_STATE_CONFLICT",
+      message: `Cannot copy KRAs into a period in "${targetPeriod.state}" state.`,
+    };
+  }
+
+  const existingTargetKraCount = await prisma.kraDefinition.count({
+    where: {
+      tenantId,
+      periodId: targetPeriodId,
+      state: { not: "ARCHIVED" },
+    },
+  });
+  if (existingTargetKraCount > 0) {
+    return {
+      status: "error",
+      code: "TARGET_PERIOD_NOT_EMPTY",
+      message: "This period already has KRAs. Clear them first, then copy.",
+    };
+  }
+
+  const sourceKras = await prisma.kraDefinition.findMany({
+    where: {
+      tenantId,
+      periodId: sourcePeriodId,
+      state: { not: "ARCHIVED" },
+    },
+    include: {
+      kpiDefinitions: {
+        where: { state: { not: "ARCHIVED" } },
+        include: {
+          targetUnits: {
+            orderBy: { createdAt: "asc" },
+          },
+        },
+        orderBy: [{ sortOrder: "asc" }, { title: "asc" }],
+      },
+    },
+    orderBy: [{ sortOrder: "asc" }, { title: "asc" }],
+  });
+
+  if (sourceKras.length === 0) {
+    return {
+      status: "error",
+      code: "SOURCE_PERIOD_EMPTY",
+      message: "The selected source period has no KRAs to copy.",
+    };
+  }
+
+  let copiedKraCount = 0;
+  let copiedKpiCount = 0;
+  let copiedTargetUnitCount = 0;
+
+  await prisma.$transaction(async (tx) => {
+    for (const sourceKra of sourceKras) {
+      const copiedKra = await tx.kraDefinition.create({
+        data: {
+          tenantId,
+          periodId: targetPeriodId,
+          categoryId: sourceKra.categoryId,
+          title: sourceKra.title,
+          description: sourceKra.description,
+          weightage: sourceKra.weightage,
+          state: sourceKra.state,
+          sortOrder: sourceKra.sortOrder,
+          createdByUserId: actorUserId,
+        },
+      });
+      copiedKraCount += 1;
+
+      for (const sourceKpi of sourceKra.kpiDefinitions) {
+        const copiedKpi = await tx.kpiDefinition.create({
+          data: {
+            kraDefinitionId: copiedKra.id,
+            title: sourceKpi.title,
+            description: sourceKpi.description,
+            measurementType: sourceKpi.measurementType,
+            unitLabel: sourceKpi.unitLabel,
+            weightage: sourceKpi.weightage,
+            defaultTarget: sourceKpi.defaultTarget,
+            measurementConfig: toOptionalJsonInput(sourceKpi.measurementConfig),
+            scoringMethod: sourceKpi.scoringMethod,
+            scoringDirection: sourceKpi.scoringDirection,
+            scoringConfig: toOptionalJsonInput(sourceKpi.scoringConfig),
+            isPerCapita: sourceKpi.isPerCapita,
+            allocationType: sourceKpi.allocationType,
+            startingUnitId: sourceKpi.startingUnitId,
+            achievementTemplateKey: sourceKpi.achievementTemplateKey,
+            achievementFormConfig: toOptionalJsonInput(sourceKpi.achievementFormConfig),
+            keyUnitId: sourceKpi.keyUnitId,
+            finalUnitId: sourceKpi.finalUnitId,
+            sopDescription: sourceKpi.sopDescription,
+            sopFiles: toOptionalJsonInput(sourceKpi.sopFiles),
+            evidenceRequired: sourceKpi.evidenceRequired,
+            evidenceTypes: sourceKpi.evidenceTypes,
+            evidenceInstructions: sourceKpi.evidenceInstructions,
+            isTeamKpi: sourceKpi.isTeamKpi,
+            teamCreditMethod: sourceKpi.teamCreditMethod,
+            state: sourceKpi.state,
+            sortOrder: sourceKpi.sortOrder,
+            guidanceNotes: sourceKpi.guidanceNotes,
+          },
+        });
+        copiedKpiCount += 1;
+
+        for (const sourceTargetUnit of sourceKpi.targetUnits) {
+          await tx.kpiTargetUnit.create({
+            data: {
+              kpiDefinitionId: copiedKpi.id,
+              unitId: sourceTargetUnit.unitId,
+              targetShare: sourceTargetUnit.targetShare,
+              notes: sourceTargetUnit.notes,
+            },
+          });
+          copiedTargetUnitCount += 1;
+        }
+      }
+    }
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "AssessmentPeriod",
+        targetId: targetPeriodId,
+        action: "COPY_KRA_KPIS",
+        metadata: {
+          sourcePeriodId,
+          sourcePeriodName: sourcePeriod.name,
+          copiedKraCount,
+          copiedKpiCount,
+          copiedTargetUnitCount,
+        },
+      },
+    });
+  });
+
+  return {
+    status: "success",
+    message: `Copied ${copiedKraCount} KRA(s), ${copiedKpiCount} KPI(s), and ${copiedTargetUnitCount} target mapping(s) from "${sourcePeriod.name}".`,
+  };
+}
 
 export async function updateKra(
   kraId: string,

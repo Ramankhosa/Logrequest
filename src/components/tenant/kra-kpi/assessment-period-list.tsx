@@ -29,6 +29,11 @@ type PeriodView = {
   kraCount: number;
 };
 
+type PeriodOption = {
+  id: string;
+  name: string;
+};
+
 const PERIOD_STATES = [
   "DRAFT",
   "OPEN",
@@ -43,7 +48,13 @@ function formatDate(d: string | null) {
   return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-export function AssessmentPeriodList({ onSelectPeriod }: { onSelectPeriod?: (periodId: string) => void }) {
+export function AssessmentPeriodList({
+  onSelectPeriod,
+  onPeriodsChanged,
+}: {
+  onSelectPeriod?: (periodId: string) => void;
+  onPeriodsChanged?: (periods: PeriodOption[]) => void;
+}) {
   const [periods, setPeriods] = useState<PeriodView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +70,9 @@ export function AssessmentPeriodList({ onSelectPeriod }: { onSelectPeriod?: (per
       const data = await res.json();
       setPeriods(data);
       if (Array.isArray(data)) {
+        onPeriodsChanged?.(
+          data.map((period: PeriodView) => ({ id: period.id, name: period.name })),
+        );
         setSelectedStates(
           Object.fromEntries(
             data.map((period: PeriodView) => [period.id, period.state]),
@@ -70,7 +84,7 @@ export function AssessmentPeriodList({ onSelectPeriod }: { onSelectPeriod?: (per
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onPeriodsChanged]);
 
   useEffect(() => { void fetchPeriods(); }, [fetchPeriods]);
 

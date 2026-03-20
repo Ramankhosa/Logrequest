@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Plus,
+  Copy,
   Pencil,
   Trash2,
   Loader2,
@@ -37,16 +38,19 @@ type KraView = {
 };
 
 type CategoryOption = { id: string; displayLabel: string };
+type PeriodOption = { id: string; name: string };
 
 export function KraDefinitionList({
   periodId,
   periodName,
+  availablePeriods = [],
   onSelectKra,
   onKrasLoaded,
   onBack,
 }: {
   periodId: string;
   periodName?: string;
+  availablePeriods?: PeriodOption[];
   onSelectKra?: (kraId: string) => void;
   onKrasLoaded?: (kras: KraView[]) => void;
   onBack?: () => void;
@@ -59,6 +63,9 @@ export function KraDefinitionList({
   const [addingNew, setAddingNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
+  const [showCopyPanel, setShowCopyPanel] = useState(false);
+  const [copySourcePeriodId, setCopySourcePeriodId] = useState("");
+  const [copying, setCopying] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -79,6 +86,30 @@ export function KraDefinitionList({
   }, [onKrasLoaded, periodId]);
 
   useEffect(() => { void fetchData(); }, [fetchData]);
+
+  const copyablePeriods = availablePeriods.filter((period) => period.id !== periodId);
+  const hasActiveOrDraftKras = kras.some((kra) => kra.state !== "ARCHIVED");
+  const copyDisabledReason =
+    copyablePeriods.length === 0
+      ? "Create another period first."
+      : hasActiveOrDraftKras
+        ? "Copy works only into a period with no existing KRAs."
+        : null;
+
+  useEffect(() => {
+    if (!showCopyPanel) {
+      return;
+    }
+    if (!copyablePeriods.length) {
+      if (copySourcePeriodId) {
+        setCopySourcePeriodId("");
+      }
+      return;
+    }
+    if (!copyablePeriods.some((period) => period.id === copySourcePeriodId)) {
+      setCopySourcePeriodId(copyablePeriods[0]?.id ?? "");
+    }
+  }, [copySourcePeriodId, copyablePeriods, showCopyPanel]);
 
   const showFeedback = (type: "success" | "error", message: string) => {
     setFeedback({ type, message });
@@ -142,6 +173,52 @@ export function KraDefinitionList({
     }
   };
 
+  const handleCopyFromPeriod = async () => {
+    if (!copySourcePeriodId) {
+      showFeedback("error", "Select a source period first.");
+      return;
+    }
+    if (!window.confirm("Copy all KRAs and KPIs from the selected period into this one?")) {
+      return;
+    }
+
+    setCopying(true);
+    try {
+      const res = await fetch(`/api/tenant/kra-kpi/periods/${periodId}/copy-kras`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourcePeriodId: copySourcePeriodId }),
+      });
+      const contentType = res.headers.get("content-type") ?? "";
+      const data = contentType.includes("application/json")
+        ? await res.json()
+        : null;
+
+      if (!res.ok) {
+        showFeedback(
+          "error",
+          data?.message ??
+            (res.status === 404
+              ? "Copy route is unavailable. Restart the app server and try again."
+              : `Copy failed (${res.status}).`),
+        );
+        return;
+      }
+
+      if (data?.status === "success") {
+        setShowCopyPanel(false);
+        showFeedback("success", data.message);
+        void fetchData();
+      } else {
+        showFeedback("error", data?.message ?? "Copy failed.");
+      }
+    } catch {
+      showFeedback("error", "Copy failed.");
+    } finally {
+      setCopying(false);
+    }
+  };
+
   const totalWeightage = kras.filter((k) => k.state !== "ARCHIVED").reduce((s, k) => s + k.weightage, 0);
 
   if (loading) {
@@ -165,11 +242,22 @@ export function KraDefinitionList({
             </p>
           </div>
         </div>
-        {!addingNew && (
-          <button type="button" onClick={() => setAddingNew(true)} className="inline-flex items-center gap-1.5 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800">
-            <Plus className="h-4 w-4" /> Add KRA
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCopyPanel((current) => !current)}
+            disabled={Boolean(copyDisabledReason)}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+            title={copyDisabledReason ?? "Copy KRAs and KPIs from another period"}
+          >
+            <Copy className="h-4 w-4" /> Copy from period
           </button>
-        )}
+          {!addingNew && (
+            <button type="button" onClick={() => setAddingNew(true)} className="inline-flex items-center gap-1.5 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800">
+              <Plus className="h-4 w-4" /> Add KRA
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Weightage bar */}
@@ -183,6 +271,50 @@ export function KraDefinitionList({
         <div className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm ${feedback.type === "success" ? "border-brand/20 bg-brand/5 text-brand" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
           {feedback.type === "success" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
           {feedback.message}
+        </div>
+      )}
+
+      {showCopyPanel && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[220px] flex-1">
+              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Source period
+              </label>
+              <select
+                value={copySourcePeriodId}
+                onChange={(event) => setCopySourcePeriodId(event.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
+              >
+                <option value="">Select period...</option>
+                {copyablePeriods.map((period) => (
+                  <option key={period.id} value={period.id}>
+                    {period.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleCopyFromPeriod()}
+              disabled={copying || !copySourcePeriodId}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {copying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+              Copy KRAs & KPIs
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCopyPanel(false)}
+              disabled={copying}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-600 transition hover:border-slate-300 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            This copies all non-archived KRAs, their KPI definitions, and target-department mappings from the selected period. Targets and achievements are not copied.
+          </p>
         </div>
       )}
 

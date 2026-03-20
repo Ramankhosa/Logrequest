@@ -25,8 +25,10 @@ import { StatusBadge } from "@/components/status-badge";
 import {
   getMeasurementCapValue,
   type MeasurementConfig,
+  type KpiTargetUnitView,
 } from "@/lib/kra-kpi/shared";
 import { TargetCascadeForm } from "./target-cascade-form";
+import { KpiTargetUnitsManager } from "./kpi-target-units-manager";
 
 type AllocationView = {
   id: string;
@@ -48,6 +50,11 @@ type AllocationView = {
   notes: string | null;
   childCount: number;
   achievementCount: number;
+};
+
+type KpiSetup = {
+  startingUnitId: string;
+  defaultTarget: number | null;
 };
 
 export type UnitOption = {
@@ -153,23 +160,40 @@ export function TargetAllocationTable({
   const [allocations, setAllocations] = useState<AllocationView[]>([]);
   const [units, setUnits] = useState<UnitOption[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
+  const [kpiSetup, setKpiSetup] = useState<KpiSetup | null>(null);
+  const [targetUnits, setTargetUnits] = useState<KpiTargetUnitView[]>([]);
+  const [autoAllocationDraft, setAutoAllocationDraft] = useState<Draft>(emptyDraft());
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [addingNew, setAddingNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [cascadingId, setCascadingId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
+  const [autoAllocating, setAutoAllocating] = useState(false);
+  const [allocatedFilterMode, setAllocatedFilterMode] = useState<"all" | "unit" | "user">("all");
+  const [allocatedUnitTypeFilter, setAllocatedUnitTypeFilter] = useState("ALL");
+  const [allocatedUnitSearch, setAllocatedUnitSearch] = useState("");
+  const [allocatedUserSearch, setAllocatedUserSearch] = useState("");
+  const [selectedAllocatedUnitIds, setSelectedAllocatedUnitIds] = useState<string[]>([]);
+  const [selectedAllocatedUserIds, setSelectedAllocatedUserIds] = useState<string[]>([]);
+  const [allocatedExpandedIds, setAllocatedExpandedIds] = useState<Set<string>>(new Set());
 
   const fetchData = useCallback(async () => {
     try {
-      const [allocRes, unitsRes, usersRes] = await Promise.all([
+      const [allocRes, unitsRes, usersRes, kpiRes, targetUnitsRes] = await Promise.all([
         fetch(`/api/tenant/kra-kpi/targets?periodId=${periodId}&kpiDefinitionId=${kpiDefinitionId}`),
         fetch("/api/tenant/structure/units"),
         fetch("/api/tenant/users"),
+        fetch(`/api/tenant/kra-kpi/kpis/${kpiDefinitionId}`),
+        fetch(`/api/tenant/kra-kpi/kpis/${kpiDefinitionId}/target-units`),
       ]);
-      const allocData = await allocRes.json();
-      const unitsData = await unitsRes.json();
-      const usersData = await usersRes.json();
+      const [allocData, unitsData, usersData, kpiData, targetUnitsData] = await Promise.all([
+        allocRes.json(),
+        unitsRes.json(),
+        usersRes.json(),
+        kpiRes.json(),
+        targetUnitsRes.json(),
+      ]);
 
       setAllocations(Array.isArray(allocData) ? allocData : []);
       setUnits(
@@ -202,12 +226,43 @@ export function TargetAllocationTable({
             }))
           : [],
       );
+      setKpiSetup(
+        kpiRes.ok
+          ? {
+              startingUnitId: kpiData.startingUnitId ?? "",
+              defaultTarget: kpiData.defaultTarget ?? null,
+            }
+          : null,
+      );
+      setTargetUnits(
+        targetUnitsRes.ok && Array.isArray(targetUnitsData.targetUnits)
+          ? targetUnitsData.targetUnits
+          : [],
+      );
     } catch { /* ignore */ } finally {
       setLoading(false);
     }
   }, [periodId, kpiDefinitionId]);
 
   useEffect(() => { void fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    setAutoAllocationDraft(
+      buildAutoAllocationDraft(
+        measurementType,
+        kpiSetup?.defaultTarget ?? null,
+      ),
+    );
+  }, [kpiDefinitionId, measurementType, kpiSetup?.defaultTarget]);
+
+  useEffect(() => {
+    setAllocatedFilterMode("all");
+    setAllocatedUnitTypeFilter("ALL");
+    setAllocatedUnitSearch("");
+    setAllocatedUserSearch("");
+    setSelectedAllocatedUnitIds([]);
+    setSelectedAllocatedUserIds([]);
+  }, [kpiDefinitionId]);
 
   const showFeedback = (type: "success" | "error", message: string) => {
     setFeedback({ type, message });
@@ -263,18 +318,209 @@ export function TargetAllocationTable({
     finally { setActionId(null); }
   };
 
-  const rootAllocations = allocations.filter((a) => !a.parentAllocationId);
+  const handleAutoAllocate = async () => {
+    const validation = validateDraft(
+      autoAllocationDraft,
+      measurementType,
+      measurementConfig,
+    );
+    if (validation) {
+      showFeedback("error", validation);
+      return;
+    }
+
+    setAutoAllocating(true);
+    try {
+      const response = await fetch(
+        `/api/tenant/kra-kpi/kpis/${kpiDefinitionId}/allocate-to-targets`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            periodId,
+            ...buildPayload(autoAllocationDraft, measurementType),
+          }),
+        },
+      );
+      const data = await response.json();
+
+      if (!response.ok || data.status === "error") {
+        showFeedback("error", data.message ?? "Auto-allocation failed.");
+        setAutoAllocating(false);
+        return;
+      }
+
+      showFeedback("success", data.message ?? "Targets allocated.");
+      void fetchData();
+    } catch {
+      showFeedback("error", "Auto-allocation failed.");
+    } finally {
+      setAutoAllocating(false);
+    }
+  };
+
+  const rootAllocations = useMemo(
+    () => allocations.filter((allocation) => !allocation.parentAllocationId),
+    [allocations],
+  );
   const configuredCap = getMeasurementCapValue(measurementType, measurementConfig);
   const topLevelAllocatedTotal = rootAllocations.reduce(
     (sum, allocation) => sum + (allocation.targetValue ?? 0),
     0,
   );
-  const childrenOf = (parentId: string) => allocations.filter((a) => a.parentAllocationId === parentId);
+  const childrenMap = useMemo(() => buildChildrenMap(allocations), [allocations]);
+  const childrenOf = useCallback(
+    (parentId: string) => childrenMap.get(parentId) ?? [],
+    [childrenMap],
+  );
+  const allocatedUnitIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          allocations
+            .map((allocation) => allocation.assignedToUnitId)
+            .filter((unitId): unitId is string => !!unitId),
+        ),
+      ),
+    [allocations],
+  );
+  const allocatedUserIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          allocations
+            .map((allocation) => allocation.assignedToUserId)
+            .filter((userId): userId is string => !!userId),
+        ),
+      ),
+    [allocations],
+  );
+  const allocatedUnits = useMemo(
+    () => units.filter((unit) => allocatedUnitIds.includes(unit.id)),
+    [allocatedUnitIds, units],
+  );
+  const allocatedUsers = useMemo(
+    () => users.filter((user) => allocatedUserIds.includes(user.id)),
+    [allocatedUserIds, users],
+  );
+  const allocatedUnitTypeOptions = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          allocatedUnits.map((unit) => [unit.typeKey, unit.typeLabel]),
+        ).entries(),
+      ),
+    [allocatedUnits],
+  );
+  const visibleAllocatedUnitIds = useMemo(
+    () =>
+      getVisibleUnitIds(
+        allocatedUnits,
+        allocatedUnitTypeFilter,
+        allocatedUnitSearch,
+      ),
+    [allocatedUnitSearch, allocatedUnitTypeFilter, allocatedUnits],
+  );
+  const allocatedUnitTree = useMemo(
+    () => buildUnitTree(allocatedUnits, visibleAllocatedUnitIds),
+    [allocatedUnits, visibleAllocatedUnitIds],
+  );
+  const filteredAllocatedUsers = useMemo(
+    () => filterUsers(allocatedUsers, allocatedUserSearch),
+    [allocatedUserSearch, allocatedUsers],
+  );
+  const visibleAllocatedUserIds = useMemo(
+    () => filteredAllocatedUsers.map((user) => user.id),
+    [filteredAllocatedUsers],
+  );
+  const visibleAllocationIds = useMemo(
+    () =>
+      buildVisibleAllocationIds({
+        allocations,
+        mode: allocatedFilterMode,
+        visibleUnitIds: visibleAllocatedUnitIds,
+        selectedUnitIds: selectedAllocatedUnitIds,
+        visibleUserIds: visibleAllocatedUserIds,
+        selectedUserIds: selectedAllocatedUserIds,
+      }),
+    [
+      allocations,
+      allocatedFilterMode,
+      selectedAllocatedUnitIds,
+      selectedAllocatedUserIds,
+      visibleAllocatedUnitIds,
+      visibleAllocatedUserIds,
+    ],
+  );
+  const visibleRootAllocations = useMemo(
+    () =>
+      rootAllocations.filter((allocation) => visibleAllocationIds.has(allocation.id)),
+    [rootAllocations, visibleAllocationIds],
+  );
+
+  useEffect(() => {
+    setAllocatedExpandedIds(new Set(allocatedUnits.map((unit) => unit.id)));
+  }, [allocatedUnits]);
+
+  useEffect(() => {
+    setSelectedAllocatedUnitIds((current) =>
+      current.filter((id) => allocatedUnitIds.includes(id)),
+    );
+  }, [allocatedUnitIds]);
+
+  useEffect(() => {
+    setSelectedAllocatedUserIds((current) =>
+      current.filter((id) => allocatedUserIds.includes(id)),
+    );
+  }, [allocatedUserIds]);
+
   const editingAllocation = useMemo(
     () => allocations.find((allocation) => allocation.id === editingId) ?? null,
     [allocations, editingId],
   );
   const editingInitial = editingAllocation ? toEditableAllocation(editingAllocation) : undefined;
+  const allocatedSelectionCount =
+    allocatedFilterMode === "unit"
+      ? selectedAllocatedUnitIds.length
+      : allocatedFilterMode === "user"
+        ? selectedAllocatedUserIds.length
+        : 0;
+
+  const toggleAllocatedUnitSelected = (id: string) => {
+    setSelectedAllocatedUnitIds((current) =>
+      current.includes(id)
+        ? current.filter((currentId) => currentId !== id)
+        : [...current, id],
+    );
+  };
+
+  const toggleAllocatedUserSelected = (id: string) => {
+    setSelectedAllocatedUserIds((current) =>
+      current.includes(id)
+        ? current.filter((currentId) => currentId !== id)
+        : [...current, id],
+    );
+  };
+
+  const selectAllVisibleAllocated = () => {
+    if (allocatedFilterMode === "unit") {
+      setSelectedAllocatedUnitIds(visibleAllocatedUnitIds);
+      return;
+    }
+    if (allocatedFilterMode === "user") {
+      setSelectedAllocatedUserIds(visibleAllocatedUserIds);
+    }
+  };
+
+  const clearAllocatedSelection = () => {
+    if (allocatedFilterMode === "unit") {
+      setSelectedAllocatedUnitIds([]);
+      return;
+    }
+    if (allocatedFilterMode === "user") {
+      setSelectedAllocatedUserIds([]);
+    }
+  };
 
   function formatTarget(a: AllocationView): string {
     if (a.targetValue != null) return String(a.targetValue);
@@ -288,7 +534,12 @@ export function TargetAllocationTable({
 
   if (loading) return <div className="flex items-center justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>;
 
-  const renderRow = (a: AllocationView, depth: number) => (
+  const renderRow = (a: AllocationView, depth: number) => {
+    if (!visibleAllocationIds.has(a.id)) {
+      return null;
+    }
+
+    return (
     <div key={a.id}>
       <div className={`group flex items-center gap-3 rounded-lg border border-slate-200/70 bg-white px-3 py-2.5 transition hover:border-slate-300`} style={{ marginLeft: depth * 24 }}>
         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
@@ -368,9 +619,12 @@ export function TargetAllocationTable({
           />
         </div>
       )}
-      {childrenOf(a.id).map((child) => renderRow(child, depth + 1))}
+      {childrenOf(a.id)
+        .filter((child) => visibleAllocationIds.has(child.id))
+        .map((child) => renderRow(child, depth + 1))}
     </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -403,6 +657,97 @@ export function TargetAllocationTable({
         </div>
       )}
 
+      {kpiSetup ? (
+        <KpiTargetUnitsManager
+          kpiId={kpiDefinitionId}
+          startingUnitId={kpiSetup.startingUnitId}
+          units={units.map((unit) => ({ id: unit.id, name: unit.name }))}
+          targetUnits={targetUnits}
+          onChanged={() => void fetchData()}
+        />
+      ) : null}
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h5 className="text-sm font-semibold text-slate-900">
+              Allocate To Configured Departments
+            </h5>
+            <p className="mt-1 text-xs text-slate-500">
+              Use the configured target departments above to create department allocations directly from this tab.
+            </p>
+          </div>
+          {kpiSetup?.defaultTarget != null ? (
+            <button
+              type="button"
+              onClick={() =>
+                setAutoAllocationDraft(
+                  buildAutoAllocationDraft(
+                    measurementType,
+                    kpiSetup.defaultTarget,
+                  ),
+                )
+              }
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300"
+            >
+              Use KPI default
+            </button>
+          ) : null}
+        </div>
+
+        {targetUnits.length === 0 ? (
+          <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-500">
+            Add one or more target departments first. Then this action will create allocations for them using the target value entered here.
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              {getAutoAllocationHint(measurementType)}
+            </div>
+
+            <TargetEditor
+              title="Allocation target"
+              caption={
+                kpiSetup?.defaultTarget != null &&
+                (measurementType === "NUMERIC" ||
+                  measurementType === "PERCENTAGE" ||
+                  measurementType === "CURRENCY" ||
+                  measurementType === "RATING")
+                  ? `Default KPI target: ${kpiSetup.defaultTarget}`
+                  : "Enter the target that should be applied to the configured departments."
+              }
+              draft={autoAllocationDraft}
+              measurementType={measurementType}
+              measurementConfig={measurementConfig}
+              inputCls="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-brand focus:ring-1 focus:ring-brand/30"
+              labelCls="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500"
+              onChange={(patch) =>
+                setAutoAllocationDraft((current) => ({ ...current, ...patch }))
+              }
+            />
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-slate-500">
+                Existing allocations for configured departments are skipped automatically.
+              </p>
+              <button
+                type="button"
+                onClick={() => void handleAutoAllocate()}
+                disabled={autoAllocating || targetUnits.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {autoAllocating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                Allocate To Targets
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {addingNew && (
         <AllocationForm
           periodId={periodId}
@@ -416,12 +761,198 @@ export function TargetAllocationTable({
         />
       )}
 
-      {rootAllocations.length === 0 && !addingNew ? (
+      {allocations.length > 0 ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h5 className="text-sm font-semibold text-slate-900">
+                Filter Allocated Entities
+              </h5>
+              <p className="mt-1 text-xs text-slate-500">
+                Narrow the current allocation tree by already allocated departments or users for review and verification.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setAllocatedFilterMode("all")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  allocatedFilterMode === "all"
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => setAllocatedFilterMode("unit")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  allocatedFilterMode === "unit"
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                Units
+              </button>
+              <button
+                type="button"
+                onClick={() => setAllocatedFilterMode("user")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  allocatedFilterMode === "user"
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                Users
+              </button>
+            </div>
+          </div>
+
+          {allocatedFilterMode === "all" ? (
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              Showing the full allocation tree.
+            </div>
+          ) : null}
+
+          {allocatedFilterMode === "unit" ? (
+            <div className="mt-4 space-y-3">
+              <div className="grid gap-3 md:grid-cols-[220px_1fr]">
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    Unit type filter
+                  </label>
+                  <select
+                    value={allocatedUnitTypeFilter}
+                    onChange={(event) =>
+                      setAllocatedUnitTypeFilter(event.target.value)
+                    }
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
+                  >
+                    <option value="ALL">All unit types</option>
+                    {allocatedUnitTypeOptions.map(([typeKey, typeLabel]) => (
+                      <option key={typeKey} value={typeKey}>
+                        {typeLabel}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    Search allocated units
+                  </label>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                    <input
+                      type="text"
+                      value={allocatedUnitSearch}
+                      onChange={(event) =>
+                        setAllocatedUnitSearch(event.target.value)
+                      }
+                      placeholder="Search by unit name, code, path, or type"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 pl-9 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-brand focus:ring-1 focus:ring-brand/30"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <SelectionToolbar
+                selectedCount={allocatedSelectionCount}
+                visibleCount={visibleAllocatedUnitIds.length}
+                label="units"
+                onSelectAll={selectAllVisibleAllocated}
+                onClear={clearAllocatedSelection}
+              />
+
+              {allocatedUnitTree.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-400">
+                  No allocated units match the current filters.
+                </div>
+              ) : (
+                <div className="max-h-80 overflow-auto rounded-2xl border border-slate-200 bg-slate-50/60 p-3">
+                  <UnitTree
+                    nodes={allocatedUnitTree}
+                    expandedIds={allocatedExpandedIds}
+                    selectedIds={selectedAllocatedUnitIds}
+                    onToggleExpand={(id) =>
+                      setAllocatedExpandedIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(id)) next.delete(id);
+                        else next.add(id);
+                        return next;
+                      })
+                    }
+                    onToggleSelected={toggleAllocatedUnitSelected}
+                  />
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {allocatedFilterMode === "user" ? (
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  Search allocated users
+                </label>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={allocatedUserSearch}
+                    onChange={(event) => setAllocatedUserSearch(event.target.value)}
+                    placeholder="Search by name, employee ID, email, designation, role, or unit"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 pl-9 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-brand focus:ring-1 focus:ring-brand/30"
+                  />
+                </div>
+              </div>
+
+              <SelectionToolbar
+                selectedCount={allocatedSelectionCount}
+                visibleCount={visibleAllocatedUserIds.length}
+                label="users"
+                onSelectAll={selectAllVisibleAllocated}
+                onClear={clearAllocatedSelection}
+              />
+
+              {filteredAllocatedUsers.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-400">
+                  No allocated users match the current filters.
+                </div>
+              ) : (
+                <div className="max-h-80 space-y-2 overflow-auto rounded-2xl border border-slate-200 bg-slate-50/60 p-3">
+                  {filteredAllocatedUsers.map((user) => (
+                    <SelectableRow
+                      key={user.id}
+                      selected={selectedAllocatedUserIds.includes(user.id)}
+                      onClick={() => toggleAllocatedUserSelected(user.id)}
+                      title={
+                        user.employeeId
+                          ? `${user.name} (${user.employeeId})`
+                          : user.name
+                      }
+                      subtitle={buildUserSummary(user)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {allocations.length === 0 && !addingNew ? (
         <div className="rounded-xl border border-dashed border-slate-200 py-8 text-center text-sm text-slate-400">
           No allocations yet
         </div>
+      ) : visibleRootAllocations.length === 0 && !addingNew ? (
+        <div className="rounded-xl border border-dashed border-slate-200 py-8 text-center text-sm text-slate-400">
+          No allocations match the current allocated-entity filters
+        </div>
       ) : (
-        <div className="space-y-1">{rootAllocations.map((a) => renderRow(a, 0))}</div>
+        <div className="space-y-1">
+          {visibleRootAllocations.map((allocation) => renderRow(allocation, 0))}
+        </div>
       )}
     </div>
   );
@@ -1200,4 +1731,120 @@ function buildPayload(draft: Draft, measurementType: string) {
   if (measurementType === "BOOLEAN") return { targetBoolean: draft.targetBoolean };
   if (measurementType === "RATING") return { targetRating: Number(draft.targetRating) };
   return {};
+}
+
+function buildAutoAllocationDraft(
+  measurementType: string,
+  defaultTarget: number | null,
+): Draft {
+  if (
+    defaultTarget != null &&
+    (measurementType === "NUMERIC" ||
+      measurementType === "PERCENTAGE" ||
+      measurementType === "CURRENCY")
+  ) {
+    return {
+      ...emptyDraft(),
+      targetValue: String(defaultTarget),
+    };
+  }
+
+  if (defaultTarget != null && measurementType === "RATING") {
+    return {
+      ...emptyDraft(),
+      targetRating: String(defaultTarget),
+    };
+  }
+
+  return emptyDraft();
+}
+
+function getAutoAllocationHint(measurementType: string) {
+  if (measurementType === "NUMERIC" || measurementType === "CURRENCY") {
+    return "Numeric and currency targets are split using the configured department shares. If no shares are set, the total is split equally.";
+  }
+  if (measurementType === "PERCENTAGE") {
+    return "Percentage targets are replicated to each configured department. A 90% target means each department must reach 90%, not a split of 90.";
+  }
+  if (measurementType === "BOOLEAN") {
+    return "Boolean targets are replicated to each configured department.";
+  }
+  if (measurementType === "RATING") {
+    return "Rating targets are replicated to each configured department.";
+  }
+  if (measurementType === "DATE_TARGET") {
+    return "Date targets are replicated to each configured department.";
+  }
+  if (measurementType === "MILESTONE") {
+    return "Milestone targets are replicated to each configured department.";
+  }
+  if (measurementType === "GRADE") {
+    return "Grade targets are replicated to each configured department.";
+  }
+  return "The configured target will be applied to the selected departments.";
+}
+
+function buildChildrenMap(allocations: AllocationView[]) {
+  const map = new Map<string, AllocationView[]>();
+
+  for (const allocation of allocations) {
+    if (!allocation.parentAllocationId) continue;
+    const existing = map.get(allocation.parentAllocationId) ?? [];
+    existing.push(allocation);
+    map.set(allocation.parentAllocationId, existing);
+  }
+
+  return map;
+}
+
+function buildVisibleAllocationIds({
+  allocations,
+  mode,
+  visibleUnitIds,
+  selectedUnitIds,
+  visibleUserIds,
+  selectedUserIds,
+}: {
+  allocations: AllocationView[];
+  mode: "all" | "unit" | "user";
+  visibleUnitIds: string[];
+  selectedUnitIds: string[];
+  visibleUserIds: string[];
+  selectedUserIds: string[];
+}) {
+  if (mode === "all") {
+    return new Set(allocations.map((allocation) => allocation.id));
+  }
+
+  const childrenMap = buildChildrenMap(allocations);
+  const roots = allocations.filter((allocation) => !allocation.parentAllocationId);
+  const unitScope = new Set(
+    selectedUnitIds.length > 0 ? selectedUnitIds : visibleUnitIds,
+  );
+  const userScope = new Set(
+    selectedUserIds.length > 0 ? selectedUserIds : visibleUserIds,
+  );
+  const visible = new Set<string>();
+
+  const visit = (allocation: AllocationView): boolean => {
+    const children = childrenMap.get(allocation.id) ?? [];
+    const childMatched = children.some((child) => visit(child));
+    const ownMatched =
+      mode === "unit"
+        ? !!allocation.assignedToUnitId && unitScope.has(allocation.assignedToUnitId)
+        : !!allocation.assignedToUserId && userScope.has(allocation.assignedToUserId);
+
+    if (ownMatched || childMatched) {
+      visible.add(allocation.id);
+      return true;
+    }
+
+    return false;
+  };
+
+  for (const root of roots) {
+    visit(root);
+  }
+
+  return visible;
 }
