@@ -23,12 +23,45 @@ export type KraKpiActionResult = {
   status: "idle" | "success" | "error";
   message: string;
   id?: string;
+  code?: string;
 };
 
 export const initialKraKpiActionResult: KraKpiActionResult = {
   status: "idle",
   message: "",
 };
+
+const kraKpiErrorStatusMap: Record<string, number> = {
+  PERMISSION_DENIED: 403,
+  KPI_NOT_FOUND: 404,
+  PERIOD_NOT_FOUND: 404,
+  UNIT_NOT_FOUND: 404,
+  TARGET_UNIT_NOT_FOUND: 404,
+  DUPLICATE_TARGET_UNIT: 409,
+  TARGET_UNIT_HAS_ALLOCATIONS: 409,
+  TARGET_UNITS_NOT_CONFIGURED: 409,
+  KPI_ARCHIVED: 409,
+  KPI_INACTIVE: 409,
+  KRA_INACTIVE: 409,
+  PERIOD_STATE_CONFLICT: 409,
+  TARGET_UNIT_ORIGIN_CONFLICT: 409,
+  REVIEW_CYCLE_CONFLICT: 409,
+};
+
+export function getKraKpiActionHttpStatus(
+  result: KraKpiActionResult,
+  successStatus = 200,
+): number {
+  if (result.status === "success") {
+    return successStatus;
+  }
+
+  if (result.code && result.code in kraKpiErrorStatusMap) {
+    return kraKpiErrorStatusMap[result.code];
+  }
+
+  return 400;
+}
 
 // ── Measurement Config Zod Schemas (discriminated unions) ────────────────────
 
@@ -217,6 +250,7 @@ export type AssessmentPeriodView = {
   reviewDeadline: Date | null;
   description: string | null;
   kraCount: number;
+  reviewCycleCount: number;
   createdAt: Date;
 };
 
@@ -265,6 +299,18 @@ export type KpiDefinitionView = {
   sortOrder: number;
   guidanceNotes: string | null;
   allocationCount: number;
+  // ── R2 fields ──
+  keyUnitId: string | null;
+  keyUnitName: string | null;
+  finalUnitId: string | null;
+  finalUnitName: string | null;
+  targetUnitCount: number;
+  evidenceRequired: boolean;
+  evidenceTypes: string[];
+  evidenceInstructions: string | null;
+  sopDescription: string | null;
+  isTeamKpi: boolean;
+  teamCreditMethod: string;
   createdAt: Date;
 };
 
@@ -355,6 +401,33 @@ export type ComputedReviewCycle = {
   startDate: Date;
   endDate: Date;
   isCurrent: boolean;
+};
+
+// ── Stored Review Cycle (R2 — persisted in DB) ──────────────────────────────
+
+export type StoredReviewCycleView = {
+  id: string;
+  periodId: string;
+  cycleNumber: number;
+  label: string;
+  startDate: Date;
+  endDate: Date;
+  reviewDeadline: Date | null;
+  isCurrent: boolean;
+  createdAt: Date;
+};
+
+// ── KPI Target Unit (R2) ────────────────────────────────────────────────────
+
+export type KpiTargetUnitView = {
+  id: string;
+  kpiDefinitionId: string;
+  unitId: string;
+  unitName: string;
+  unitCode: string;
+  targetShare: number | null;
+  notes: string | null;
+  createdAt: Date;
 };
 
 // ── Tooltip Constants ────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import type { Role, AssessmentPeriodState } from "@prisma/client";
+import { Prisma, type Role, type AssessmentPeriodState } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import {
@@ -9,6 +9,7 @@ import type {
   KraKpiActionResult,
   AssessmentPeriodView,
   ComputedReviewCycle,
+  StoredReviewCycleView,
 } from "./shared";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -38,8 +39,8 @@ const createPeriodSchema = z
     reviewDeadline: z.coerce.date().optional(),
     description: z.string().trim().max(500).optional(),
   })
-  .refine((d) => d.endDate > d.startDate, {
-    message: "End date must be after start date",
+  .refine((d) => d.endDate >= d.startDate, {
+    message: "End date must be on or after start date",
     path: ["endDate"],
   });
 
@@ -72,7 +73,7 @@ function isAdminOrOwner(role: Role): boolean {
 
 function mapPeriodView(
   p: Awaited<ReturnType<typeof prisma.assessmentPeriod.findFirst>> & {
-    _count: { kraDefinitions: number };
+    _count: { kraDefinitions: number; reviewCycles: number };
   }
 ): AssessmentPeriodView {
   return {
@@ -90,6 +91,7 @@ function mapPeriodView(
     reviewDeadline: p!.reviewDeadline,
     description: p!.description,
     kraCount: p!._count.kraDefinitions,
+    reviewCycleCount: p!._count.reviewCycles,
     createdAt: p!.createdAt,
   };
 }
@@ -101,7 +103,7 @@ export async function listPeriods(
 ): Promise<AssessmentPeriodView[]> {
   const periods = await prisma.assessmentPeriod.findMany({
     where: { tenantId },
-    include: { _count: { select: { kraDefinitions: true } } },
+    include: { _count: { select: { kraDefinitions: true, reviewCycles: true } } },
     orderBy: [{ startDate: "desc" }],
   });
 
@@ -116,7 +118,7 @@ export async function getPeriod(
 ): Promise<AssessmentPeriodView | null> {
   const period = await prisma.assessmentPeriod.findFirst({
     where: { id: periodId, tenantId },
-    include: { _count: { select: { kraDefinitions: true } } },
+    include: { _count: { select: { kraDefinitions: true, reviewCycles: true } } },
   });
   if (!period) return null;
   return mapPeriodView(period);
@@ -219,8 +221,12 @@ export async function updatePeriod(
   // Validate dates if both provided
   const effectiveStart = data.startDate ?? period.startDate;
   const effectiveEnd = data.endDate ?? period.endDate;
-  if (effectiveEnd <= effectiveStart) {
-    return { status: "error", message: "End date must be after start date." };
+  if (effectiveEnd < effectiveStart) {
+    return {
+      status: "error",
+      code: "INVALID_DATE_RANGE",
+      message: "End date must be on or after start date.",
+    };
   }
 
   await prisma.$transaction(async (tx) => {
@@ -312,6 +318,14 @@ export async function transitionPeriodState(
     });
   });
 
+  if (newState === "IN_PROGRESS") {
+    try {
+      await generateReviewCycles(periodId, tenantId, actorUserId, actorRole);
+    } catch (err) {
+      console.warn("[period-service] Auto-generate review cycles failed:", err);
+    }
+  }
+
   try {
     const allocations = await prisma.targetAllocation.findMany({
       where: { tenantId, periodId },
@@ -360,48 +374,17 @@ export function computeReviewCycles(
   frequency: string
 ): ComputedReviewCycle[] {
   const cycles: ComputedReviewCycle[] = [];
-  const now = new Date();
-  let current = new Date(startDate);
+  const now = normalizeUtcDate(new Date());
+  const normalizedStart = normalizeUtcDate(startDate);
+  const normalizedEnd = normalizeUtcDate(endDate);
+  let current = normalizedStart;
   let cycleNum = 1;
 
-  while (current < endDate) {
-    const cycleStart = new Date(current);
-    let cycleEnd: Date;
-
-    switch (frequency) {
-      case "DAILY":
-        cycleEnd = new Date(current);
-        cycleEnd.setDate(cycleEnd.getDate() + 1);
-        break;
-      case "WEEKLY":
-        cycleEnd = new Date(current);
-        cycleEnd.setDate(cycleEnd.getDate() + 7);
-        break;
-      case "MONTHLY":
-        cycleEnd = new Date(current);
-        cycleEnd.setMonth(cycleEnd.getMonth() + 1);
-        break;
-      case "QUARTERLY":
-        cycleEnd = new Date(current);
-        cycleEnd.setMonth(cycleEnd.getMonth() + 3);
-        break;
-      case "HALF_YEARLY":
-        cycleEnd = new Date(current);
-        cycleEnd.setMonth(cycleEnd.getMonth() + 6);
-        break;
-      case "ANNUAL":
-      default:
-        cycleEnd = new Date(current);
-        cycleEnd.setFullYear(cycleEnd.getFullYear() + 1);
-        break;
-    }
-
-    // Cap at period end
-    if (cycleEnd > endDate) {
-      cycleEnd = new Date(endDate);
-    }
-
-    const isCurrent = now >= cycleStart && now < cycleEnd;
+  while (current.getTime() <= normalizedEnd.getTime()) {
+    const cycleStart = current;
+    const nextCycleStart = advanceCycleStart(current, frequency);
+    const cycleEnd = minUtcDate(addUtcDays(nextCycleStart, -1), normalizedEnd);
+    const isCurrent = isDateWithinInclusiveUtcRange(now, cycleStart, cycleEnd);
 
     cycles.push({
       cycleNumber: cycleNum,
@@ -411,14 +394,78 @@ export function computeReviewCycles(
       isCurrent,
     });
 
-    current = cycleEnd;
+    current = addUtcDays(cycleEnd, 1);
     cycleNum++;
 
-    // Safety: max 366 cycles (daily for a year)
-    if (cycleNum > 366) break;
+    // Safety: max 366 cycles (daily for a leap year)
+    if (cycleNum > 367) break;
   }
 
   return cycles;
+}
+
+export function normalizeUtcDate(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+export function isDateWithinInclusiveUtcRange(
+  date: Date,
+  start: Date,
+  end: Date,
+): boolean {
+  const ts = normalizeUtcDate(date).getTime();
+  return ts >= normalizeUtcDate(start).getTime() && ts <= normalizeUtcDate(end).getTime();
+}
+
+function addUtcDays(date: Date, days: number): Date {
+  const result = normalizeUtcDate(date);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+}
+
+function addUtcMonths(date: Date, months: number): Date {
+  const normalized = normalizeUtcDate(date);
+  const desiredDay = normalized.getUTCDate();
+  const firstOfTargetMonth = new Date(
+    Date.UTC(normalized.getUTCFullYear(), normalized.getUTCMonth() + months, 1),
+  );
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(
+      firstOfTargetMonth.getUTCFullYear(),
+      firstOfTargetMonth.getUTCMonth() + 1,
+      0,
+    ),
+  ).getUTCDate();
+
+  return new Date(
+    Date.UTC(
+      firstOfTargetMonth.getUTCFullYear(),
+      firstOfTargetMonth.getUTCMonth(),
+      Math.min(desiredDay, lastDayOfTargetMonth),
+    ),
+  );
+}
+
+function advanceCycleStart(current: Date, frequency: string): Date {
+  switch (frequency) {
+    case "DAILY":
+      return addUtcDays(current, 1);
+    case "WEEKLY":
+      return addUtcDays(current, 7);
+    case "MONTHLY":
+      return addUtcMonths(current, 1);
+    case "QUARTERLY":
+      return addUtcMonths(current, 3);
+    case "HALF_YEARLY":
+      return addUtcMonths(current, 6);
+    case "ANNUAL":
+    default:
+      return addUtcMonths(current, 12);
+  }
+}
+
+function minUtcDate(left: Date, right: Date): Date {
+  return left.getTime() <= right.getTime() ? left : right;
 }
 
 function generateCycleLabel(
@@ -432,7 +479,7 @@ function generateCycleLabel(
     case "WEEKLY":
       return `Week ${num}`;
     case "MONTHLY":
-      return start.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+      return start.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
     case "QUARTERLY":
       return `Q${num}`;
     case "HALF_YEARLY":
@@ -441,6 +488,166 @@ function generateCycleLabel(
     default:
       return `Year ${num}`;
   }
+}
+
+// ── Stored Review Cycles (R2) ────────────────────────────────────────────────
+
+export async function generateReviewCycles(
+  periodId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role
+): Promise<KraKpiActionResult & { data?: StoredReviewCycleView[] }> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
+  }
+
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+  });
+  if (!period) {
+    return { status: "error", code: "PERIOD_NOT_FOUND", message: "Assessment period not found." };
+  }
+
+  const computed = computeReviewCycles(
+    period.startDate,
+    period.endDate,
+    period.reviewFrequency
+  );
+
+  if (computed.length === 0) {
+    return {
+      status: "error",
+      code: "INVALID_DATE_RANGE",
+      message: "No review cycles could be generated for this period's date range and frequency.",
+    };
+  }
+
+  let created;
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      await tx.reviewCycle.deleteMany({ where: { periodId } });
+
+      const cycles = [];
+      for (const c of computed) {
+        const cycle = await tx.reviewCycle.create({
+          data: {
+            periodId,
+            cycleNumber: c.cycleNumber,
+            label: c.label,
+            startDate: c.startDate,
+            endDate: c.endDate,
+            isCurrent: c.isCurrent,
+          },
+        });
+        cycles.push(cycle);
+      }
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          actorUserId,
+          actorRole,
+          targetType: "ReviewCycle",
+          targetId: periodId,
+          action: "GENERATE",
+          metadata: { cycleCount: cycles.length, frequency: period.reviewFrequency },
+        },
+      });
+
+      return cycles;
+    });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      (error.code === "P2002" || error.code === "P2034")
+    ) {
+      return {
+        status: "error",
+        code: "REVIEW_CYCLE_CONFLICT",
+        message: "Review cycles were regenerated concurrently. Refresh and try again.",
+      };
+    }
+
+    throw error;
+  }
+
+  return {
+    status: "success",
+    message: `${created.length} review cycle(s) generated.`,
+    data: created.map((c) => ({
+      id: c.id,
+      periodId: c.periodId,
+      cycleNumber: c.cycleNumber,
+      label: c.label,
+      startDate: c.startDate,
+      endDate: c.endDate,
+      reviewDeadline: c.reviewDeadline,
+      isCurrent: c.isCurrent,
+      createdAt: c.createdAt,
+    })),
+  };
+}
+
+export async function listReviewCycles(
+  periodId: string,
+  tenantId: string
+): Promise<StoredReviewCycleView[]> {
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+    select: { id: true },
+  });
+  if (!period) return [];
+
+  const cycles = await prisma.reviewCycle.findMany({
+    where: { periodId },
+    orderBy: { cycleNumber: "asc" },
+  });
+
+  return cycles.map((c) => ({
+    id: c.id,
+    periodId: c.periodId,
+    cycleNumber: c.cycleNumber,
+    label: c.label,
+    startDate: c.startDate,
+    endDate: c.endDate,
+    reviewDeadline: c.reviewDeadline,
+    isCurrent: c.isCurrent,
+    createdAt: c.createdAt,
+  }));
+}
+
+export async function updateCurrentCycle(
+  periodId: string,
+  tenantId: string
+): Promise<KraKpiActionResult> {
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+    select: { id: true },
+  });
+  if (!period) {
+    return { status: "error", code: "PERIOD_NOT_FOUND", message: "Period not found." };
+  }
+
+  const now = new Date();
+  const cycles = await prisma.reviewCycle.findMany({
+    where: { periodId },
+    orderBy: { cycleNumber: "asc" },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    for (const cycle of cycles) {
+      const shouldBeCurrent = isDateWithinInclusiveUtcRange(now, cycle.startDate, cycle.endDate);
+      if (cycle.isCurrent !== shouldBeCurrent) {
+        await tx.reviewCycle.update({
+          where: { id: cycle.id },
+          data: { isCurrent: shouldBeCurrent },
+        });
+      }
+    }
+  });
+
+  return { status: "success", message: "Current cycle updated." };
 }
 
 // ── Auto-Lock Targets ────────────────────────────────────────────────────────

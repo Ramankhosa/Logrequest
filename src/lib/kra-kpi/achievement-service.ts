@@ -3,7 +3,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { canRecord } from "./assignee-access";
 import { getMyKpiContext } from "./my-kpi-service";
-import { computeReviewCycles } from "./period-service";
+import {
+  computeReviewCycles,
+  isDateWithinInclusiveUtcRange,
+} from "./period-service";
 import type {
   KraKpiActionResult,
   AchievementView,
@@ -115,10 +118,7 @@ function findCycleNumberForDate(
     period.reviewFrequency,
   );
   const cycle = cycles.find(
-    (item) =>
-      reportingDate >= item.startDate &&
-      (reportingDate < item.endDate ||
-        reportingDate.getTime() === item.endDate.getTime()),
+    (item) => isDateWithinInclusiveUtcRange(reportingDate, item.startDate, item.endDate),
   );
 
   return cycle?.cycleNumber ?? 1;

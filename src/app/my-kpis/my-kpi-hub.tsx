@@ -14,6 +14,7 @@ import type {
   MyAllocationView,
   ReviewQueueItem,
   MyDashboardSummary,
+  StoredReviewCycleView,
 } from "@/lib/kra-kpi/shared";
 import { MyAllocationCard } from "@/components/my-kpis/my-allocation-card";
 import { MyReviewItem } from "@/components/my-kpis/my-review-item";
@@ -51,6 +52,7 @@ export function MyKpiHub() {
   const [allocations, setAllocations] = useState<MyAllocationView[]>([]);
   const [reviewQueue, setReviewQueue] = useState<ReviewQueueItem[]>([]);
   const [dashboardSummary, setDashboardSummary] = useState<MyDashboardSummary | null>(null);
+  const [currentCycle, setCurrentCycle] = useState<StoredReviewCycleView | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sourceDeptFilter, setSourceDeptFilter] = useState<string>("");
@@ -98,15 +100,21 @@ export function MyKpiHub() {
   async function refreshData(periodId: string) {
     setLoading(true);
 
-    const [allocRes, reviewRes, dashRes] = await Promise.all([
+    const [allocRes, reviewRes, dashRes, cyclesRes] = await Promise.all([
       fetch(`/api/tenant/kra-kpi/my/allocations?periodId=${periodId}`),
       fetch(`/api/tenant/kra-kpi/my/review-queue?periodId=${periodId}`),
       fetch(`/api/tenant/kra-kpi/my/dashboard?periodId=${periodId}`),
+      fetch(`/api/tenant/kra-kpi/periods/${periodId}/review-cycles`),
     ]);
 
     if (allocRes.ok) setAllocations(await allocRes.json());
     if (reviewRes.ok) setReviewQueue(await reviewRes.json());
     if (dashRes.ok) setDashboardSummary(await dashRes.json());
+    if (cyclesRes.ok) {
+      const data = await cyclesRes.json();
+      const cycles: StoredReviewCycleView[] = data.cycles ?? [];
+      setCurrentCycle(cycles.find((c) => c.isCurrent) ?? null);
+    }
 
     setLoading(false);
   }
@@ -560,7 +568,7 @@ export function MyKpiHub() {
       )}
 
       {!loading && effectiveActiveTab === "dashboard" && (
-        <MyDashboard summary={dashboardSummary} />
+        <MyDashboard summary={dashboardSummary} currentCycle={currentCycle} />
       )}
 
       {!loading && effectiveActiveTab === "additional" && selectedPeriodId && (

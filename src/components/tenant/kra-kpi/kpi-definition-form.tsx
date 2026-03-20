@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, Check, X, AlertCircle } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Loader2, Check, X, AlertCircle, Plus, Trash2 } from "lucide-react";
 import { TooltipHint } from "./tooltip-hint";
 import { TOOLTIPS, ACHIEVEMENT_TEMPLATES } from "@/lib/kra-kpi/shared";
 import {
@@ -9,6 +9,7 @@ import {
   type AchievementFieldConfig,
   type AchievementFormConfig,
   type MeasurementConfig,
+  type KpiTargetUnitView,
 } from "@/lib/kra-kpi/shared";
 
 const MEASUREMENT_TYPES = [
@@ -39,6 +40,22 @@ const ALLOCATION_TYPES = [
   { value: "BOTH", label: "Both" },
 ];
 
+const EVIDENCE_TYPE_OPTIONS = [
+  { value: "DOCUMENT", label: "Document" },
+  { value: "URL", label: "URL" },
+  { value: "CERTIFICATE", label: "Certificate" },
+  { value: "SELF_DECLARATION", label: "Self Declaration" },
+  { value: "SYSTEM_GENERATED", label: "System Generated" },
+  { value: "NONE", label: "None" },
+];
+
+const CREDIT_METHODS = [
+  { value: "FULL_EACH", label: "Full Each" },
+  { value: "EQUAL_SPLIT", label: "Equal Split" },
+  { value: "WEIGHTED_SPLIT", label: "Weighted Split" },
+  { value: "PRIMARY_ONLY", label: "Primary Only" },
+];
+
 type KpiFormProps = {
   mode: "create" | "edit";
   kraDefinitionId: string;
@@ -61,6 +78,14 @@ type KpiFormProps = {
     sortOrder: number;
     achievementTemplateKey?: string | null;
     achievementFormConfig?: AchievementFormConfig | null;
+    keyUnitId?: string | null;
+    finalUnitId?: string | null;
+    evidenceRequired?: boolean;
+    evidenceTypes?: string[];
+    evidenceInstructions?: string | null;
+    sopDescription?: string | null;
+    isTeamKpi?: boolean;
+    teamCreditMethod?: string;
   };
   onDone: () => void;
   onCancel: () => void;
@@ -138,6 +163,16 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   const [customFields, setCustomFields] = useState<AchievementFieldConfig[]>(
     initial?.achievementFormConfig?.fields ?? []
   );
+  // R2 state
+  const [keyUnitId, setKeyUnitId] = useState(initial?.keyUnitId ?? "");
+  const [finalUnitId, setFinalUnitId] = useState(initial?.finalUnitId ?? "");
+  const [evidenceRequired, setEvidenceRequired] = useState(initial?.evidenceRequired ?? true);
+  const [evidenceTypes, setEvidenceTypes] = useState<string[]>(initial?.evidenceTypes ?? []);
+  const [evidenceInstructions, setEvidenceInstructions] = useState(initial?.evidenceInstructions ?? "");
+  const [sopDescription, setSopDescription] = useState(initial?.sopDescription ?? "");
+  const [isTeamKpi, setIsTeamKpi] = useState(initial?.isTeamKpi ?? false);
+  const [teamCreditMethod, setTeamCreditMethod] = useState(initial?.teamCreditMethod ?? "FULL_EACH");
+  const [showR2Sections, setShowR2Sections] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -254,6 +289,14 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         achievementFormConfig: formConfig ?? (mode === "edit" ? null : undefined),
         guidanceNotes: guidanceNotes.trim() || (mode === "edit" ? null : undefined),
         sortOrder,
+        keyUnitId: keyUnitId || (mode === "edit" ? null : undefined),
+        finalUnitId: finalUnitId || (mode === "edit" ? null : undefined),
+        evidenceRequired,
+        evidenceTypes,
+        evidenceInstructions: evidenceInstructions.trim() || (mode === "edit" ? null : undefined),
+        sopDescription: sopDescription.trim() || (mode === "edit" ? null : undefined),
+        isTeamKpi,
+        teamCreditMethod: isTeamKpi ? teamCreditMethod : "FULL_EACH",
       };
 
       const res = await fetch(url, {
@@ -429,6 +472,154 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         </div>
       </div>
 
+      {/* R2 Sections — Collapsible */}
+      <div className="mt-3 border-t border-slate-200 pt-3">
+        <button
+          type="button"
+          onClick={() => setShowR2Sections(!showR2Sections)}
+          className="text-xs font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-700"
+        >
+          {showR2Sections ? "▾" : "▸"} Advanced Options (R2)
+        </button>
+
+        {showR2Sections && (
+          <div className="mt-3 space-y-4">
+            {/* Verification Routing */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Verification Routing (optional)
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className={labelCls}>Key Department</label>
+                  <select value={keyUnitId} onChange={(e) => setKeyUnitId(e.target.value)} className={inputCls}>
+                    <option value="">None</option>
+                    {units.filter((u) => u.id !== startingUnitId).map((u) => (
+                      <option key={u.id} value={u.id}>{u.name}</option>
+                    ))}
+                  </select>
+                  <p className="mt-0.5 text-[10px] text-slate-400">Validates completion before final review</p>
+                </div>
+                <div>
+                  <label className={labelCls}>Final Department</label>
+                  <select value={finalUnitId} onChange={(e) => setFinalUnitId(e.target.value)} className={inputCls}>
+                    <option value="">Defaults to starting dept</option>
+                    {units.map((u) => (
+                      <option key={u.id} value={u.id}>{u.name}</option>
+                    ))}
+                  </select>
+                  <p className="mt-0.5 text-[10px] text-slate-400">Final verifier department</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Evidence Requirements */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Evidence Requirements
+              </p>
+              <div className="space-y-3">
+                <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={evidenceRequired}
+                    onChange={(e) => setEvidenceRequired(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/30"
+                  />
+                  Evidence Required
+                </label>
+                {evidenceRequired && (
+                  <>
+                    <div>
+                      <label className={labelCls}>Accepted Types</label>
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        {EVIDENCE_TYPE_OPTIONS.map((et) => (
+                          <label key={et.value} className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+                            <input
+                              type="checkbox"
+                              checked={evidenceTypes.includes(et.value)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setEvidenceTypes([...evidenceTypes, et.value]);
+                                } else {
+                                  setEvidenceTypes(evidenceTypes.filter((t) => t !== et.value));
+                                }
+                              }}
+                              className="h-3.5 w-3.5 rounded border-slate-300 text-brand focus:ring-brand/30"
+                            />
+                            {et.label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelCls}>Instructions</label>
+                      <textarea
+                        placeholder="Instructions for what evidence to submit..."
+                        value={evidenceInstructions}
+                        onChange={(e) => setEvidenceInstructions(e.target.value)}
+                        rows={2}
+                        className={`${inputCls} resize-none`}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* SOP */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">SOP</p>
+              <div>
+                <label className={labelCls}>Description</label>
+                <textarea
+                  placeholder="Standard operating procedure..."
+                  value={sopDescription}
+                  onChange={(e) => setSopDescription(e.target.value)}
+                  rows={2}
+                  className={`${inputCls} resize-none`}
+                />
+              </div>
+            </div>
+
+            {/* Team KPI */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Team KPI (optional)
+              </p>
+              <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={isTeamKpi}
+                  onChange={(e) => setIsTeamKpi(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/30"
+                />
+                Is Team KPI
+              </label>
+              {isTeamKpi && (
+                <div className="mt-2">
+                  <label className={labelCls}>Credit Method</label>
+                  <select value={teamCreditMethod} onChange={(e) => setTeamCreditMethod(e.target.value)} className={inputCls}>
+                    {CREDIT_METHODS.map((cm) => (
+                      <option key={cm.value} value={cm.value}>{cm.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Target Departments (edit mode only) */}
+            {mode === "edit" && initial?.id && (
+              <TargetDepartmentsPicker
+                kpiId={initial.id}
+                startingUnitId={startingUnitId}
+                units={units}
+              />
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="mt-3 flex items-center gap-2">
         <button type="submit" disabled={submitting} className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white transition disabled:opacity-50 ${mode === "create" ? "bg-brand hover:bg-brand/90" : "bg-blue-600 hover:bg-blue-700"}`}>
           {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
@@ -442,5 +633,163 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         </div>
       )}
     </form>
+  );
+}
+
+function TargetDepartmentsPicker({
+  kpiId,
+  startingUnitId,
+  units,
+}: {
+  kpiId: string;
+  startingUnitId: string;
+  units: { id: string; name: string }[];
+}) {
+  const [targetUnits, setTargetUnits] = useState<KpiTargetUnitView[]>([]);
+  const [addUnitId, setAddUnitId] = useState("");
+  const [addShare, setAddShare] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  const fetchTargetUnits = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/tenant/kra-kpi/kpis/${kpiId}/target-units`);
+      if (res.ok) {
+        const data = await res.json();
+        setTargetUnits(data.targetUnits ?? []);
+      }
+    } catch { /* ignore */ }
+  }, [kpiId]);
+
+  useEffect(() => { void fetchTargetUnits(); }, [fetchTargetUnits]);
+
+  const handleAdd = async () => {
+    if (!addUnitId) return;
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const res = await fetch(`/api/tenant/kra-kpi/kpis/${kpiId}/target-units`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unitId: addUnitId,
+          targetShare: addShare.trim() ? Number(addShare) : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.status === "success") {
+        setAddUnitId("");
+        setAddShare("");
+        void fetchTargetUnits();
+      } else {
+        setFeedback(data.message);
+      }
+    } catch {
+      setFeedback("Failed to add.");
+    }
+    setBusy(false);
+  };
+
+  const handleRemove = async (unitId: string) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const res = await fetch(`/api/tenant/kra-kpi/kpis/${kpiId}/target-units`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unitId }),
+      });
+      const data = await res.json();
+      if (data.status === "success") {
+        void fetchTargetUnits();
+      } else {
+        setFeedback(data.message);
+      }
+    } catch {
+      setFeedback("Failed to remove.");
+    }
+    setBusy(false);
+  };
+
+  const availableUnits = units.filter(
+    (u) => u.id !== startingUnitId && !targetUnits.some((tu) => tu.unitId === u.id)
+  );
+  const totalShare = targetUnits.reduce((s, tu) => s + (tu.targetShare ?? 0), 0);
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+        Target Departments
+      </p>
+      <p className="mb-3 text-[11px] text-slate-400">
+        Which departments should receive this KPI? Leave empty to allocate manually.
+      </p>
+
+      {targetUnits.length > 0 && (
+        <div className="mb-3 space-y-1">
+          {targetUnits.map((tu) => (
+            <div key={tu.id} className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm">
+              <div>
+                <span className="font-medium text-slate-700">{tu.unitName}</span>
+                {tu.targetShare != null && (
+                  <span className="ml-2 text-xs text-slate-400">Share: {tu.targetShare}%</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => handleRemove(tu.unitId)}
+                disabled={busy}
+                className="text-slate-400 hover:text-rose-500 disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          {totalShare > 0 && (
+            <p className={`text-xs ${Math.abs(totalShare - 100) < 0.01 ? "text-emerald-600" : "text-amber-600"}`}>
+              Total share: {totalShare}%{Math.abs(totalShare - 100) < 0.01 ? " ✓" : " (should be 100%)"}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-end gap-2">
+        <div className="flex-1">
+          <select
+            value={addUnitId}
+            onChange={(e) => setAddUnitId(e.target.value)}
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand"
+          >
+            <option value="">Add department...</option>
+            {availableUnits.map((u) => (
+              <option key={u.id} value={u.id}>{u.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="w-20">
+          <input
+            type="number"
+            placeholder="%"
+            value={addShare}
+            onChange={(e) => setAddShare(e.target.value)}
+            min={0}
+            max={100}
+            className="w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm outline-none focus:border-brand"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={handleAdd}
+          disabled={!addUnitId || busy}
+          className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+        >
+          <Plus className="h-3.5 w-3.5" /> Add
+        </button>
+      </div>
+
+      {feedback && (
+        <p className="mt-1.5 text-xs text-rose-600">{feedback}</p>
+      )}
+    </div>
   );
 }

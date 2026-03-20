@@ -119,7 +119,7 @@ describe("KRA/KPI scoring", () => {
 
     expect(cycles).toHaveLength(4);
     expect(cycles[0]?.startDate.toISOString()).toBe("2026-01-01T00:00:00.000Z");
-    expect(cycles[0]?.endDate.toISOString()).toBe("2026-02-01T00:00:00.000Z");
+    expect(cycles[0]?.endDate.toISOString()).toBe("2026-01-31T00:00:00.000Z");
     expect(cycles[3]?.startDate.toISOString()).toBe("2026-04-01T00:00:00.000Z");
     expect(cycles[3]?.endDate.toISOString()).toBe("2026-04-15T00:00:00.000Z");
   });

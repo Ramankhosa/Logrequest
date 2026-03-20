@@ -242,6 +242,37 @@ enum GradeValue {
   POOR
 }
 
+// ── KRA/KPI Enums (Release 2) ──────────────────────────────────────────────
+
+enum KpiFlowStatus {
+  CREATED           // allocation just created, no work started
+  ASSIGNED          // target communicated to assignee
+  IN_PROGRESS       // assignee working on it
+  SUBMITTED         // assignee submitted achievement for review
+  KEY_REVIEW        // key department reviewing (optional step)
+  KEY_APPROVED      // key department endorsed
+  KEY_REJECTED      // key department sent back (auto-resets to IN_PROGRESS)
+  FINAL_REVIEW      // final/starting department reviewing (optional step)
+  VERIFIED          // fully approved
+  REJECTED          // sent back at any review level
+}
+
+enum EvidenceType {
+  DOCUMENT          // PDF, DOC, DOCX
+  URL               // web link
+  CERTIFICATE       // scanned certificate
+  SELF_DECLARATION  // self-attested
+  SYSTEM_GENERATED  // auto-captured by system
+  NONE              // no evidence needed
+}
+
+enum TeamCreditMethod {
+  FULL_EACH          // each contributor gets 100% credit (count-based KPIs)
+  EQUAL_SPLIT        // credit divided equally among all contributors
+  WEIGHTED_SPLIT     // credit split per contributor weight (e.g., first author 60%)
+  PRIMARY_ONLY       // only primary contributor gets credit
+}
+
 enum PersonnelStatus {
   ONBOARDING
   ACTIVE
@@ -602,6 +633,9 @@ model OrgUnit {
   userAssignments   UserOrgAssignment[]
   roleAssignments   OrgRoleAssignment[]
   kpiStarting       KpiDefinition[]     @relation("KpiStartingUnit")
+  kpiKeyUnit        KpiDefinition[]     @relation("KpiKeyUnit")
+  kpiFinalUnit      KpiDefinition[]     @relation("KpiFinalUnit")
+  kpiTargetUnits    KpiTargetUnit[]     @relation("KpiTargetUnits")
   targetAllocations TargetAllocation[]  @relation("TargetUnit")
   actingAssignments ActingAssignment[]
   transfersFrom     TransferRecord[]    @relation("TransferSource")
@@ -737,6 +771,7 @@ model AssessmentPeriod {
   tenant                Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   kraDefinitions        KraDefinition[]
   targetAllocations     TargetAllocation[]
+  reviewCycles          ReviewCycle[]
 
   @@unique([tenantId, code])
   @@index([tenantId, state])
@@ -786,6 +821,18 @@ model KpiDefinition {
   // ── Achievement Template ──
   achievementTemplateKey  String?    // "PUBLICATION", "PATENT", etc.
   achievementFormConfig   Json?      // [{key, label, type, required, options?, pattern?}]
+  // ── R2: Verification Routing ──
+  keyUnitId             String?
+  finalUnitId           String?
+  // ── R2: SOP & Evidence ──
+  sopDescription        String?
+  sopFiles              Json?
+  evidenceRequired      Boolean            @default(true)
+  evidenceTypes         EvidenceType[]
+  evidenceInstructions  String?
+  // ── R2: Team KPI ──
+  isTeamKpi             Boolean            @default(false)
+  teamCreditMethod      TeamCreditMethod   @default(FULL_EACH)
   // ── State ──
   state             KpiDefinitionState @default(DRAFT)
   sortOrder         Int                @default(0)
@@ -795,11 +842,17 @@ model KpiDefinition {
 
   kraDefinition     KraDefinition      @relation(fields: [kraDefinitionId], references: [id], onDelete: Cascade)
   startingUnit      OrgUnit            @relation("KpiStartingUnit", fields: [startingUnitId], references: [id], onDelete: Restrict)
+  keyUnit           OrgUnit?           @relation("KpiKeyUnit", fields: [keyUnitId], references: [id], onDelete: SetNull)
+  finalUnit         OrgUnit?           @relation("KpiFinalUnit", fields: [finalUnitId], references: [id], onDelete: SetNull)
   targetAllocations TargetAllocation[]
   achievements      Achievement[]
+  targetUnits       KpiTargetUnit[]
+  stages            KpiStageDefinition[]
 
   @@index([kraDefinitionId])
   @@index([startingUnitId])
+  @@index([keyUnitId])
+  @@index([finalUnitId])
 }
 
 model TargetAllocation {
@@ -820,6 +873,14 @@ model TargetAllocation {
   // State
   state              TargetAllocationState @default(ACTIVE)
   lockedAt           DateTime?
+  // ── R2: Flow tracking ──
+  flowStatus             KpiFlowStatus     @default(CREATED)
+  flowLog                Json?
+  // ── R2: Verifier override ──
+  verifierOverrideUserId String?
+  verifierOverrideNote   String?
+  // ── R2: Team weights ──
+  teamWeights            Json?
   // Cascade lineage
   parentAllocationId String?
   notes              String?
@@ -833,6 +894,7 @@ model TargetAllocation {
   parentAllocation   TargetAllocation?     @relation("CascadeParent", fields: [parentAllocationId], references: [id], onDelete: SetNull)
   childAllocations   TargetAllocation[]    @relation("CascadeParent")
   achievements       Achievement[]
+  stageProgress      KpiStageProgress[]
 
   @@index([tenantId, periodId, kpiDefinitionId])
   @@index([assignedToUnitId, periodId])
@@ -857,6 +919,13 @@ model Achievement {
   // Evidence (simple text in R1, file uploads added in R2)
   evidenceDescription   String?
   evidenceLinks         String[]           // URLs for now, file uploads in R2
+  // ── R2: Evidence files ──
+  evidenceFiles          Json?
+  // ── R2: Multi-level verification ──
+  currentVerifierUserId  String?
+  currentVerifierUnitId  String?
+  // ── R2: Team achievement ──
+  isTeamAchievement      Boolean           @default(false)
   // Scoring
   computedScore         Float?             // 0-100
   // Dynamic form data (R1.1a)
@@ -882,6 +951,71 @@ model Achievement {
   @@index([targetAllocationId])
   @@index([reportedByUserId, periodId])
   @@index([tenantId, state])
+}
+
+model KpiTargetUnit {
+  id              String        @id @default(cuid())
+  kpiDefinitionId String
+  unitId          String
+  targetShare     Float?
+  notes           String?
+  createdAt       DateTime      @default(now())
+  kpiDefinition   KpiDefinition @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  unit            OrgUnit       @relation("KpiTargetUnits", fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([kpiDefinitionId, unitId])
+  @@index([unitId])
+}
+
+model KpiStageDefinition {
+  id              String        @id @default(cuid())
+  kpiDefinitionId String
+  stageOrder      Int
+  title           String
+  description     String?
+  isMandatory     Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  kpiDefinition   KpiDefinition @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  stageProgress   KpiStageProgress[]
+
+  @@unique([kpiDefinitionId, stageOrder])
+  @@index([kpiDefinitionId])
+}
+
+model KpiStageProgress {
+  id                  String             @id @default(cuid())
+  targetAllocationId  String
+  stageDefinitionId   String
+  isCompleted         Boolean            @default(false)
+  completedByUserId   String?
+  completedAt         DateTime?
+  evidenceNote        String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  targetAllocation    TargetAllocation   @relation(fields: [targetAllocationId], references: [id], onDelete: Cascade)
+  stageDefinition     KpiStageDefinition @relation(fields: [stageDefinitionId], references: [id], onDelete: Cascade)
+
+  @@unique([targetAllocationId, stageDefinitionId])
+  @@index([targetAllocationId])
+}
+
+model ReviewCycle {
+  id             String           @id @default(cuid())
+  periodId       String
+  /// Enforced by SQL migration: cycleNumber > 0
+  cycleNumber    Int
+  label          String
+  startDate      DateTime
+  endDate        DateTime
+  reviewDeadline DateTime?
+  isCurrent      Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  period         AssessmentPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  @@unique([periodId, cycleNumber])
+  @@index([periodId, isCurrent])
 }
 
 model Notification {

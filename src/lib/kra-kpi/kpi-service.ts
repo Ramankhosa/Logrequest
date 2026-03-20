@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import type {
   KraKpiActionResult,
   KpiDefinitionView,
+  KpiTargetUnitView,
   AchievementFormConfig,
   MeasurementConfig,
 } from "./shared";
@@ -49,6 +50,17 @@ const createKpiSchema = z.object({
   achievementFormConfig: achievementFormConfigSchema.optional(),
   guidanceNotes: z.string().trim().max(2000).optional(),
   sortOrder: z.number().int().min(0).max(9999).default(0),
+  // R2 fields
+  keyUnitId: z.string().trim().min(1).optional(),
+  finalUnitId: z.string().trim().min(1).optional(),
+  sopDescription: z.string().trim().max(5000).optional(),
+  evidenceRequired: z.boolean().default(true),
+  evidenceTypes: z.array(z.enum([
+    "DOCUMENT", "URL", "CERTIFICATE", "SELF_DECLARATION", "SYSTEM_GENERATED", "NONE"
+  ])).default([]),
+  evidenceInstructions: z.string().trim().max(2000).optional(),
+  isTeamKpi: z.boolean().default(false),
+  teamCreditMethod: z.enum(["FULL_EACH", "EQUAL_SPLIT", "WEIGHTED_SPLIT", "PRIMARY_ONLY"]).default("FULL_EACH"),
 });
 
 const updateKpiSchema = z.object({
@@ -80,6 +92,17 @@ const updateKpiSchema = z.object({
   achievementFormConfig: achievementFormConfigSchema.nullable().optional(),
   guidanceNotes: z.string().trim().max(2000).nullable().optional(),
   sortOrder: z.number().int().min(0).max(9999).optional(),
+  // R2 fields
+  keyUnitId: z.string().trim().min(1).nullable().optional(),
+  finalUnitId: z.string().trim().min(1).nullable().optional(),
+  sopDescription: z.string().trim().max(5000).nullable().optional(),
+  evidenceRequired: z.boolean().optional(),
+  evidenceTypes: z.array(z.enum([
+    "DOCUMENT", "URL", "CERTIFICATE", "SELF_DECLARATION", "SYSTEM_GENERATED", "NONE"
+  ])).optional(),
+  evidenceInstructions: z.string().trim().max(2000).nullable().optional(),
+  isTeamKpi: z.boolean().optional(),
+  teamCreditMethod: z.enum(["FULL_EACH", "EQUAL_SPLIT", "WEIGHTED_SPLIT", "PRIMARY_ONLY"]).optional(),
 });
 
 const changeKpiStateSchema = z.object({
@@ -102,6 +125,48 @@ function isAdminOrOwner(role: Role): boolean {
 
 function canModifyKpiInPeriodState(state: string): boolean {
   return state === "DRAFT" || state === "OPEN" || state === "UNDER_REVIEW";
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapKpiView(k: any): KpiDefinitionView {
+  return {
+    id: k.id,
+    kraDefinitionId: k.kraDefinitionId,
+    kraTitle: k.kraDefinition.title,
+    kraState: k.kraDefinition.state,
+    title: k.title,
+    description: k.description,
+    measurementType: k.measurementType,
+    unitLabel: k.unitLabel,
+    weightage: k.weightage,
+    defaultTarget: k.defaultTarget,
+    measurementConfig: k.measurementConfig as KpiDefinitionView["measurementConfig"],
+    scoringMethod: k.scoringMethod,
+    scoringDirection: k.scoringDirection,
+    scoringConfig: k.scoringConfig as KpiDefinitionView["scoringConfig"],
+    isPerCapita: k.isPerCapita,
+    allocationType: k.allocationType,
+    startingUnitId: k.startingUnitId,
+    startingUnitName: k.startingUnit.name,
+    achievementTemplateKey: k.achievementTemplateKey,
+    achievementFormConfig: k.achievementFormConfig as AchievementFormConfig | null,
+    state: k.state,
+    sortOrder: k.sortOrder,
+    guidanceNotes: k.guidanceNotes,
+    allocationCount: k._count.targetAllocations,
+    keyUnitId: k.keyUnitId,
+    keyUnitName: k.keyUnit?.name ?? null,
+    finalUnitId: k.finalUnitId,
+    finalUnitName: k.finalUnit?.name ?? null,
+    targetUnitCount: k._count.targetUnits,
+    evidenceRequired: k.evidenceRequired,
+    evidenceTypes: k.evidenceTypes,
+    evidenceInstructions: k.evidenceInstructions,
+    sopDescription: k.sopDescription,
+    isTeamKpi: k.isTeamKpi,
+    teamCreditMethod: k.teamCreditMethod,
+    createdAt: k.createdAt,
+  };
 }
 
 function validateMeasurementSettings(
@@ -171,38 +236,14 @@ export async function listKpis(
     include: {
       kraDefinition: { select: { title: true, tenantId: true, state: true } },
       startingUnit: { select: { name: true } },
-      _count: { select: { targetAllocations: true } },
+      keyUnit: { select: { name: true } },
+      finalUnit: { select: { name: true } },
+      _count: { select: { targetAllocations: true, targetUnits: true } },
     },
     orderBy: [{ sortOrder: "asc" }, { title: "asc" }],
   });
 
-  return kpis.map((k) => ({
-    id: k.id,
-    kraDefinitionId: k.kraDefinitionId,
-    kraTitle: k.kraDefinition.title,
-    kraState: k.kraDefinition.state,
-    title: k.title,
-    description: k.description,
-    measurementType: k.measurementType,
-    unitLabel: k.unitLabel,
-    weightage: k.weightage,
-    defaultTarget: k.defaultTarget,
-    measurementConfig: k.measurementConfig as KpiDefinitionView["measurementConfig"],
-    scoringMethod: k.scoringMethod,
-    scoringDirection: k.scoringDirection,
-    scoringConfig: k.scoringConfig as KpiDefinitionView["scoringConfig"],
-    isPerCapita: k.isPerCapita,
-    allocationType: k.allocationType,
-    startingUnitId: k.startingUnitId,
-    startingUnitName: k.startingUnit.name,
-    achievementTemplateKey: k.achievementTemplateKey,
-    achievementFormConfig: k.achievementFormConfig as AchievementFormConfig | null,
-    state: k.state,
-    sortOrder: k.sortOrder,
-    guidanceNotes: k.guidanceNotes,
-    allocationCount: k._count.targetAllocations,
-    createdAt: k.createdAt,
-  }));
+  return kpis.map((k) => mapKpiView(k));
 }
 
 // ── Get KPI ──────────────────────────────────────────────────────────────────
@@ -216,38 +257,14 @@ export async function getKpi(
     include: {
       kraDefinition: { select: { title: true, tenantId: true, state: true } },
       startingUnit: { select: { name: true } },
-      _count: { select: { targetAllocations: true } },
+      keyUnit: { select: { name: true } },
+      finalUnit: { select: { name: true } },
+      _count: { select: { targetAllocations: true, targetUnits: true } },
     },
   });
   if (!k) return null;
 
-  return {
-    id: k.id,
-    kraDefinitionId: k.kraDefinitionId,
-    kraTitle: k.kraDefinition.title,
-    kraState: k.kraDefinition.state,
-    title: k.title,
-    description: k.description,
-    measurementType: k.measurementType,
-    unitLabel: k.unitLabel,
-    weightage: k.weightage,
-    defaultTarget: k.defaultTarget,
-    measurementConfig: k.measurementConfig as KpiDefinitionView["measurementConfig"],
-    scoringMethod: k.scoringMethod,
-    scoringDirection: k.scoringDirection,
-    scoringConfig: k.scoringConfig as KpiDefinitionView["scoringConfig"],
-    isPerCapita: k.isPerCapita,
-    allocationType: k.allocationType,
-    startingUnitId: k.startingUnitId,
-    startingUnitName: k.startingUnit.name,
-    achievementTemplateKey: k.achievementTemplateKey,
-    achievementFormConfig: k.achievementFormConfig as AchievementFormConfig | null,
-    state: k.state,
-    sortOrder: k.sortOrder,
-    guidanceNotes: k.guidanceNotes,
-    allocationCount: k._count.targetAllocations,
-    createdAt: k.createdAt,
-  };
+  return mapKpiView(k);
 }
 
 // ── Create KPI ───────────────────────────────────────────────────────────────
@@ -335,6 +352,16 @@ export async function createKpi(
     }
   }
 
+  // Validate R2 unit references
+  if (data.keyUnitId) {
+    const keyUnit = await prisma.orgUnit.findFirst({ where: { id: data.keyUnitId, tenantId } });
+    if (!keyUnit) return { status: "error", message: "Key department not found." };
+  }
+  if (data.finalUnitId) {
+    const finalUnit = await prisma.orgUnit.findFirst({ where: { id: data.finalUnitId, tenantId } });
+    if (!finalUnit) return { status: "error", message: "Final department not found." };
+  }
+
   await prisma.$transaction(async (tx) => {
     const kpi = await tx.kpiDefinition.create({
       data: {
@@ -356,6 +383,14 @@ export async function createKpi(
         achievementFormConfig: data.achievementFormConfig as object | undefined,
         guidanceNotes: data.guidanceNotes,
         sortOrder: data.sortOrder,
+        keyUnitId: data.keyUnitId,
+        finalUnitId: data.finalUnitId,
+        sopDescription: data.sopDescription,
+        evidenceRequired: data.evidenceRequired,
+        evidenceTypes: data.evidenceTypes,
+        evidenceInstructions: data.evidenceInstructions,
+        isTeamKpi: data.isTeamKpi,
+        teamCreditMethod: !data.isTeamKpi ? "FULL_EACH" : data.teamCreditMethod,
       },
     });
 
@@ -389,7 +424,7 @@ export async function updateKpi(
   actorRole: Role
 ): Promise<KraKpiActionResult> {
   if (!isAdminOrOwner(actorRole)) {
-    return { status: "error", message: "Insufficient permissions." };
+    return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
   }
 
   const parsed = updateKpiSchema.safeParse(input);
@@ -452,6 +487,15 @@ export async function updateKpi(
     }
   }
 
+  if (data.keyUnitId) {
+    const keyUnit = await prisma.orgUnit.findFirst({ where: { id: data.keyUnitId, tenantId } });
+    if (!keyUnit) return { status: "error", message: "Key department not found." };
+  }
+  if (data.finalUnitId) {
+    const finalUnit = await prisma.orgUnit.findFirst({ where: { id: data.finalUnitId, tenantId } });
+    if (!finalUnit) return { status: "error", message: "Final department not found." };
+  }
+
   const nextMeasurementType = data.measurementType ?? kpi.measurementType;
   const nextMeasurementConfig =
     data.measurementConfig !== undefined
@@ -498,6 +542,14 @@ export async function updateKpi(
       updateData.achievementFormConfig = data.achievementFormConfig as object | null;
     if (data.guidanceNotes !== undefined) updateData.guidanceNotes = data.guidanceNotes;
     if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder;
+    if (data.keyUnitId !== undefined) updateData.keyUnitId = data.keyUnitId;
+    if (data.finalUnitId !== undefined) updateData.finalUnitId = data.finalUnitId;
+    if (data.sopDescription !== undefined) updateData.sopDescription = data.sopDescription;
+    if (data.evidenceRequired !== undefined) updateData.evidenceRequired = data.evidenceRequired;
+    if (data.evidenceTypes !== undefined) updateData.evidenceTypes = data.evidenceTypes;
+    if (data.evidenceInstructions !== undefined) updateData.evidenceInstructions = data.evidenceInstructions;
+    if (data.isTeamKpi !== undefined) updateData.isTeamKpi = data.isTeamKpi;
+    if (data.teamCreditMethod !== undefined) updateData.teamCreditMethod = data.teamCreditMethod;
 
     await tx.kpiDefinition.update({
       where: { id: kpiId },
@@ -690,4 +742,221 @@ export async function validateKpiWeightages(
     kraWeightage: kra.weightage,
     remaining: kra.weightage - sum,
   };
+}
+
+// ── Target Unit Management (R2) ─────────────────────────────────────────────
+
+export async function addTargetUnit(
+  kpiId: string,
+  tenantId: string,
+  unitId: string,
+  targetShare: number | null,
+  notes: string | null,
+  actorUserId: string,
+  actorRole: Role
+): Promise<KraKpiActionResult> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", message: "Insufficient permissions." };
+  }
+
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiId, kraDefinition: { tenantId } },
+    select: { id: true, state: true, startingUnitId: true },
+  });
+  if (!kpi) return { status: "error", code: "KPI_NOT_FOUND", message: "KPI not found." };
+  if (kpi.state === "ARCHIVED") {
+    return { status: "error", code: "KPI_ARCHIVED", message: "Cannot add targets to an archived KPI." };
+  }
+
+  const unit = await prisma.orgUnit.findFirst({
+    where: { id: unitId, tenantId },
+    select: { id: true },
+  });
+  if (!unit) return { status: "error", code: "UNIT_NOT_FOUND", message: "Unit not found." };
+
+  if (unitId === kpi.startingUnitId) {
+    return {
+      status: "error",
+      code: "TARGET_UNIT_ORIGIN_CONFLICT",
+      message: "Starting unit cannot be a target unit (it's the originator).",
+    };
+  }
+
+  if (targetShare !== null && targetShare !== undefined) {
+    if (targetShare <= 0 || targetShare > 100) {
+      return { status: "error", code: "TARGET_SHARE_INVALID", message: "Target share must be between 0 and 100." };
+    }
+  }
+
+  const existing = await prisma.kpiTargetUnit.findUnique({
+    where: { kpiDefinitionId_unitId: { kpiDefinitionId: kpiId, unitId } },
+  });
+  if (existing) {
+    return { status: "error", code: "DUPLICATE_TARGET_UNIT", message: "This unit is already a target for this KPI." };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.kpiTargetUnit.create({
+      data: {
+        kpiDefinitionId: kpiId,
+        unitId,
+        targetShare,
+        notes,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "KpiTargetUnit",
+        targetId: kpiId,
+        action: "ADD",
+        metadata: { unitId, targetShare },
+      },
+    });
+  });
+
+  return { status: "success", message: "Target unit added." };
+}
+
+export async function removeTargetUnit(
+  kpiId: string,
+  tenantId: string,
+  unitId: string,
+  actorUserId: string,
+  actorRole: Role
+): Promise<KraKpiActionResult> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
+  }
+
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiId, kraDefinition: { tenantId } },
+    select: { id: true, state: true },
+  });
+  if (!kpi) return { status: "error", code: "KPI_NOT_FOUND", message: "KPI not found." };
+  if (kpi.state === "ARCHIVED") {
+    return { status: "error", code: "KPI_ARCHIVED", message: "Cannot modify an archived KPI." };
+  }
+
+  const record = await prisma.kpiTargetUnit.findUnique({
+    where: { kpiDefinitionId_unitId: { kpiDefinitionId: kpi.id, unitId } },
+  });
+  if (!record) return { status: "error", code: "TARGET_UNIT_NOT_FOUND", message: "Target unit not found." };
+
+  const activeAllocations = await prisma.targetAllocation.count({
+    where: { kpiDefinitionId: kpi.id, assignedToUnitId: unitId, tenantId },
+  });
+  if (activeAllocations > 0) {
+    return {
+      status: "error",
+      code: "TARGET_UNIT_HAS_ALLOCATIONS",
+      message: "Cannot remove target unit with existing allocations. Delete allocations first.",
+    };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.kpiTargetUnit.delete({
+      where: { kpiDefinitionId_unitId: { kpiDefinitionId: kpi.id, unitId } },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "KpiTargetUnit",
+        targetId: kpi.id,
+        action: "REMOVE",
+        metadata: { unitId },
+      },
+    });
+  });
+
+  return { status: "success", message: "Target unit removed." };
+}
+
+export async function listTargetUnits(
+  kpiId: string,
+  tenantId: string
+): Promise<KpiTargetUnitView[]> {
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiId, kraDefinition: { tenantId } },
+    select: { id: true },
+  });
+  if (!kpi) return [];
+
+  const records = await prisma.kpiTargetUnit.findMany({
+    where: { kpiDefinitionId: kpiId },
+    include: { unit: { select: { name: true, code: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+
+  return records.map((r) => ({
+    id: r.id,
+    kpiDefinitionId: r.kpiDefinitionId,
+    unitId: r.unitId,
+    unitName: r.unit.name,
+    unitCode: r.unit.code,
+    targetShare: r.targetShare,
+    notes: r.notes,
+    createdAt: r.createdAt,
+  }));
+}
+
+export async function updateTargetUnit(
+  kpiId: string,
+  tenantId: string,
+  unitId: string,
+  targetShare: number | null,
+  notes: string | null,
+  actorUserId: string,
+  actorRole: Role
+): Promise<KraKpiActionResult> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
+  }
+
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiId, kraDefinition: { tenantId } },
+    select: { id: true, state: true },
+  });
+  if (!kpi) return { status: "error", code: "KPI_NOT_FOUND", message: "KPI not found." };
+  if (kpi.state === "ARCHIVED") {
+    return { status: "error", code: "KPI_ARCHIVED", message: "Cannot modify an archived KPI." };
+  }
+
+  const record = await prisma.kpiTargetUnit.findUnique({
+    where: { kpiDefinitionId_unitId: { kpiDefinitionId: kpi.id, unitId } },
+  });
+  if (!record) return { status: "error", code: "TARGET_UNIT_NOT_FOUND", message: "Target unit not found." };
+
+  if (targetShare !== null && targetShare !== undefined) {
+    if (targetShare <= 0 || targetShare > 100) {
+      return { status: "error", code: "TARGET_SHARE_INVALID", message: "Target share must be between 0 and 100." };
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.kpiTargetUnit.update({
+      where: { kpiDefinitionId_unitId: { kpiDefinitionId: kpi.id, unitId } },
+      data: { targetShare, notes },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "KpiTargetUnit",
+        targetId: kpi.id,
+        action: "UPDATE",
+        metadata: { unitId, targetShare },
+      },
+    });
+  });
+
+  return { status: "success", message: "Target unit updated." };
 }

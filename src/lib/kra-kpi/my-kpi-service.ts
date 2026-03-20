@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { getUserAssignments } from "@/lib/org-structure/roles-service";
-import { computeReviewCycles } from "./period-service";
+import {
+  computeReviewCycles,
+  isDateWithinInclusiveUtcRange,
+} from "./period-service";
 import type {
   MyKpiContext,
   MyAllocationView,
@@ -56,10 +59,7 @@ function findCycleNumberForDate(
   );
 
   const cycle = cycles.find(
-    (item) =>
-      reportingDate >= item.startDate &&
-      (reportingDate < item.endDate ||
-        reportingDate.getTime() === item.endDate.getTime()),
+    (item) => isDateWithinInclusiveUtcRange(reportingDate, item.startDate, item.endDate),
   );
 
   return cycle?.cycleNumber ?? 1;

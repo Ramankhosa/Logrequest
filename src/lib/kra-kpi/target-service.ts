@@ -166,7 +166,6 @@ async function validateTopLevelAllocationCap(input: {
   if (
     capValue == null ||
     (input.measurementType !== "NUMERIC" &&
-      input.measurementType !== "PERCENTAGE" &&
       input.measurementType !== "CURRENCY")
   ) {
     return null;
@@ -199,6 +198,98 @@ async function validateTopLevelAllocationCap(input: {
   }
 
   return null;
+}
+
+function getTargetValueScale(value: number): number {
+  const asString = value.toString();
+  if (asString.includes("e-")) {
+    const [, exponent = "0"] = asString.split("e-");
+    return 10 ** Math.min(Number(exponent), 4);
+  }
+
+  const [, decimal = ""] = asString.split(".");
+  return 10 ** Math.min(decimal.length, 4);
+}
+
+function distributeExactTotal(total: number, weights: number[]): number[] {
+  if (weights.length === 0) {
+    return [];
+  }
+
+  const scale = getTargetValueScale(total);
+  const scaledTotal = Math.round(total * scale);
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight <= 0) {
+    return new Array(weights.length).fill(0);
+  }
+
+  const provisional = weights.map((weight, index) => {
+    const raw = (scaledTotal * weight) / totalWeight;
+    const base = Math.floor(raw);
+    return {
+      index,
+      base,
+      remainder: raw - base,
+    };
+  });
+
+  let leftover = scaledTotal - provisional.reduce((sum, item) => sum + item.base, 0);
+  provisional
+    .sort((left, right) => {
+      if (right.remainder !== left.remainder) {
+        return right.remainder - left.remainder;
+      }
+      return left.index - right.index;
+    })
+    .forEach((item) => {
+      if (leftover <= 0) {
+        return;
+      }
+      item.base += 1;
+      leftover -= 1;
+    });
+
+  return provisional
+    .sort((left, right) => left.index - right.index)
+    .map((item) => item.base / scale);
+}
+
+function buildTargetUnitWeights(
+  targetUnits: Array<{ targetShare: number | null }>,
+): number[] {
+  if (targetUnits.every((targetUnit) => targetUnit.targetShare == null)) {
+    return targetUnits.map(() => 1);
+  }
+
+  const explicitTotal = targetUnits.reduce(
+    (sum, targetUnit) => sum + (targetUnit.targetShare ?? 0),
+    0,
+  );
+  const unspecifiedCount = targetUnits.filter((targetUnit) => targetUnit.targetShare == null).length;
+  const fallbackShare =
+    unspecifiedCount > 0 && explicitTotal < 100
+      ? (100 - explicitTotal) / unspecifiedCount
+      : 1;
+
+  return targetUnits.map((targetUnit) => targetUnit.targetShare ?? fallbackShare);
+}
+
+function serializeTargetPayload(target: {
+  targetValue?: number;
+  targetDate?: Date;
+  targetMilestone?: string;
+  targetGrade?: string;
+  targetBoolean?: boolean;
+  targetRating?: number;
+}) {
+  return {
+    ...(target.targetValue !== undefined && { targetValue: target.targetValue }),
+    ...(target.targetDate !== undefined && { targetDate: target.targetDate.toISOString() }),
+    ...(target.targetMilestone !== undefined && { targetMilestone: target.targetMilestone }),
+    ...(target.targetGrade !== undefined && { targetGrade: target.targetGrade }),
+    ...(target.targetBoolean !== undefined && { targetBoolean: target.targetBoolean }),
+    ...(target.targetRating !== undefined && { targetRating: target.targetRating }),
+  };
 }
 
 // ── List Allocations ─────────────────────────────────────────────────────────
@@ -272,7 +363,7 @@ export async function createAllocation(
   actorRole: Role
 ): Promise<KraKpiActionResult> {
   if (!isAdminOrOwner(actorRole)) {
-    return { status: "error", message: "Insufficient permissions." };
+    return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
   }
 
   const parsed = createAllocationSchema.safeParse(input);
@@ -834,11 +925,12 @@ async function createAllocationRecords(input: {
     where: { id: periodId, tenantId },
   });
   if (!period) {
-    return { status: "error", message: "Period not found." };
+    return { status: "error", code: "PERIOD_NOT_FOUND", message: "Period not found." };
   }
   if (period.state !== "OPEN" && period.state !== "IN_PROGRESS") {
     return {
       status: "error",
+      code: "PERIOD_STATE_CONFLICT",
       message: `Cannot allocate targets in "${period.state}" period. Period must be OPEN or IN_PROGRESS.`,
     };
   }
@@ -852,13 +944,21 @@ async function createAllocationRecords(input: {
     },
   });
   if (!kpi) {
-    return { status: "error", message: "KPI not found." };
+    return { status: "error", code: "KPI_NOT_FOUND", message: "KPI not found." };
   }
   if (kpi.state !== "ACTIVE") {
-    return { status: "error", message: "Cannot allocate targets for a KPI that is not ACTIVE." };
+    return {
+      status: "error",
+      code: "KPI_INACTIVE",
+      message: "Cannot allocate targets for a KPI that is not ACTIVE.",
+    };
   }
   if (kpi.kraDefinition.state !== "ACTIVE") {
-    return { status: "error", message: "Cannot allocate targets while the parent KRA is not ACTIVE." };
+    return {
+      status: "error",
+      code: "KRA_INACTIVE",
+      message: "Cannot allocate targets while the parent KRA is not ACTIVE.",
+    };
   }
 
   for (const allocation of allocations) {
@@ -1027,6 +1127,165 @@ async function createAllocationRecords(input: {
       allocations.length === 1
         ? "Target allocated successfully."
         : `${allocations.length} target allocations created successfully.`,
+  };
+}
+
+// ── Allocate to Target Units (R2) ────────────────────────────────────────────
+
+export async function allocateToTargetUnits(
+  kpiId: string,
+  periodId: string,
+  tenantId: string,
+  totalTarget: {
+    targetValue?: number;
+    targetDate?: Date;
+    targetMilestone?: string;
+    targetGrade?: string;
+    targetBoolean?: boolean;
+    targetRating?: number;
+  },
+  actorUserId: string,
+  actorRole: Role
+): Promise<KraKpiActionResult> {
+  if (!isAdminOrOwner(actorRole)) {
+    return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
+  }
+
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiId, kraDefinition: { tenantId } },
+    include: {
+      targetUnits: {
+        include: { unit: { select: { name: true } } },
+        orderBy: { createdAt: "asc" },
+      },
+      kraDefinition: { select: { state: true } },
+    },
+  });
+  if (!kpi) return { status: "error", code: "KPI_NOT_FOUND", message: "KPI not found." };
+  if (kpi.state !== "ACTIVE") return { status: "error", code: "KPI_INACTIVE", message: "KPI must be ACTIVE." };
+  if (kpi.kraDefinition.state !== "ACTIVE") {
+    return { status: "error", code: "KRA_INACTIVE", message: "Parent KRA must be ACTIVE." };
+  }
+  if (kpi.targetUnits.length === 0) {
+    return { status: "error", code: "TARGET_UNITS_NOT_CONFIGURED", message: "No target units configured for this KPI." };
+  }
+
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+  });
+  if (!period) return { status: "error", code: "PERIOD_NOT_FOUND", message: "Period not found." };
+  if (period.state !== "OPEN" && period.state !== "IN_PROGRESS") {
+    return {
+      status: "error",
+      code: "PERIOD_STATE_CONFLICT",
+      message: `Period must be OPEN or IN_PROGRESS (currently: ${period.state}).`,
+    };
+  }
+
+  const existingAllocations = await prisma.targetAllocation.findMany({
+    where: {
+      tenantId,
+      periodId,
+      kpiDefinitionId: kpiId,
+      assignedToUnitId: { in: kpi.targetUnits.map((targetUnit) => targetUnit.unitId) },
+    },
+    select: { assignedToUnitId: true },
+  });
+  const existingUnitIds = new Set(
+    existingAllocations
+      .map((allocation) => allocation.assignedToUnitId)
+      .filter((unitId): unitId is string => !!unitId),
+  );
+
+  let distributedValues: number[] | null = null;
+  if (SUMMABLE_TYPES.includes(kpi.measurementType) && totalTarget.targetValue != null) {
+    const weights = buildTargetUnitWeights(kpi.targetUnits);
+    distributedValues = distributeExactTotal(totalTarget.targetValue, weights);
+  }
+
+  const allocationsToCreate = kpi.targetUnits
+    .map((targetUnit, index) => {
+      const computedTarget =
+        distributedValues == null
+          ? totalTarget
+          : { ...totalTarget, targetValue: distributedValues[index] };
+
+      return {
+        unitId: targetUnit.unitId,
+        payload: {
+          assignedToUnitId: targetUnit.unitId,
+          ...(computedTarget.targetValue !== undefined && { targetValue: computedTarget.targetValue }),
+          ...(computedTarget.targetDate !== undefined && { targetDate: computedTarget.targetDate }),
+          ...(computedTarget.targetMilestone !== undefined && {
+            targetMilestone: computedTarget.targetMilestone as "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED",
+          }),
+          ...(computedTarget.targetGrade !== undefined && {
+            targetGrade: computedTarget.targetGrade as "OUTSTANDING" | "VERY_GOOD" | "GOOD" | "SATISFACTORY" | "NEEDS_IMPROVEMENT" | "POOR",
+          }),
+          ...(computedTarget.targetBoolean !== undefined && { targetBoolean: computedTarget.targetBoolean }),
+          ...(computedTarget.targetRating !== undefined && { targetRating: computedTarget.targetRating }),
+        },
+      };
+    })
+    .filter((allocation) => !existingUnitIds.has(allocation.unitId));
+
+  const skipped = kpi.targetUnits.length - allocationsToCreate.length;
+  if (allocationsToCreate.length === 0) {
+    await prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "KpiTargetUnitAllocation",
+        targetId: `${kpiId}:${periodId}`,
+        action: "ALLOCATE_TO_TARGET_UNITS",
+        metadata: {
+          createdCount: 0,
+          skippedCount: skipped,
+          kpiId,
+          periodId,
+          submittedTarget: serializeTargetPayload(totalTarget),
+        },
+      },
+    });
+
+    return { status: "success", message: `All ${skipped} target units already have allocations.` };
+  }
+
+  const result = await createAllocationRecords({
+    tenantId,
+    periodId,
+    kpiDefinitionId: kpiId,
+    allocations: allocationsToCreate.map((allocation) => allocation.payload),
+    actorUserId,
+    actorRole,
+  });
+  if (result.status !== "success") {
+    return result;
+  }
+
+  const created = allocationsToCreate.length;
+  await prisma.auditLog.create({
+    data: {
+      tenantId,
+      actorUserId,
+      actorRole,
+      targetType: "KpiTargetUnitAllocation",
+      targetId: `${kpiId}:${periodId}`,
+      action: "ALLOCATE_TO_TARGET_UNITS",
+      metadata: {
+        createdCount: created,
+        skippedCount: skipped,
+        kpiId,
+        periodId,
+        submittedTarget: serializeTargetPayload(totalTarget),
+      },
+    },
+  });
+
+  return {
+    status: "success",
+    message: `${created} allocation(s) created${skipped > 0 ? `, ${skipped} skipped (already exist)` : ""}.`,
   };
 }
 

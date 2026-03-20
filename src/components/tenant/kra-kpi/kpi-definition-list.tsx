@@ -42,6 +42,14 @@ type KpiView = {
   sortOrder: number;
   guidanceNotes: string | null;
   allocationCount: number;
+  // R2 fields
+  keyUnitId?: string | null;
+  keyUnitName?: string | null;
+  finalUnitId?: string | null;
+  finalUnitName?: string | null;
+  targetUnitCount?: number;
+  isTeamKpi?: boolean;
+  evidenceRequired?: boolean;
 };
 
 type UnitOption = { id: string; name: string };
@@ -314,6 +322,21 @@ export function KpiDefinitionList({
                         Per capita
                       </span>
                     )}
+                    {kpi.isTeamKpi && (
+                      <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-indigo-600">
+                        Team KPI
+                      </span>
+                    )}
+                    {(kpi.targetUnitCount ?? 0) > 0 && (
+                      <span className="rounded-md bg-cyan-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-cyan-700">
+                        {kpi.targetUnitCount} target dept{kpi.targetUnitCount !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {kpi.keyUnitName && (
+                      <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-700">
+                        Key: {kpi.keyUnitName}
+                      </span>
+                    )}
                   </div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
                     <span className="font-semibold text-slate-600">
@@ -332,6 +355,9 @@ export function KpiDefinitionList({
                       </span>
                     )}
                     <span>{kpi.allocationCount} allocation(s)</span>
+                    {(kpi.targetUnitCount ?? 0) > 0 && (
+                      <span>{kpi.targetUnitCount} target dept(s)</span>
+                    )}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">

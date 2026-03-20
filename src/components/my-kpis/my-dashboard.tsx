@@ -1,14 +1,15 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { Clock, AlertTriangle } from "lucide-react";
-import type { MyDashboardSummary } from "@/lib/kra-kpi/shared";
+import { Clock, AlertTriangle, Calendar } from "lucide-react";
+import type { MyDashboardSummary, StoredReviewCycleView } from "@/lib/kra-kpi/shared";
 
 type Props = {
   summary: MyDashboardSummary | null;
+  currentCycle?: StoredReviewCycleView | null;
 };
 
-export function MyDashboard({ summary }: Props) {
+export function MyDashboard({ summary, currentCycle }: Props) {
   if (!summary) {
     return (
       <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 py-12 text-center">
@@ -28,6 +29,10 @@ export function MyDashboard({ summary }: Props) {
         <h3 className="text-lg font-semibold text-gray-900">Allocated KPIs</h3>
         <p className="text-sm text-gray-500">Current weighted score from your allocated targets.</p>
       </div>
+
+      {currentCycle && (
+        <CurrentCycleBadge cycle={currentCycle} />
+      )}
 
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <div className="flex items-center justify-between mb-4">
@@ -213,6 +218,29 @@ function StatusCard({
     <div className={cn("rounded-lg p-3 text-center", color)}>
       <div className="text-2xl font-bold">{value}</div>
       <div className="text-xs mt-1">{label}</div>
+    </div>
+  );
+}
+
+function CurrentCycleBadge({ cycle }: { cycle: StoredReviewCycleView }) {
+  const now = new Date();
+  const endDate = new Date(cycle.endDate);
+  const daysRemaining = Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  const endLabel = endDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-blue-100 bg-blue-50/50 px-4 py-3">
+      <Calendar className="h-5 w-5 text-blue-500 shrink-0" />
+      <div>
+        <p className="text-sm font-medium text-blue-900">
+          Current: {cycle.label} (ends {endLabel})
+        </p>
+        <p className="text-xs text-blue-600">
+          {daysRemaining > 0
+            ? `${daysRemaining} day${daysRemaining !== 1 ? "s" : ""} remaining`
+            : "Cycle ending today"}
+        </p>
+      </div>
     </div>
   );
 }
