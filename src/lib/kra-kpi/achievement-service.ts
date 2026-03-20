@@ -3,7 +3,6 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { canRecord } from "./assignee-access";
 import { getMyKpiContext } from "./my-kpi-service";
-import { getUserAssignments } from "@/lib/org-structure/roles-service";
 import { computeReviewCycles } from "./period-service";
 import type {
   KraKpiActionResult,
@@ -135,20 +134,107 @@ async function getAchievementAssigneeUnitIds(
     } | null;
   },
 ): Promise<string[]> {
+  if (!achievement.targetAllocation) {
+    const primaryUnitId = await getPrimaryMemberUnitId(
+      tenantId,
+      achievement.reportedByUserId,
+    );
+    return primaryUnitId ? [primaryUnitId] : [];
+  }
+
   const unitIds = new Set<string>();
 
   if (achievement.targetAllocation?.assignedToUnitId) {
     unitIds.add(achievement.targetAllocation.assignedToUnitId);
   }
 
-  const assigneeUserId =
-    achievement.targetAllocation?.assignedToUserId ?? achievement.reportedByUserId;
-  const assignments = await getUserAssignments(tenantId, assigneeUserId);
-  for (const assignment of assignments) {
-    unitIds.add(assignment.unitId);
+  if (!achievement.targetAllocation?.assignedToUnitId) {
+    const assigneeUserId =
+      achievement.targetAllocation?.assignedToUserId ?? achievement.reportedByUserId;
+    const primaryUnitId = await getPrimaryMemberUnitId(tenantId, assigneeUserId);
+    if (primaryUnitId) {
+      unitIds.add(primaryUnitId);
+    }
   }
 
   return [...unitIds];
+}
+
+async function getPrimaryMemberUnitId(
+  tenantId: string,
+  userId: string,
+): Promise<string | null> {
+  const publishedVersion = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId,
+      state: { in: ["PUBLISHED", "VALIDATED"] },
+    },
+    orderBy: { versionNumber: "desc" },
+    select: { id: true },
+  });
+
+  if (publishedVersion) {
+    const primaryAssignment = await prisma.userOrgAssignment.findFirst({
+      where: {
+        versionId: publishedVersion.id,
+        userId,
+        isPrimary: true,
+      },
+      select: { unitId: true },
+    });
+
+    if (primaryAssignment?.unitId) {
+      return primaryAssignment.unitId;
+    }
+
+    const fallbackAssignment = await prisma.userOrgAssignment.findFirst({
+      where: {
+        versionId: publishedVersion.id,
+        userId,
+      },
+      orderBy: { isPrimary: "desc" },
+      select: { unitId: true },
+    });
+
+    if (fallbackAssignment?.unitId) {
+      return fallbackAssignment.unitId;
+    }
+  }
+
+  const context = await getMyKpiContext(tenantId, userId);
+  return context.memberOfUnits[0]?.unitId ?? null;
+}
+
+async function findExistingAdditionalAchievementForCycle(input: {
+  tenantId: string;
+  periodId: string;
+  kpiDefinitionId: string;
+  reportedByUserId: string;
+  reportingDate: Date;
+  period: { startDate: Date; endDate: Date; reviewFrequency: string };
+  excludeAchievementId?: string;
+}) {
+  const cycleNumber = findCycleNumberForDate(input.reportingDate, input.period);
+  const achievements = await prisma.achievement.findMany({
+    where: {
+      tenantId: input.tenantId,
+      periodId: input.periodId,
+      kpiDefinitionId: input.kpiDefinitionId,
+      reportedByUserId: input.reportedByUserId,
+      targetAllocationId: null,
+      ...(input.excludeAchievementId ? { id: { not: input.excludeAchievementId } } : {}),
+    },
+    select: {
+      id: true,
+      state: true,
+      reportingDate: true,
+    },
+  });
+
+  return achievements.find(
+    (achievement) =>
+      findCycleNumberForDate(achievement.reportingDate, input.period) === cycleNumber,
+  ) ?? null;
 }
 
 async function canActorRecommendAchievement(
@@ -657,8 +743,8 @@ export async function submitForVerification(
     };
   }
 
-  if (achievement.reportedByUserId !== actorUserId && !isAdminOrOwner(actorRole)) {
-    return { status: "error", message: "Only the reporter or admin can submit." };
+  if (achievement.reportedByUserId !== actorUserId) {
+    return { status: "error", message: "Only the reporter can submit." };
   }
 
   const actor = await prisma.user.findUnique({
@@ -718,32 +804,21 @@ export async function submitForVerification(
       if (alloc?.assignedToUnitId) {
         deptHeadUserId = await resolveUnitHead(tenantId, alloc.assignedToUnitId);
       } else if (alloc?.assignedToUserId) {
-        // Find units the assignee belongs to and get their head
-        const assignments = await prisma.orgRoleAssignment.findMany({
-          where: {
-            userId: alloc.assignedToUserId,
-            isActive: true,
-            version: { tenantId, state: { in: ["PUBLISHED", "VALIDATED"] } },
-          },
-          select: { unitId: true },
-          take: 1,
-        });
-        if (assignments[0]) {
-          deptHeadUserId = await resolveUnitHead(tenantId, assignments[0].unitId);
+        const primaryUnitId = await getPrimaryMemberUnitId(
+          tenantId,
+          alloc.assignedToUserId,
+        );
+        if (primaryUnitId) {
+          deptHeadUserId = await resolveUnitHead(tenantId, primaryUnitId);
         }
       } else {
         // Additional achievement — use reporter's primary unit
-        const assignments = await prisma.orgRoleAssignment.findMany({
-          where: {
-            userId: fullAchievement.reportedByUserId,
-            isActive: true,
-            version: { tenantId, state: { in: ["PUBLISHED", "VALIDATED"] } },
-          },
-          select: { unitId: true },
-          take: 1,
-        });
-        if (assignments[0]) {
-          deptHeadUserId = await resolveUnitHead(tenantId, assignments[0].unitId);
+        const primaryUnitId = await getPrimaryMemberUnitId(
+          tenantId,
+          fullAchievement.reportedByUserId,
+        );
+        if (primaryUnitId) {
+          deptHeadUserId = await resolveUnitHead(tenantId, primaryUnitId);
         }
       }
 
@@ -1337,7 +1412,13 @@ export async function recordAdditionalAchievement(
 
   // Verify KPI
   const kpi = await prisma.kpiDefinition.findFirst({
-    where: { id: data.kpiDefinitionId, kraDefinition: { tenantId } },
+    where: {
+      id: data.kpiDefinitionId,
+      kraDefinition: {
+        tenantId,
+        periodId: data.periodId,
+      },
+    },
     include: { kraDefinition: { select: { state: true } } },
   });
   if (!kpi) {
@@ -1371,21 +1452,19 @@ export async function recordAdditionalAchievement(
     };
   }
 
-  // Block if user already has an existing (non-rejected) additional achievement for this KPI
-  const existingAdditional = await prisma.achievement.findFirst({
-    where: {
-      tenantId,
-      periodId: data.periodId,
-      kpiDefinitionId: data.kpiDefinitionId,
-      reportedByUserId: actorUserId,
-      targetAllocationId: null,
-      state: { not: "REJECTED" },
-    },
+  const existingAdditional = await findExistingAdditionalAchievementForCycle({
+    tenantId,
+    periodId: data.periodId,
+    kpiDefinitionId: data.kpiDefinitionId,
+    reportedByUserId: actorUserId,
+    reportingDate,
+    period,
   });
   if (existingAdditional) {
     return {
       status: "error",
-      message: "You already have an additional achievement for this KPI. Edit the existing one.",
+      message:
+        "You already have an additional achievement for this KPI in the current review cycle. Edit the existing one.",
     };
   }
 

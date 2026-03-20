@@ -1,11 +1,24 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Plus, Search, ChevronDown, CheckCircle2, Clock, XCircle, AlertCircle } from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { AchievementView, AchievementFormConfig, AchievementFieldConfig } from "@/lib/kra-kpi/shared";
+import { useEffect, useState } from "react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  Clock,
+  Eye,
+  Pencil,
+  Search,
+  Undo2,
+  XCircle,
+} from "lucide-react";
+import type { AchievementFormConfig, AdditionalAchievementView } from "@/lib/kra-kpi/shared";
 import { ACHIEVEMENT_TEMPLATES } from "@/lib/kra-kpi/shared";
-import { DynamicFormRenderer } from "./dynamic-form-renderer";
+import {
+  MyAchievementForm,
+  type AdditionalAchievementFormContext,
+} from "./my-achievement-form";
+import { MyAchievementTrail } from "./my-achievement-trail";
 
 type AvailableKpiView = {
   kpiId: string;
@@ -22,8 +35,12 @@ type AvailableKpiView = {
   categoryLabel: string | null;
   startingUnitId: string;
   startingUnitName: string;
-  isAllocated: boolean;
-  hasExistingAdditional: boolean;
+  defaultTarget: number | null;
+};
+
+type CategoryOption = {
+  key: string;
+  label: string;
 };
 
 type Props = {
@@ -32,290 +49,278 @@ type Props = {
   onRefresh?: () => void;
 };
 
-function formatDate(d: Date | string | null): string {
-  if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+function formatDate(value: Date | string | null) {
+  if (!value) return "—";
+  return new Date(value).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatActual(achievement: AdditionalAchievementView) {
+  if (achievement.actualValue != null) return String(achievement.actualValue);
+  if (achievement.actualDate) return formatDate(achievement.actualDate);
+  if (achievement.actualMilestone) return achievement.actualMilestone.replace(/_/g, " ");
+  if (achievement.actualGrade) return achievement.actualGrade.replace(/_/g, " ");
+  if (achievement.actualBoolean != null) return achievement.actualBoolean ? "Yes" : "No";
+  if (achievement.actualRating != null) return `${achievement.actualRating}/10`;
+  return "—";
+}
+
+function renderFormValue(value: unknown) {
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
 }
 
 function AchievementStateBadge({ state }: { state: string }) {
   switch (state) {
     case "DRAFT":
-      return <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700"><Clock className="h-3 w-3" />Draft</span>;
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+          <Clock className="h-3 w-3" />
+          Draft
+        </span>
+      );
     case "SUBMITTED":
-      return <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700"><Clock className="h-3 w-3" />Submitted</span>;
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+          <Clock className="h-3 w-3" />
+          Submitted
+        </span>
+      );
     case "RECOMMENDED":
-      return <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700"><CheckCircle2 className="h-3 w-3" />Recommended</span>;
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700">
+          <CheckCircle2 className="h-3 w-3" />
+          Recommended
+        </span>
+      );
     case "VERIFIED":
-      return <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700"><CheckCircle2 className="h-3 w-3" />Verified</span>;
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+          <CheckCircle2 className="h-3 w-3" />
+          Verified
+        </span>
+      );
     case "REJECTED":
-      return <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700"><XCircle className="h-3 w-3" />Not Approved</span>;
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+          <XCircle className="h-3 w-3" />
+          Not Approved
+        </span>
+      );
     default:
-      return <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{state}</span>;
+      return (
+        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
+          {state}
+        </span>
+      );
   }
 }
 
-type RecordFormProps = {
-  kpi: AvailableKpiView;
-  periodId: string;
-  onDone: () => void;
-  onCancel: () => void;
-};
-
-function RecordAdditionalForm({ kpi, periodId, onDone, onCancel }: RecordFormProps) {
-  const genericFields = ACHIEVEMENT_TEMPLATES.GENERIC.fields;
-  const fields: AchievementFieldConfig[] = kpi.achievementFormConfig?.fields ?? genericFields;
-  const templateLabel =
-    kpi.achievementTemplateKey && ACHIEVEMENT_TEMPLATES[kpi.achievementTemplateKey]
-      ? ACHIEVEMENT_TEMPLATES[kpi.achievementTemplateKey].label
-      : "Achievement Details";
-
-  const [actualValue, setActualValue] = useState<number | undefined>(undefined);
-  const [formData, setFormData] = useState<Record<string, unknown>>({});
-  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleFormFieldChange = (key: string, value: unknown) => {
-    setFormData((prev) => ({ ...prev, [key]: value }));
-    if (formErrors[key]) {
-      setFormErrors((prev) => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-    }
+function toFormContextFromKpi(kpi: AvailableKpiView): AdditionalAchievementFormContext {
+  return {
+    periodId: "",
+    kpiDefinitionId: kpi.kpiId,
+    kpiTitle: kpi.kpiTitle,
+    kraTitle: kpi.kraTitle,
+    categoryLabel: kpi.categoryLabel,
+    measurementType: kpi.measurementType as AdditionalAchievementFormContext["measurementType"],
+    unitLabel: kpi.unitLabel,
+    defaultTarget: kpi.defaultTarget,
+    startingUnitName: kpi.startingUnitName,
+    achievementTemplateKey: kpi.achievementTemplateKey,
+    achievementFormConfig: kpi.achievementFormConfig,
+    achievement: null,
   };
+}
 
-  const handleSave = async (submitAfter: boolean) => {
-    setError(null);
-    const errors: Record<string, string> = {};
-    for (const f of fields) {
-      if (f.required) {
-        const val = formData[f.key];
-        if (val == null || val === "" || (Array.isArray(val) && val.length === 0)) {
-          errors[f.key] = `${f.label} is required`;
-        }
-      }
-    }
-    if (Object.keys(errors).length > 0) {
-      setFormErrors(errors);
-      return;
-    }
-
-    const setter = submitAfter ? setSubmitting : setSaving;
-    setter(true);
-
-    const body = {
-      periodId,
-      kpiDefinitionId: kpi.kpiId,
-      ...(actualValue !== undefined && { actualValue }),
-      achievementFormData: Object.keys(formData).length > 0 ? formData : undefined,
-    };
-
-    try {
-      const res = await fetch("/api/tenant/kra-kpi/my/additional-achievements", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (data.status === "error") {
-        setError(data.message);
-        setter(false);
-        return;
-      }
-
-      if (submitAfter && data.id) {
-        const submitRes = await fetch(`/api/tenant/kra-kpi/achievements/${data.id as string}/submit`, {
-          method: "POST",
-        });
-        const submitData = await submitRes.json();
-        if (submitData.status === "error") {
-          setError(submitData.message);
-          setter(false);
-          return;
-        }
-      }
-
-      setter(false);
-      onDone();
-    } catch {
-      setError("An unexpected error occurred.");
-      setter(false);
-    }
+function toFormContextFromAchievement(
+  achievement: AdditionalAchievementView,
+): AdditionalAchievementFormContext {
+  return {
+    periodId: achievement.periodId,
+    kpiDefinitionId: achievement.kpiDefinitionId,
+    kpiTitle: achievement.kpiTitle,
+    kraTitle: achievement.kraTitle,
+    categoryLabel: achievement.categoryLabel,
+    measurementType: achievement.measurementType,
+    unitLabel: achievement.unitLabel,
+    defaultTarget: achievement.defaultTarget,
+    startingUnitName: achievement.startingUnitName,
+    achievementTemplateKey: achievement.achievementTemplateKey,
+    achievementFormConfig: achievement.achievementFormConfig,
+    achievement,
   };
-
-  return (
-    <div className="rounded-lg border border-gray-200 bg-white p-6 space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-base font-semibold text-gray-900">{kpi.kpiTitle}</h3>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {kpi.kraTitle} · Source: {kpi.startingUnitName}
-          </p>
-        </div>
-        <button
-          onClick={onCancel}
-          className="text-sm text-gray-500 hover:text-gray-700"
-        >
-          Cancel
-        </button>
-      </div>
-
-      {kpi.measurementType === "NUMERIC" || kpi.measurementType === "PERCENTAGE" || kpi.measurementType === "CURRENCY" ? (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Actual Value {kpi.unitLabel ? `(${kpi.unitLabel})` : ""}
-          </label>
-          <input
-            type="number"
-            value={actualValue ?? ""}
-            onChange={(e) => setActualValue(e.target.value ? Number(e.target.value) : undefined)}
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Enter actual value"
-          />
-          {kpi.achievementFormConfig == null && (
-            <p className="mt-1 text-xs text-gray-400">
-              {kpi.kpiDescription ?? ""}
-            </p>
-          )}
-        </div>
-      ) : null}
-
-      {/* Dynamic form */}
-      <div>
-        <h4 className="text-sm font-medium text-gray-700 mb-3">{templateLabel}</h4>
-        <DynamicFormRenderer
-          fields={fields}
-          values={formData}
-          errors={formErrors}
-          onChange={handleFormFieldChange}
-        />
-      </div>
-
-      {kpi.achievementFormConfig == null && (
-        <p className="text-xs text-amber-600 bg-amber-50 rounded p-2">
-          Score will be assessed by the verifier (no default target configured).
-        </p>
-      )}
-
-      {error && (
-        <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
-      <div className="flex gap-3">
-        <button
-          onClick={() => { void handleSave(false); }}
-          disabled={saving || submitting}
-          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
-        >
-          {saving ? "Saving..." : "Save Draft"}
-        </button>
-        <button
-          onClick={() => { void handleSave(true); }}
-          disabled={saving || submitting}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
-        >
-          {submitting ? "Submitting..." : "Save & Submit"}
-        </button>
-      </div>
-    </div>
-  );
 }
 
 export function AdditionalAchievementsTab({ periodId, periodState, onRefresh }: Props) {
   const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [kpis, setKpis] = useState<AvailableKpiView[]>([]);
-  const [myAchievements, setMyAchievements] = useState<AchievementView[]>([]);
+  const [myAchievements, setMyAchievements] = useState<AdditionalAchievementView[]>([]);
   const [loadingKpis, setLoadingKpis] = useState(true);
   const [loadingAchievements, setLoadingAchievements] = useState(true);
-  const [recordingKpi, setRecordingKpi] = useState<AvailableKpiView | null>(null);
-  const [searchInput, setSearchInput] = useState("");
+  const [kpiReloadKey, setKpiReloadKey] = useState(0);
+  const [achievementReloadKey, setAchievementReloadKey] = useState(0);
+  const [formContext, setFormContext] = useState<AdditionalAchievementFormContext | null>(null);
+  const [expandedAchievementId, setExpandedAchievementId] = useState<string | null>(null);
+  const [withdrawingId, setWithdrawingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const canRecord = periodState === "IN_PROGRESS" || periodState === "UNDER_REVIEW";
 
-  const fetchKpis = useCallback(async () => {
-    setLoadingKpis(true);
-    const params = new URLSearchParams({ periodId });
-    if (search) params.set("search", search);
-    if (categoryFilter) params.set("category", categoryFilter);
-    const res = await fetch(`/api/tenant/kra-kpi/my/available-kpis?${params.toString()}`);
-    if (res.ok) {
-      const data = await res.json() as AvailableKpiView[];
-      setKpis(data);
-    }
-    setLoadingKpis(false);
-  }, [periodId, search, categoryFilter]);
+  useEffect(() => {
+    let cancelled = false;
 
-  const fetchAchievements = useCallback(async () => {
-    setLoadingAchievements(true);
-    const res = await fetch(`/api/tenant/kra-kpi/my/additional-achievements?periodId=${periodId}`);
-    if (res.ok) {
-      const data = await res.json() as AchievementView[];
-      setMyAchievements(data);
+    async function loadKpis() {
+      const params = new URLSearchParams({ periodId });
+      if (search) params.set("search", search);
+      if (categoryFilter) params.set("category", categoryFilter);
+
+      try {
+        const response = await fetch(
+          `/api/tenant/kra-kpi/my/available-kpis?${params.toString()}`,
+        );
+        if (!response.ok) return;
+        const data = (await response.json()) as AvailableKpiView[];
+        if (!cancelled) {
+          setKpis(data);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingKpis(false);
+        }
+      }
     }
-    setLoadingAchievements(false);
-  }, [periodId]);
+
+    void loadKpis();
+    return () => {
+      cancelled = true;
+    };
+  }, [periodId, search, categoryFilter, kpiReloadKey]);
 
   useEffect(() => {
-    void fetchKpis();
-  }, [fetchKpis]);
+    let cancelled = false;
 
-  useEffect(() => {
-    void fetchAchievements();
-  }, [fetchAchievements]);
+    async function loadAchievements() {
+      try {
+        const response = await fetch(
+          `/api/tenant/kra-kpi/my/additional-achievements?periodId=${periodId}`,
+        );
+        if (!response.ok) return;
+        const data = (await response.json()) as AdditionalAchievementView[];
+        if (!cancelled) {
+          setMyAchievements(data);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingAchievements(false);
+        }
+      }
+    }
 
-  function handleDone() {
-    setRecordingKpi(null);
-    void fetchKpis();
-    void fetchAchievements();
-    onRefresh?.();
+    void loadAchievements();
+    return () => {
+      cancelled = true;
+    };
+  }, [periodId, achievementReloadKey]);
+
+  const categoriesMap = new Map<string, CategoryOption>();
+  for (const kpi of kpis) {
+    if (!kpi.categoryKey || !kpi.categoryLabel) continue;
+    categoriesMap.set(kpi.categoryKey, {
+      key: kpi.categoryKey,
+      label: kpi.categoryLabel,
+    });
   }
+  const categories = [...categoriesMap.values()].sort((a, b) =>
+    a.label.localeCompare(b.label),
+  );
 
-  // Derive categories from kpis
-  const categories = [...new Set(kpis.map((k) => k.categoryLabel).filter((c): c is string => Boolean(c)))].sort();
-
-  // Group kpis by KRA
   const kraMap = new Map<string, { kraTitle: string; kpis: AvailableKpiView[] }>();
   for (const kpi of kpis) {
-    if (!kraMap.has(kpi.kraId)) {
-      kraMap.set(kpi.kraId, { kraTitle: kpi.kraTitle, kpis: [] });
+    const existing = kraMap.get(kpi.kraId);
+    if (existing) {
+      existing.kpis.push(kpi);
+    } else {
+      kraMap.set(kpi.kraId, { kraTitle: kpi.kraTitle, kpis: [kpi] });
     }
-    kraMap.get(kpi.kraId)!.kpis.push(kpi);
   }
 
-  function handleSearchSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  const handleDone = () => {
+    setFormContext(null);
+    setActionError(null);
+    setLoadingKpis(true);
+    setLoadingAchievements(true);
+    setKpiReloadKey((value) => value + 1);
+    setAchievementReloadKey((value) => value + 1);
+    onRefresh?.();
+  };
+
+  const handleSearchSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoadingKpis(true);
     setSearch(searchInput.trim());
-  }
+  };
 
-  if (recordingKpi) {
+  const handleCategoryChange = (nextValue: string) => {
+    setLoadingKpis(true);
+    setCategoryFilter(nextValue);
+  };
+
+  const handleWithdraw = async (achievementId: string) => {
+    setActionError(null);
+    setWithdrawingId(achievementId);
+
+    try {
+      const response = await fetch("/api/tenant/kra-kpi/my/withdraw", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ achievementId }),
+      });
+      const data = (await response.json()) as { status: string; message: string };
+      if (data.status === "error") {
+        setActionError(data.message);
+        setWithdrawingId(null);
+        return;
+      }
+
+      setWithdrawingId(null);
+      setLoadingAchievements(true);
+      setAchievementReloadKey((value) => value + 1);
+      onRefresh?.();
+    } catch {
+      setActionError("Failed to withdraw the submission.");
+      setWithdrawingId(null);
+    }
+  };
+
+  if (formContext) {
+    const nextContext = { ...formContext, periodId };
     return (
-      <RecordAdditionalForm
-        kpi={recordingKpi}
-        periodId={periodId}
+      <MyAchievementForm
+        additionalContext={nextContext}
         onDone={handleDone}
-        onCancel={() => setRecordingKpi(null)}
+        onCancel={() => setFormContext(null)}
       />
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Search + Category filter */}
-      <form onSubmit={handleSearchSubmit} className="flex flex-wrap gap-3 items-center">
-        <div className="relative flex-1 min-w-48">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+      <form onSubmit={handleSearchSubmit} className="flex flex-wrap items-center gap-3">
+        <div className="relative min-w-48 flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
           <input
             type="text"
             value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
+            onChange={(event) => setSearchInput(event.target.value)}
             placeholder="Search KPIs..."
-            className="w-full rounded-md border border-gray-300 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
         <button
@@ -327,7 +332,11 @@ export function AdditionalAchievementsTab({ periodId, periodState, onRefresh }: 
         {search && (
           <button
             type="button"
-            onClick={() => { setSearch(""); setSearchInput(""); }}
+            onClick={() => {
+              setLoadingKpis(true);
+              setSearch("");
+              setSearchInput("");
+            }}
             className="text-sm text-gray-500 hover:text-gray-700"
           >
             Clear
@@ -337,29 +346,36 @@ export function AdditionalAchievementsTab({ periodId, periodState, onRefresh }: 
           <div className="relative">
             <select
               value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="rounded-md border border-gray-300 pl-3 pr-8 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none"
+              onChange={(event) => handleCategoryChange(event.target.value)}
+              className="appearance-none rounded-md border border-gray-300 py-2 pl-3 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">All Categories</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>{c}</option>
+              {categories.map((category) => (
+                <option key={category.key} value={category.key}>
+                  {category.label}
+                </option>
               ))}
             </select>
-            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
           </div>
         )}
       </form>
 
       {!canRecord && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          <AlertCircle className="inline h-4 w-4 mr-1" />
-          Recording additional achievements is not available during "{periodState}" period.
+          <AlertCircle className="mr-1 inline h-4 w-4" />
+          Recording additional achievements is not available during {periodState}.
         </div>
       )}
 
-      {/* Available KPIs */}
+      {actionError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {actionError}
+        </div>
+      )}
+
       <div className="space-y-4">
-        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-700">
           Available KPIs
         </h3>
 
@@ -370,20 +386,22 @@ export function AdditionalAchievementsTab({ periodId, periodState, onRefresh }: 
             <p className="text-sm text-gray-500">
               {search || categoryFilter
                 ? "No KPIs match your search."
-                : "No KPIs available for additional achievements."}
+                : "No KPIs available for additional achievements in the current cycle."}
             </p>
           </div>
         ) : (
-          [...kraMap.entries()].map(([kraId, { kraTitle, kpis: kraKpis }]) => (
+          [...kraMap.entries()].map(([kraId, group]) => (
             <div key={kraId} className="space-y-2">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{kraTitle}</h4>
-              {kraKpis.map((kpi) => (
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                {group.kraTitle}
+              </h4>
+              {group.kpis.map((kpi) => (
                 <div
                   key={kpi.kpiId}
-                  className="rounded-lg border border-gray-200 bg-white p-4 flex flex-wrap items-start justify-between gap-4"
+                  className="flex flex-wrap items-start justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4"
                 >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-semibold text-gray-900">{kpi.kpiTitle}</span>
                       <span className="text-xs text-gray-400">({kpi.measurementType})</span>
                       {kpi.categoryLabel && (
@@ -394,39 +412,35 @@ export function AdditionalAchievementsTab({ periodId, periodState, onRefresh }: 
                     </div>
                     <p className="mt-1 text-xs text-gray-500">
                       Dept: {kpi.startingUnitName} · Wt: {kpi.kpiWeightage}
+                      {kpi.defaultTarget != null && (
+                        <span className="ml-2 text-gray-400">Default target: {kpi.defaultTarget}</span>
+                      )}
                       {kpi.achievementTemplateKey && (
                         <span className="ml-2 text-gray-400">
-                          Template: {ACHIEVEMENT_TEMPLATES[kpi.achievementTemplateKey]?.label ?? kpi.achievementTemplateKey}
+                          Template:{" "}
+                          {ACHIEVEMENT_TEMPLATES[kpi.achievementTemplateKey]?.label ??
+                            kpi.achievementTemplateKey}
                         </span>
                       )}
                     </p>
                     {kpi.kpiDescription && (
-                      <p className="mt-1 text-xs text-gray-400 line-clamp-1">{kpi.kpiDescription}</p>
+                      <p className="mt-1 line-clamp-1 text-xs text-gray-400">
+                        {kpi.kpiDescription}
+                      </p>
                     )}
                   </div>
-                  <div className="shrink-0">
-                    {kpi.isAllocated ? (
-                      <span className="inline-block rounded-lg bg-blue-50 px-3 py-1.5 text-xs text-blue-700">
-                        Already allocated — use My Targets tab
-                      </span>
-                    ) : kpi.hasExistingAdditional ? (
-                      <span className="inline-block rounded-lg bg-green-50 px-3 py-1.5 text-xs text-green-700">
-                        Achievement recorded
-                      </span>
-                    ) : canRecord ? (
-                      <button
-                        onClick={() => setRecordingKpi(kpi)}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                        Record Achievement
-                      </button>
-                    ) : (
-                      <span className="inline-block rounded-lg bg-gray-100 px-3 py-1.5 text-xs text-gray-500">
-                        Period closed
-                      </span>
-                    )}
-                  </div>
+                  <button
+                    onClick={() =>
+                      setFormContext({
+                        ...toFormContextFromKpi(kpi),
+                        periodId,
+                      })
+                    }
+                    disabled={!canRecord}
+                    className="inline-flex items-center rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+                  >
+                    Record Achievement
+                  </button>
                 </div>
               ))}
             </div>
@@ -434,9 +448,8 @@ export function AdditionalAchievementsTab({ periodId, periodState, onRefresh }: 
         )}
       </div>
 
-      {/* My Additional Achievements */}
       <div className="space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-700">
           My Additional Achievements
         </h3>
 
@@ -447,31 +460,119 @@ export function AdditionalAchievementsTab({ periodId, periodState, onRefresh }: 
             <p className="text-sm text-gray-500">No additional achievements recorded yet.</p>
           </div>
         ) : (
-          myAchievements.map((ach) => (
-            <div
-              key={ach.id}
-              className="rounded-lg border border-gray-200 bg-white p-4 flex flex-wrap items-start justify-between gap-4"
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-semibold text-gray-900">{ach.kpiTitle}</span>
-                  <AchievementStateBadge state={ach.state} />
+          myAchievements.map((achievement) => {
+            const isExpanded = expandedAchievementId === achievement.id;
+            const canEdit = achievement.state === "DRAFT" || achievement.state === "REJECTED";
+            const canWithdraw = achievement.state === "SUBMITTED";
+
+            return (
+              <div
+                key={achievement.id}
+                className="space-y-3 rounded-lg border border-gray-200 bg-white p-4"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-900">
+                        {achievement.kpiTitle}
+                      </span>
+                      <AchievementStateBadge state={achievement.state} />
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-gray-500">
+                      <span>Actual: {formatActual(achievement)}</span>
+                      {achievement.computedScore != null && (
+                        <span className="font-medium text-green-600">
+                          Score: {Math.round(achievement.computedScore)}%
+                        </span>
+                      )}
+                      <span>Recorded: {formatDate(achievement.reportingDate)}</span>
+                    </div>
+                    {achievement.rejectionReason && (
+                      <p className="mt-1 text-xs text-red-600">
+                        Reason: {achievement.rejectionReason}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedAchievementId(isExpanded ? null : achievement.id)
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      View
+                    </button>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() => setFormContext(toFormContextFromAchievement(achievement))}
+                        className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        Edit
+                      </button>
+                    )}
+                    {canWithdraw && (
+                      <button
+                        type="button"
+                        onClick={() => void handleWithdraw(achievement.id)}
+                        disabled={withdrawingId === achievement.id}
+                        className="inline-flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                      >
+                        <Undo2 className="h-3.5 w-3.5" />
+                        {withdrawingId === achievement.id ? "Withdrawing..." : "Withdraw"}
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="mt-1 text-xs text-gray-500 space-x-2">
-                  {ach.actualValue != null && <span>Actual: {ach.actualValue}</span>}
-                  {ach.computedScore != null && (
-                    <span className="text-green-600 font-medium">Score: {Math.round(ach.computedScore)}%</span>
-                  )}
-                  <span>Recorded: {formatDate(ach.reportingDate)}</span>
-                </div>
-                {ach.rejectionReason && (
-                  <p className="mt-1 text-xs text-red-600">
-                    Reason: {ach.rejectionReason}
-                  </p>
+
+                {isExpanded && (
+                  <div className="space-y-3 border-t border-gray-100 pt-3">
+                    {achievement.verificationLog.length > 0 && (
+                      <MyAchievementTrail log={achievement.verificationLog} />
+                    )}
+
+                    {achievement.achievementFormData &&
+                      Object.keys(achievement.achievementFormData).length > 0 && (
+                        <div className="space-y-1 text-xs text-gray-600">
+                          <div className="font-medium text-gray-700">Details</div>
+                          {Object.entries(achievement.achievementFormData).map(([key, value]) => (
+                            <div key={key}>
+                              <span className="font-medium">{key}:</span> {renderFormValue(value)}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                    {achievement.evidenceDescription && (
+                      <div className="text-xs text-gray-600">
+                        <span className="font-medium text-gray-700">Notes:</span>{" "}
+                        {achievement.evidenceDescription}
+                      </div>
+                    )}
+
+                    {achievement.evidenceLinks.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {achievement.evidenceLinks.map((link) => (
+                          <a
+                            key={link}
+                            href={link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                          >
+                            {link}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

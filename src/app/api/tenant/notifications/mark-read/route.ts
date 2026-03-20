@@ -32,6 +32,6 @@ export async function POST(request: Request) {
     );
   }
 
-  await markRead(body.notificationId, session.user.id);
+  await markRead(body.notificationId, session.user.tenantId, session.user.id);
   return NextResponse.json({ status: "success", message: "Notification marked as read." });
 }

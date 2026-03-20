@@ -24,7 +24,11 @@ export function MyDashboard({ summary }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* Overall score */}
+      <div>
+        <h3 className="text-lg font-semibold text-gray-900">Allocated KPIs</h3>
+        <p className="text-sm text-gray-500">Current weighted score from your allocated targets.</p>
+      </div>
+
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Overall Performance</h3>
@@ -155,7 +159,7 @@ export function MyDashboard({ summary }: Props) {
           <div className="border-b border-gray-200 bg-gray-50 px-4 py-3">
             <h3 className="text-sm font-semibold text-gray-700">Additional Contributions</h3>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+          <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-4">
             <div className="rounded-lg bg-gray-50 p-3 text-center">
               <div className="text-xl font-bold text-gray-700">{s.additionalAchievements.total}</div>
               <div className="text-xs text-gray-500 mt-0.5">Total</div>
@@ -173,6 +177,23 @@ export function MyDashboard({ summary }: Props) {
               <div className="text-xs text-gray-500 mt-0.5">Not Approved</div>
             </div>
           </div>
+          {s.additionalAchievements.items.length > 0 && (
+            <div className="border-t border-gray-100 px-4 py-3">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Achievement States
+              </div>
+              <div className="space-y-2">
+                {s.additionalAchievements.items.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between text-sm">
+                    <span className="text-gray-700">{item.kpiTitle}</span>
+                    <span className="text-xs text-gray-500">
+                      {item.state} · {new Date(item.reportingDate).toLocaleDateString("en-US")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

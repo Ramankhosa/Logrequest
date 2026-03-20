@@ -2,30 +2,128 @@
 
 import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import type { MyAllocationView, AchievementFieldConfig } from "@/lib/kra-kpi/shared";
+import type {
+  AchievementFieldConfig,
+  AchievementFormConfig,
+  AchievementView,
+  MyAllocationView,
+} from "@/lib/kra-kpi/shared";
 import { ACHIEVEMENT_TEMPLATES } from "@/lib/kra-kpi/shared";
 import { DynamicFormRenderer } from "./dynamic-form-renderer";
 
-type Props = {
-  allocation: MyAllocationView;
-  onDone: () => void;
-  onCancel: () => void;
+export type AdditionalAchievementFormContext = {
+  periodId: string;
+  kpiDefinitionId: string;
+  kpiTitle: string;
+  kraTitle: string;
+  categoryLabel: string | null;
+  measurementType: MyAllocationView["measurementType"];
+  unitLabel: string | null;
+  defaultTarget: number | null;
+  startingUnitName: string;
+  achievementTemplateKey: string | null;
+  achievementFormConfig: AchievementFormConfig | null;
+  achievement: AchievementView | null;
 };
 
-export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
-  const a = allocation;
-  const ach = a.achievement;
+type Props =
+  | {
+      allocation: MyAllocationView;
+      additionalContext?: never;
+      onDone: () => void;
+      onCancel: () => void;
+    }
+  | {
+      allocation?: never;
+      additionalContext: AdditionalAchievementFormContext;
+      onDone: () => void;
+      onCancel: () => void;
+    };
+
+type FormSubject = {
+  periodId: string;
+  kpiDefinitionId: string;
+  targetAllocationId: string | null;
+  kpiTitle: string;
+  kraTitle: string;
+  categoryLabel: string | null;
+  measurementType: MyAllocationView["measurementType"];
+  unitLabel: string | null;
+  targetValue: number | null;
+  parentTargetValue: number | null;
+  startingUnitName: string;
+  achievementTemplateKey: string | null;
+  achievementFormConfig: AchievementFormConfig | null;
+  achievement: AchievementView | null;
+  isAdditional: boolean;
+};
+
+function buildSubject(
+  allocation: MyAllocationView | undefined,
+  additionalContext: AdditionalAchievementFormContext | undefined,
+): FormSubject {
+  if (allocation) {
+    return {
+      periodId: allocation.periodId,
+      kpiDefinitionId: allocation.kpiDefinitionId,
+      targetAllocationId: allocation.id,
+      kpiTitle: allocation.kpiTitle,
+      kraTitle: allocation.kraTitle,
+      categoryLabel: allocation.categoryLabel,
+      measurementType: allocation.measurementType,
+      unitLabel: allocation.unitLabel,
+      targetValue: allocation.targetValue,
+      parentTargetValue: allocation.parentTargetValue,
+      startingUnitName: allocation.startingUnitName,
+      achievementTemplateKey: allocation.achievementTemplateKey,
+      achievementFormConfig: allocation.achievementFormConfig,
+      achievement: allocation.achievement,
+      isAdditional: false,
+    };
+  }
+
+  if (!additionalContext) {
+    throw new Error("MyAchievementForm requires either allocation or additionalContext.");
+  }
+
+  return {
+    periodId: additionalContext.periodId,
+    kpiDefinitionId: additionalContext.kpiDefinitionId,
+    targetAllocationId: null,
+    kpiTitle: additionalContext.kpiTitle,
+    kraTitle: additionalContext.kraTitle,
+    categoryLabel: additionalContext.categoryLabel,
+    measurementType: additionalContext.measurementType,
+    unitLabel: additionalContext.unitLabel,
+    targetValue: additionalContext.defaultTarget,
+    parentTargetValue: null,
+    startingUnitName: additionalContext.startingUnitName,
+    achievementTemplateKey: additionalContext.achievementTemplateKey,
+    achievementFormConfig: additionalContext.achievementFormConfig,
+    achievement: additionalContext.achievement,
+    isAdditional: true,
+  };
+}
+
+export function MyAchievementForm({
+  allocation,
+  additionalContext,
+  onDone,
+  onCancel,
+}: Props) {
+  const subject = buildSubject(allocation, additionalContext);
+  const ach = subject.achievement;
   const isEdit = ach != null && (ach.state === "DRAFT" || ach.state === "REJECTED");
   const genericFields = ACHIEVEMENT_TEMPLATES.GENERIC.fields;
-  const fields: AchievementFieldConfig[] = a.achievementFormConfig?.fields ?? genericFields;
+  const fields: AchievementFieldConfig[] = subject.achievementFormConfig?.fields ?? genericFields;
   const templateLabel =
-    a.achievementTemplateKey && ACHIEVEMENT_TEMPLATES[a.achievementTemplateKey]
-      ? ACHIEVEMENT_TEMPLATES[a.achievementTemplateKey].label
+    subject.achievementTemplateKey && ACHIEVEMENT_TEMPLATES[subject.achievementTemplateKey]
+      ? ACHIEVEMENT_TEMPLATES[subject.achievementTemplateKey].label
       : "Achievement Details";
 
   const initialFormData =
     (ach?.achievementFormData as Record<string, unknown> | null) ??
-    (!a.achievementFormConfig
+    (!subject.achievementFormConfig
       ? {
           description: ach?.evidenceDescription ?? "",
           proofLink: ach?.evidenceLinks[0] ?? "",
@@ -33,22 +131,15 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
       : {});
 
   const [actualValue, setActualValue] = useState<number | undefined>(ach?.actualValue ?? undefined);
-  const [actualDate, setActualDate] = useState(
-    formatDateInput(ach?.actualDate),
-  );
+  const [actualDate, setActualDate] = useState(formatDateInput(ach?.actualDate));
   const [actualMilestone, setActualMilestone] = useState(ach?.actualMilestone ?? "");
   const [actualGrade, setActualGrade] = useState(ach?.actualGrade ?? "");
-  const [actualBoolean, setActualBoolean] = useState<boolean | null>(
-    ach?.actualBoolean ?? null,
-  );
+  const [actualBoolean, setActualBoolean] = useState<boolean | null>(ach?.actualBoolean ?? null);
   const [actualRating, setActualRating] = useState<number | undefined>(ach?.actualRating ?? undefined);
   const [evidenceDescription, setEvidenceDescription] = useState(ach?.evidenceDescription ?? "");
   const [evidenceLinks, setEvidenceLinks] = useState<string[]>(ach?.evidenceLinks ?? [""]);
-  const [formData, setFormData] = useState<Record<string, unknown>>(
-    initialFormData,
-  );
+  const [formData, setFormData] = useState<Record<string, unknown>>(initialFormData);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +156,7 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
   };
 
   const validateActualInput = () => {
-    switch (a.measurementType) {
+    switch (subject.measurementType) {
       case "NUMERIC":
       case "PERCENTAGE":
       case "CURRENCY":
@@ -95,14 +186,14 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
     }
 
     const errors: Record<string, string> = {};
-    for (const f of fields) {
-      if (f.required) {
-        const val = formData[f.key];
-        if (val == null || val === "" || (Array.isArray(val) && val.length === 0)) {
-          errors[f.key] = `${f.label} is required`;
-        }
+    for (const field of fields) {
+      if (!field.required) continue;
+      const value = formData[field.key];
+      if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) {
+        errors[field.key] = `${field.label} is required`;
       }
     }
+
     if (Object.keys(errors).length > 0 || Object.keys(nextErrors).length > 0) {
       setFormErrors(errors);
       setError(nextErrors.__actual ?? null);
@@ -112,22 +203,25 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
     const setter = submitAfter ? setSubmitting : setSaving;
     setter(true);
 
-    const filteredLinks = evidenceLinks.filter((l) => l.trim());
+    const filteredLinks = evidenceLinks.filter((link) => link.trim());
     const genericProofLink =
       typeof formData.proofLink === "string" && formData.proofLink.trim()
         ? formData.proofLink.trim()
         : null;
-    const mergedLinks = genericProofLink && !filteredLinks.includes(genericProofLink)
-      ? [genericProofLink, ...filteredLinks]
-      : filteredLinks;
+    const mergedLinks =
+      genericProofLink && !filteredLinks.includes(genericProofLink)
+        ? [genericProofLink, ...filteredLinks]
+        : filteredLinks;
     const derivedDescription =
       typeof formData.description === "string" && formData.description.trim()
         ? formData.description.trim()
         : evidenceDescription || undefined;
+
     const body = {
-      periodId: a.periodId,
-      kpiDefinitionId: a.kpiDefinitionId,
-      targetAllocationId: a.id,
+      periodId: subject.periodId,
+      kpiDefinitionId: subject.kpiDefinitionId,
+      ...(!subject.isAdditional &&
+        subject.targetAllocationId && { targetAllocationId: subject.targetAllocationId }),
       ...(actualValue !== undefined && { actualValue }),
       ...(actualDate && { actualDate }),
       ...(actualMilestone && { actualMilestone }),
@@ -140,9 +234,9 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
     };
 
     try {
-      let res: Response;
+      let response: Response;
       if (isEdit && ach) {
-        res = await fetch(`/api/tenant/kra-kpi/achievements/${ach.id}`, {
+        response = await fetch(`/api/tenant/kra-kpi/achievements/${ach.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -158,21 +252,25 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
           }),
         });
       } else {
-        res = await fetch("/api/tenant/kra-kpi/achievements", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
+        response = await fetch(
+          subject.isAdditional
+            ? "/api/tenant/kra-kpi/my/additional-achievements"
+            : "/api/tenant/kra-kpi/achievements",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
       }
 
-      const data = await res.json();
+      const data = await response.json();
       if (data.status === "error") {
         setError(data.message);
         setter(false);
         return;
       }
 
-      // If submit requested, submit the achievement
       if (submitAfter) {
         const achievementId = isEdit ? ach!.id : data.id ?? ach?.id;
         if (!achievementId) {
@@ -180,10 +278,12 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
           setter(false);
           return;
         }
-        const submitRes = await fetch(`/api/tenant/kra-kpi/achievements/${achievementId}/submit`, {
-          method: "POST",
-        });
-        const submitData = await submitRes.json();
+
+        const submitResponse = await fetch(
+          `/api/tenant/kra-kpi/achievements/${achievementId}/submit`,
+          { method: "POST" },
+        );
+        const submitData = await submitResponse.json();
         if (submitData.status === "error") {
           setError(submitData.message);
           setter(false);
@@ -210,22 +310,25 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
           Back
         </button>
         <h2 className="text-lg font-semibold text-gray-900">
-          {isEdit ? "Edit" : "Record"} Achievement — {a.kpiTitle}
+          {isEdit ? "Edit" : "Record"} Achievement — {subject.kpiTitle}
         </h2>
       </div>
 
-      {/* Context info */}
-      <div className="rounded-lg bg-gray-50 p-4 text-sm text-gray-600 space-y-1">
-        <div>KRA: {a.kraTitle} | Category: {a.categoryLabel ?? "—"}</div>
+      <div className="space-y-1 rounded-lg bg-gray-50 p-4 text-sm text-gray-600">
+        <div>KRA: {subject.kraTitle} | Category: {subject.categoryLabel ?? "—"}</div>
         <div>
-          Target: {a.targetValue ?? "—"} {a.unitLabel ?? ""} | Type: {a.measurementType}
+          {subject.isAdditional ? "Default target" : "Target"}: {subject.targetValue ?? "—"}{" "}
+          {subject.unitLabel ?? ""} | Type: {subject.measurementType}
         </div>
-        {a.parentTargetValue != null && a.targetValue != null && (
-          <div>
-            Department target: {a.parentTargetValue} | Your share: {a.targetValue} (
-            {Math.round((a.targetValue / a.parentTargetValue) * 100)}%)
-          </div>
-        )}
+        <div>Source unit: {subject.startingUnitName}</div>
+        {!subject.isAdditional &&
+          subject.parentTargetValue != null &&
+          subject.targetValue != null && (
+            <div>
+              Department target: {subject.parentTargetValue} | Your share: {subject.targetValue} (
+              {Math.round((subject.targetValue / subject.parentTargetValue) * 100)}%)
+            </div>
+          )}
       </div>
 
       {error && (
@@ -233,28 +336,30 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
       )}
 
       <div className="space-y-4">
-        {(a.measurementType === "NUMERIC" ||
-          a.measurementType === "PERCENTAGE" ||
-          a.measurementType === "CURRENCY") && (
+        {(subject.measurementType === "NUMERIC" ||
+          subject.measurementType === "PERCENTAGE" ||
+          subject.measurementType === "CURRENCY") && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Actual Value {a.unitLabel ? `(${a.unitLabel})` : ""}
-              <span className="text-red-500 ml-0.5">*</span>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Actual Value {subject.unitLabel ? `(${subject.unitLabel})` : ""}
+              <span className="ml-0.5 text-red-500">*</span>
             </label>
             <input
               type="number"
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
               value={actualValue ?? ""}
-              onChange={(e) => setActualValue(e.target.value ? Number(e.target.value) : undefined)}
-              placeholder={`e.g., ${a.targetValue ?? ""}`}
+              onChange={(event) =>
+                setActualValue(event.target.value ? Number(event.target.value) : undefined)
+              }
+              placeholder={`e.g., ${subject.targetValue ?? ""}`}
             />
           </div>
         )}
 
-        {a.measurementType === "BOOLEAN" && (
+        {subject.measurementType === "BOOLEAN" && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Actual Outcome <span className="text-red-500 ml-0.5">*</span>
+            <label className="mb-2 block text-sm font-medium text-gray-700">
+              Actual Outcome <span className="ml-0.5 text-red-500">*</span>
             </label>
             <div className="flex gap-2">
               <button
@@ -283,10 +388,10 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
           </div>
         )}
 
-        {a.measurementType === "RATING" && (
+        {subject.measurementType === "RATING" && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Actual Rating <span className="text-red-500 ml-0.5">*</span>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Actual Rating <span className="ml-0.5 text-red-500">*</span>
             </label>
             <input
               type="number"
@@ -294,23 +399,23 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
               max={10}
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
               value={actualRating ?? ""}
-              onChange={(e) =>
-                setActualRating(e.target.value ? Number(e.target.value) : undefined)
+              onChange={(event) =>
+                setActualRating(event.target.value ? Number(event.target.value) : undefined)
               }
               placeholder="e.g., 4"
             />
           </div>
         )}
 
-        {a.measurementType === "MILESTONE" && (
+        {subject.measurementType === "MILESTONE" && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Milestone Status <span className="text-red-500 ml-0.5">*</span>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Milestone Status <span className="ml-0.5 text-red-500">*</span>
             </label>
             <select
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
               value={actualMilestone}
-              onChange={(e) => setActualMilestone(e.target.value)}
+              onChange={(event) => setActualMilestone(event.target.value)}
             >
               <option value="">Select status...</option>
               <option value="NOT_STARTED">Not Started</option>
@@ -320,29 +425,29 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
           </div>
         )}
 
-        {a.measurementType === "DATE_TARGET" && (
+        {subject.measurementType === "DATE_TARGET" && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Actual Date <span className="text-red-500 ml-0.5">*</span>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Actual Date <span className="ml-0.5 text-red-500">*</span>
             </label>
             <input
               type="date"
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
               value={actualDate}
-              onChange={(e) => setActualDate(e.target.value)}
+              onChange={(event) => setActualDate(event.target.value)}
             />
           </div>
         )}
 
-        {a.measurementType === "GRADE" && (
+        {subject.measurementType === "GRADE" && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Actual Grade <span className="text-red-500 ml-0.5">*</span>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Actual Grade <span className="ml-0.5 text-red-500">*</span>
             </label>
             <select
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
               value={actualGrade}
-              onChange={(e) => setActualGrade(e.target.value)}
+              onChange={(event) => setActualGrade(event.target.value)}
             >
               <option value="">Select grade...</option>
               <option value="OUTSTANDING">Outstanding</option>
@@ -356,7 +461,7 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
         )}
 
         <div className="border-t border-gray-200 pt-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">{templateLabel}</h3>
+          <h3 className="mb-3 text-sm font-semibold text-gray-700">{templateLabel}</h3>
           <DynamicFormRenderer
             fields={fields}
             values={formData}
@@ -365,33 +470,36 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
           />
         </div>
 
+        {subject.isAdditional && subject.targetValue == null && (
+          <div className="rounded p-2 text-xs text-amber-600">
+            Score will be assessed by the verifier (no default target configured).
+          </div>
+        )}
+
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Notes
-          </label>
+          <label className="mb-1 block text-sm font-medium text-gray-700">Notes</label>
           <textarea
             className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
             rows={3}
             value={evidenceDescription}
-            onChange={(e) => setEvidenceDescription(e.target.value)}
+            onChange={(event) => setEvidenceDescription(event.target.value)}
             placeholder="Optional notes for reviewers..."
           />
         </div>
 
-        {/* Evidence links */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="mb-1 block text-sm font-medium text-gray-700">
             Evidence Links
           </label>
-          {evidenceLinks.map((link, i) => (
-            <div key={i} className="flex gap-2 mb-2">
+          {evidenceLinks.map((link, index) => (
+            <div key={index} className="mb-2 flex gap-2">
               <input
                 type="url"
                 className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm"
                 value={link}
-                onChange={(e) => {
+                onChange={(event) => {
                   const next = [...evidenceLinks];
-                  next[i] = e.target.value;
+                  next[index] = event.target.value;
                   setEvidenceLinks(next);
                 }}
                 placeholder="https://..."
@@ -399,7 +507,9 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
               {evidenceLinks.length > 1 && (
                 <button
                   type="button"
-                  onClick={() => setEvidenceLinks(evidenceLinks.filter((_, j) => j !== i))}
+                  onClick={() =>
+                    setEvidenceLinks(evidenceLinks.filter((_, itemIndex) => itemIndex !== index))
+                  }
                   className="text-xs text-red-500 hover:text-red-700"
                 >
                   Remove
@@ -419,17 +529,16 @@ export function MyAchievementForm({ allocation, onDone, onCancel }: Props) {
         </div>
       </div>
 
-      {/* Actions */}
       <div className="flex items-center gap-3 border-t border-gray-200 pt-4">
         <button
-          onClick={() => handleSave(false)}
+          onClick={() => void handleSave(false)}
           disabled={saving || submitting}
           className="inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
         >
           {saving ? "Saving..." : "Save as Draft"}
         </button>
         <button
-          onClick={() => handleSave(true)}
+          onClick={() => void handleSave(true)}
           disabled={saving || submitting}
           className="inline-flex items-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
         >

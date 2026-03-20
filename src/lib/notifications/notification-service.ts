@@ -182,10 +182,11 @@ export async function listNotifications(
 
 export async function markRead(
   notificationId: string,
+  tenantId: string,
   userId: string,
 ): Promise<void> {
   await prisma.notification.updateMany({
-    where: { id: notificationId, userId },
+    where: { id: notificationId, tenantId, userId },
     data: { isRead: true },
   });
 }

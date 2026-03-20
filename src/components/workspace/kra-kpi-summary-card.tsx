@@ -46,8 +46,9 @@ export function KraKpiSummaryCard() {
         const periods = (await periodsRes.json()) as Period[];
 
         // Find most recent relevant period
-        const relevant = periods.find((p) => p.state === "IN_PROGRESS")
-          ?? periods.find((p) => p.state === "UNDER_REVIEW")
+        const relevant = periods.find(
+          (p) => p.state === "IN_PROGRESS" || p.state === "UNDER_REVIEW",
+        )
           ?? periods.find((p) => p.state === "CLOSED");
 
         if (!relevant) {

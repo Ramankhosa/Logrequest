@@ -327,6 +327,26 @@ export type AchievementView = {
   createdAt: Date;
 };
 
+export type AdditionalAchievementView = AchievementView & {
+  kraTitle: string;
+  categoryLabel: string | null;
+  categoryKey: string | null;
+  measurementType: KpiMeasurementType;
+  unitLabel: string | null;
+  defaultTarget: number | null;
+  achievementTemplateKey: string | null;
+  achievementFormConfig: AchievementFormConfig | null;
+  startingUnitId: string;
+  startingUnitName: string;
+};
+
+export type AdditionalAchievementSummaryItem = {
+  id: string;
+  kpiTitle: string;
+  state: AchievementState;
+  reportingDate: Date;
+};
+
 // ── Computed Review Cycle (no DB table in R1) ────────────────────────────────
 
 export type ComputedReviewCycle = {
@@ -728,6 +748,7 @@ export type MyDashboardSummary = {
     verified: number;
     pending: number;
     notApproved: number;
+    items: AdditionalAchievementSummaryItem[];
   };
   upcomingDeadlineCount: number;
   overdueCount: number;

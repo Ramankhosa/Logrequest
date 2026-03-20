@@ -347,7 +347,7 @@ export function MyKpiHub() {
           )}
 
           {/* Category Quick-Access Pills */}
-          {categoryPills.length > 1 && (
+          {categoryPills.length > 0 && (
             <div className="flex flex-wrap gap-2 items-center">
               <button
                 onClick={() => setCategoryPillFilter(null)}

@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   XCircle,
   ClipboardCheck,
-  Send,
   ExternalLink,
 } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
@@ -64,21 +63,6 @@ export function AchievementReviewList({
   const showFeedback = (type: "success" | "error", message: string) => {
     setFeedback({ type, message });
     setTimeout(() => setFeedback(null), 3500);
-  };
-
-  const handleSubmit = async (id: string) => {
-    setActionId(id);
-    try {
-      const res = await fetch(`/api/tenant/kra-kpi/achievements/${id}/submit`, { method: "POST" });
-      const data = await res.json();
-      if (data.status === "success") {
-        showFeedback("success", data.message);
-        void fetchData();
-      } else {
-        showFeedback("error", data.message);
-      }
-    } catch { showFeedback("error", "Submit failed."); }
-    finally { setActionId(null); }
   };
 
   const handleVerify = async (id: string, approved: boolean) => {
@@ -174,11 +158,6 @@ export function AchievementReviewList({
                   )}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  {ach.state === "DRAFT" && (
-                    <button type="button" onClick={() => handleSubmit(ach.id)} disabled={actionId === ach.id} className="inline-flex items-center gap-1 rounded-lg border border-brand/20 bg-brand/5 px-2.5 py-1.5 text-[11px] font-semibold text-brand hover:bg-brand/10 disabled:opacity-50">
-                      {actionId === ach.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />} Submit
-                    </button>
-                  )}
                   {ach.state === "SUBMITTED" && (
                     <>
                       {showNoteFor === ach.id ? (

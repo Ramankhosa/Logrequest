@@ -1,6 +1,10 @@
 import type { Role, AssessmentPeriodState } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import {
+  createBulkNotifications,
+  resolveAllocateeUserId,
+} from "@/lib/notifications/notification-service";
 import type {
   KraKpiActionResult,
   AssessmentPeriodView,
@@ -307,6 +311,39 @@ export async function transitionPeriodState(
       },
     });
   });
+
+  try {
+    const allocations = await prisma.targetAllocation.findMany({
+      where: { tenantId, periodId },
+      select: {
+        assignedToUserId: true,
+        assignedToUnitId: true,
+      },
+    });
+
+    const recipientIds = new Set<string>();
+    for (const allocation of allocations) {
+      const recipientId = await resolveAllocateeUserId(tenantId, allocation);
+      if (recipientId && recipientId !== actorUserId) {
+        recipientIds.add(recipientId);
+      }
+    }
+
+    if (recipientIds.size > 0) {
+      await createBulkNotifications(
+        tenantId,
+        [...recipientIds],
+        "PERIOD_STATE_CHANGED",
+        "Assessment period state changed",
+        `Assessment period '${period.name}' is now ${newState}.`,
+        "AssessmentPeriod",
+        periodId,
+        "/my-kpis",
+      );
+    }
+  } catch (err) {
+    console.warn("[period-service] transitionPeriodState notification failed:", err);
+  }
 
   return { status: "success", message: `Period transitioned to "${newState}".` };
 }

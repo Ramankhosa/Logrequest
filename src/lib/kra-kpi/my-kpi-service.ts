@@ -1,16 +1,17 @@
 import { prisma } from "@/lib/prisma";
 import { getUserAssignments } from "@/lib/org-structure/roles-service";
+import { computeReviewCycles } from "./period-service";
 import type {
   MyKpiContext,
   MyAllocationView,
   AchievementView,
+  AdditionalAchievementView,
   ReviewQueueItem,
   MyDashboardSummary,
   ChildAllocationSummary,
   AchievementFormConfig,
   VerificationLogEntry,
   MeasurementConfig,
-  KpiDefinitionView,
 } from "./shared";
 
 // ── Build MyKpiContext ───────────────────────────────────────────────────────
@@ -44,13 +45,90 @@ export async function isUserHeadOfUnit(
   return context.headOfUnits.some((unit) => unit.unitId === unitId);
 }
 
-async function getUserUnitIds(
+function findCycleNumberForDate(
+  reportingDate: Date,
+  period: { startDate: Date; endDate: Date; reviewFrequency: string },
+): number {
+  const cycles = computeReviewCycles(
+    period.startDate,
+    period.endDate,
+    period.reviewFrequency,
+  );
+
+  const cycle = cycles.find(
+    (item) =>
+      reportingDate >= item.startDate &&
+      (reportingDate < item.endDate ||
+        reportingDate.getTime() === item.endDate.getTime()),
+  );
+
+  return cycle?.cycleNumber ?? 1;
+}
+
+async function getPrimaryUserUnitId(
   tenantId: string,
   userId: string,
-): Promise<string[]> {
-  const assignments = await getUserAssignments(tenantId, userId);
+): Promise<string | null> {
+  const publishedVersion = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId,
+      state: { in: ["PUBLISHED", "VALIDATED"] },
+    },
+    orderBy: { versionNumber: "desc" },
+    select: { id: true },
+  });
 
-  return [...new Set(assignments.map((assignment) => assignment.unitId))];
+  if (publishedVersion) {
+    const primaryAssignment = await prisma.userOrgAssignment.findFirst({
+      where: {
+        versionId: publishedVersion.id,
+        userId,
+        isPrimary: true,
+      },
+      select: { unitId: true },
+    });
+
+    if (primaryAssignment?.unitId) {
+      return primaryAssignment.unitId;
+    }
+
+    const fallbackAssignment = await prisma.userOrgAssignment.findFirst({
+      where: {
+        versionId: publishedVersion.id,
+        userId,
+      },
+      orderBy: { isPrimary: "desc" },
+      select: { unitId: true },
+    });
+
+    if (fallbackAssignment?.unitId) {
+      return fallbackAssignment.unitId;
+    }
+  }
+
+  const assignments = await getUserAssignments(tenantId, userId);
+  return assignments[0]?.unitId ?? null;
+}
+
+async function getAchievementScopeUnitIds(
+  tenantId: string,
+  achievement: {
+    reportedByUserId: string;
+    targetAllocation: {
+      assignedToUnitId: string | null;
+      assignedToUserId: string | null;
+    } | null;
+  },
+): Promise<string[]> {
+  if (achievement.targetAllocation?.assignedToUnitId) {
+    return [achievement.targetAllocation.assignedToUnitId];
+  }
+
+  const assigneeUserId =
+    achievement.targetAllocation?.assignedToUserId ?? achievement.reportedByUserId;
+  const primaryUnitId = await getPrimaryUserUnitId(tenantId, assigneeUserId);
+
+  return primaryUnitId ? [primaryUnitId] : [];
 }
 
 // ── Get My Allocations ───────────────────────────────────────────────────────
@@ -284,24 +362,13 @@ export async function getMyReviewQueue(
   const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
   const items: ReviewQueueItem[] = [];
 
-  // Level 1: Recommendation queue — SUBMITTED achievements for units the user heads
+  // Level 1: Recommendation queue — SUBMITTED achievements scoped to the user's review units
   const submittedAchievements = await prisma.achievement.findMany({
     where: {
       tenantId,
       periodId,
       state: "SUBMITTED",
-      OR: [
-        { targetAllocation: { assignedToUnitId: { in: headUnitIds } } },
-        {
-          targetAllocation: {
-            parentAllocation: { assignedToUnitId: { in: headUnitIds } },
-          },
-        },
-        {
-          targetAllocation: { assignedToUserId: { not: null } },
-          reportedByUserId: { not: userId },
-        },
-      ],
+      reportedByUserId: { not: userId },
     },
     include: {
       kpiDefinition: {
@@ -321,26 +388,14 @@ export async function getMyReviewQueue(
 
   // Filter: only include items where user is actually head of the unit
   for (const ach of submittedAchievements) {
-    const alloc = ach.targetAllocation;
-    if (!alloc) continue;
+    const assigneeUnitIds = await getAchievementScopeUnitIds(tenantId, {
+      reportedByUserId: ach.reportedByUserId,
+      targetAllocation: ach.targetAllocation,
+    });
+    if (assigneeUnitIds.length === 0) continue;
 
-    const assigneeUnitIds = new Set<string>();
-    if (alloc.assignedToUnitId) {
-      assigneeUnitIds.add(alloc.assignedToUnitId);
-    }
-    if (alloc.assignedToUserId) {
-      for (const unitId of await getUserUnitIds(tenantId, alloc.assignedToUserId)) {
-        assigneeUnitIds.add(unitId);
-      }
-    }
-    if (assigneeUnitIds.size === 0) {
-      for (const unitId of await getUserUnitIds(tenantId, ach.reportedByUserId)) {
-        assigneeUnitIds.add(unitId);
-      }
-    }
-
-    const usesShortcut = assigneeUnitIds.has(ach.kpiDefinition.startingUnitId);
-    const canRecommend = [...assigneeUnitIds].some((unitId) => headUnitIds.includes(unitId));
+    const usesShortcut = assigneeUnitIds.includes(ach.kpiDefinition.startingUnitId);
+    const canRecommend = assigneeUnitIds.some((unitId) => headUnitIds.includes(unitId));
     const canVerify = headUnitIds.includes(ach.kpiDefinition.startingUnitId);
 
     if (usesShortcut) {
@@ -365,7 +420,7 @@ export async function getMyReviewQueue(
       facultyDesignation: membership?.designation ?? null,
       kpiTitle: ach.kpiDefinition.title,
       kpiDefinitionId: ach.kpiDefinitionId,
-      targetValue: alloc.targetValue,
+      targetValue: ach.targetAllocation?.targetValue ?? null,
       actualValue: ach.actualValue,
       measurementType: ach.kpiDefinition.measurementType,
       unitLabel: ach.kpiDefinition.unitLabel,
@@ -551,7 +606,14 @@ export async function getMyDashboardSummary(
       reportedByUserId: userId,
       targetAllocationId: null,
     },
-    select: { state: true },
+    include: {
+      kpiDefinition: {
+        select: {
+          title: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
   });
 
   const additionalAchievements = {
@@ -561,6 +623,12 @@ export async function getMyDashboardSummary(
       (a) => a.state === "SUBMITTED" || a.state === "RECOMMENDED",
     ).length,
     notApproved: additionalAchievementsList.filter((a) => a.state === "REJECTED").length,
+    items: additionalAchievementsList.map((achievement) => ({
+      id: achievement.id,
+      kpiTitle: achievement.kpiDefinition.title,
+      state: achievement.state,
+      reportingDate: achievement.reportingDate,
+    })),
   };
 
   // Upcoming deadline count (within 7 days) and overdue count
@@ -689,26 +757,14 @@ export async function getMyPendingCount(
   });
 
   for (const ach of submittedAchievements) {
-    const alloc = ach.targetAllocation;
-    if (!alloc) continue;
+    const assigneeUnitIds = await getAchievementScopeUnitIds(tenantId, {
+      reportedByUserId: ach.reportedByUserId,
+      targetAllocation: ach.targetAllocation,
+    });
+    if (assigneeUnitIds.length === 0) continue;
 
-    const assigneeUnitIds = new Set<string>();
-    if (alloc.assignedToUnitId) {
-      assigneeUnitIds.add(alloc.assignedToUnitId);
-    }
-    if (alloc.assignedToUserId) {
-      for (const unitId of await getUserUnitIds(tenantId, alloc.assignedToUserId)) {
-        assigneeUnitIds.add(unitId);
-      }
-    }
-    if (assigneeUnitIds.size === 0) {
-      for (const unitId of await getUserUnitIds(tenantId, ach.reportedByUserId)) {
-        assigneeUnitIds.add(unitId);
-      }
-    }
-
-    const usesShortcut = assigneeUnitIds.has(ach.kpiDefinition.startingUnitId);
-    const canRecommend = [...assigneeUnitIds].some((unitId) => headUnitIds.includes(unitId));
+    const usesShortcut = assigneeUnitIds.includes(ach.kpiDefinition.startingUnitId);
+    const canRecommend = assigneeUnitIds.some((unitId) => headUnitIds.includes(unitId));
     const canVerify = headUnitIds.includes(ach.kpiDefinition.startingUnitId);
 
     if ((usesShortcut && canVerify) || (!usesShortcut && canRecommend)) {
@@ -744,6 +800,7 @@ export type AvailableKpiView = {
   categoryLabel: string | null;
   startingUnitId: string;
   startingUnitName: string;
+  defaultTarget: number | null;
   isAllocated: boolean;
   hasExistingAdditional: boolean;
 };
@@ -758,7 +815,7 @@ export async function getAvailableKpis(
   // Validate period
   const period = await prisma.assessmentPeriod.findFirst({
     where: { id: periodId, tenantId },
-    select: { state: true },
+    select: { state: true, startDate: true, endDate: true, reviewFrequency: true },
   });
   if (!period) return [];
 
@@ -786,11 +843,18 @@ export async function getAvailableKpis(
       periodId,
       reportedByUserId: userId,
       targetAllocationId: null,
-      state: { not: "REJECTED" },
     },
-    select: { kpiDefinitionId: true },
+    select: { kpiDefinitionId: true, reportingDate: true },
   });
-  const additionalKpiIds = new Set(existingAdditional.map((a) => a.kpiDefinitionId));
+  const currentCycleNumber = findCycleNumberForDate(new Date(), period);
+  const additionalKpiIds = new Set(
+    existingAdditional
+      .filter(
+        (achievement) =>
+          findCycleNumberForDate(achievement.reportingDate, period) === currentCycleNumber,
+      )
+      .map((achievement) => achievement.kpiDefinitionId),
+  );
 
   // Find all ACTIVE KPIs in the period
   const kpis = await prisma.kpiDefinition.findMany({
@@ -827,7 +891,13 @@ export async function getAvailableKpis(
     ],
   });
 
-  return kpis.map((kpi): AvailableKpiView => ({
+  return kpis
+    .filter(
+      (kpi) =>
+        !allocatedKpiIds.has(kpi.id) &&
+        !additionalKpiIds.has(kpi.id),
+    )
+    .map((kpi): AvailableKpiView => ({
     kpiId: kpi.id,
     kpiTitle: kpi.title,
     kpiDescription: kpi.description,
@@ -842,8 +912,9 @@ export async function getAvailableKpis(
     categoryLabel: kpi.kraDefinition.category?.displayLabel ?? null,
     startingUnitId: kpi.startingUnit.id,
     startingUnitName: kpi.startingUnit.name,
-    isAllocated: allocatedKpiIds.has(kpi.id),
-    hasExistingAdditional: additionalKpiIds.has(kpi.id),
+    defaultTarget: kpi.defaultTarget,
+    isAllocated: false,
+    hasExistingAdditional: false,
   }));
 }
 
@@ -853,7 +924,7 @@ export async function listAdditionalAchievements(
   tenantId: string,
   userId: string,
   periodId: string,
-): Promise<AchievementView[]> {
+): Promise<AdditionalAchievementView[]> {
   const achievements = await prisma.achievement.findMany({
     where: {
       tenantId,
@@ -862,7 +933,24 @@ export async function listAdditionalAchievements(
       targetAllocationId: null,
     },
     include: {
-      kpiDefinition: { select: { title: true } },
+      kpiDefinition: {
+        select: {
+          title: true,
+          measurementType: true,
+          unitLabel: true,
+          defaultTarget: true,
+          achievementTemplateKey: true,
+          achievementFormConfig: true,
+          startingUnitId: true,
+          startingUnit: { select: { name: true } },
+          kraDefinition: {
+            select: {
+              title: true,
+              category: { select: { categoryKey: true, displayLabel: true } },
+            },
+          },
+        },
+      },
     },
     orderBy: { createdAt: "desc" },
   });
@@ -873,7 +961,7 @@ export async function listAdditionalAchievements(
   });
   const userName = user ? `${user.firstName} ${user.lastName}` : "Unknown";
 
-  return achievements.map((a): AchievementView => ({
+  return achievements.map((a): AdditionalAchievementView => ({
     id: a.id,
     tenantId: a.tenantId,
     periodId: a.periodId,
@@ -903,5 +991,15 @@ export async function listAdditionalAchievements(
     verificationLog: (a.verificationLog as VerificationLogEntry[]) ?? [],
     reportingDate: a.reportingDate,
     createdAt: a.createdAt,
+    kraTitle: a.kpiDefinition.kraDefinition.title,
+    categoryLabel: a.kpiDefinition.kraDefinition.category?.displayLabel ?? null,
+    categoryKey: a.kpiDefinition.kraDefinition.category?.categoryKey ?? null,
+    measurementType: a.kpiDefinition.measurementType,
+    unitLabel: a.kpiDefinition.unitLabel,
+    defaultTarget: a.kpiDefinition.defaultTarget,
+    achievementTemplateKey: a.kpiDefinition.achievementTemplateKey,
+    achievementFormConfig: a.kpiDefinition.achievementFormConfig as AchievementFormConfig | null,
+    startingUnitId: a.kpiDefinition.startingUnitId,
+    startingUnitName: a.kpiDefinition.startingUnit.name,
   }));
 }
