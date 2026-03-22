@@ -361,7 +361,18 @@ export function KraKpiHub() {
         )}
 
         {activeTab === "dashboard" && selectedPeriodId && (
-          <PeriodDashboard periodId={selectedPeriodId} />
+          <div className="space-y-4">
+            <div className="flex items-center justify-end">
+              <a
+                href="/tenant-admin/kra-kpi/dashboard"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-slate-950 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800"
+              >
+                <LayoutDashboard className="h-3.5 w-3.5" />
+                Full Dashboard
+              </a>
+            </div>
+            <PeriodDashboard periodId={selectedPeriodId} />
+          </div>
         )}
         {activeTab === "dashboard" && !selectedPeriodId && (
           <div className="py-12 text-center text-sm text-slate-400">
