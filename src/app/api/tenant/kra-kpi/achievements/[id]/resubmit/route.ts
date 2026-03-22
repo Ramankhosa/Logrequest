@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { withdrawAchievement } from "@/lib/kra-kpi/achievement-service";
+import { resubmitAchievement } from "@/lib/kra-kpi/achievement-service";
 
 export async function POST(
   _request: Request,
@@ -19,7 +19,7 @@ export async function POST(
 
   // Resubmit uses the existing withdraw flow: REJECTED/SUBMITTED → DRAFT
   // The employee can then edit and re-submit
-  const result = await withdrawAchievement(
+  const result = await resubmitAchievement(
     id,
     session.user.tenantId,
     session.user.id,

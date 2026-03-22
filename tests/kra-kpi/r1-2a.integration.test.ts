@@ -845,7 +845,7 @@ describe("R1.2a additional achievement integration", () => {
         select: { userId: true },
       });
       expect(submitNotifications.map((notification) => notification.userId)).toEqual([
-        fixture.users.cseHead.id,
+        fixture.users.dean.id,
       ]);
 
       const cseQueue = await getMyReviewQueue(
@@ -853,29 +853,29 @@ describe("R1.2a additional achievement integration", () => {
         fixture.users.cseHead.id,
         fixture.period.id,
       );
-      expect(cseQueue).toEqual(
+      expect(
+        cseQueue.some((item) => item.achievementId === currentCycleAchievement!.id),
+      ).toBe(false);
+
+      const deanQueue = await getMyReviewQueue(
+        fixture.context.tenantId,
+        fixture.users.dean.id,
+        fixture.period.id,
+      );
+      expect(deanQueue).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             achievementId: currentCycleAchievement!.id,
-            reviewLevel: "RECOMMEND",
+            reviewLevel: "VERIFY",
           }),
         ]),
       );
 
-      const eceQueue = await getMyReviewQueue(
-        fixture.context.tenantId,
-        fixture.users.eceHead.id,
-        fixture.period.id,
-      );
-      expect(eceQueue.some((item) => item.achievementId === currentCycleAchievement!.id)).toBe(
-        false,
-      );
-
       expect(
-        await getMyPendingCount(fixture.context.tenantId, fixture.users.cseHead.id),
+        await getMyPendingCount(fixture.context.tenantId, fixture.users.dean.id),
       ).toBe(1);
       expect(
-        await getMyPendingCount(fixture.context.tenantId, fixture.users.eceHead.id),
+        await getMyPendingCount(fixture.context.tenantId, fixture.users.cseHead.id),
       ).toBe(0);
 
       const duplicateCurrentCycle = await recordAdditionalAchievement(

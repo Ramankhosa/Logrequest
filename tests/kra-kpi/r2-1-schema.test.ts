@@ -196,15 +196,33 @@ describe("R2.1 Schema Foundation", () => {
       }),
     ).rejects.toThrow();
 
+    const achievement = await prisma.achievement.create({
+      data: {
+        tenantId,
+        periodId,
+        kpiDefinitionId: kpiId,
+        targetAllocationId: allocationId,
+        reportedByUserId: actorUserId,
+      },
+    });
     const progress = await prisma.kpiStageProgress.create({
-      data: { targetAllocationId: allocationId, stageDefinitionId: stage.id },
+      data: {
+        targetAllocationId: allocationId,
+        stageDefinitionId: stage.id,
+        achievementId: achievement.id,
+      },
     });
     await expect(
       prisma.kpiStageProgress.create({
-        data: { targetAllocationId: allocationId, stageDefinitionId: stage.id },
+        data: {
+          targetAllocationId: allocationId,
+          stageDefinitionId: stage.id,
+          achievementId: achievement.id,
+        },
       }),
     ).rejects.toThrow();
     await prisma.kpiStageProgress.delete({ where: { id: progress.id } });
+    await prisma.achievement.delete({ where: { id: achievement.id } });
     await prisma.kpiStageDefinition.delete({ where: { id: stage.id } });
 
     const cycle = await prisma.reviewCycle.create({

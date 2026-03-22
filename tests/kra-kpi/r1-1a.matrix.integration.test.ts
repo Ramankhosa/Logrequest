@@ -820,31 +820,21 @@ describe("R1.1a matrix integration", () => {
       ).toMatchObject({ reviewLevel: "VERIFY", achievementState: "SUBMITTED" });
       expect(
         cseQueue.find((item) => item.achievementId === crossDeptAchievementId),
-      ).toMatchObject({ reviewLevel: "RECOMMEND", achievementState: "SUBMITTED" });
+      ).toBeUndefined();
 
       expect(
         await getMyPendingCount(
           fixture.context.tenantId,
           fixture.users.cseHead.id,
         ),
-      ).toBe(2);
+      ).toBe(1);
 
       expect(
         await getMyPendingCount(
           fixture.context.tenantId,
           fixture.users.dean.id,
         ),
-      ).toBe(0);
-
-      const recommendResult = await recommendAchievement(
-        crossDeptAchievementId,
-        fixture.context.tenantId,
-        true,
-        "Looks correct",
-        fixture.users.cseHead.id,
-        "TENANT_USER",
-      );
-      expect(recommendResult.status).toBe("success");
+      ).toBe(1);
 
       const deanQueue = await getMyReviewQueue(
         fixture.context.tenantId,
@@ -853,7 +843,7 @@ describe("R1.1a matrix integration", () => {
       );
       expect(
         deanQueue.find((item) => item.achievementId === crossDeptAchievementId),
-      ).toMatchObject({ reviewLevel: "VERIFY", achievementState: "RECOMMENDED" });
+      ).toMatchObject({ reviewLevel: "VERIFY", achievementState: "SUBMITTED" });
 
       const sameVerifyResult = await verifyAchievement(
         sameDeptAchievementId,
@@ -933,15 +923,15 @@ describe("R1.1a matrix integration", () => {
       );
       expect(resubmit.status).toBe("success");
 
-      const recommendResult = await recommendAchievement(
+      const verifyResult = await verifyAchievement(
         createResult.id!,
         fixture.context.tenantId,
         true,
-        "Recommend after resubmit",
-        fixture.users.cseHead.id,
+        "Verified after resubmit",
+        fixture.users.dean.id,
         "TENANT_USER",
       );
-      expect(recommendResult.status).toBe("success");
+      expect(verifyResult.status).toBe("success");
 
       const blockedWithdraw = await withdrawAchievement(
         createResult.id!,

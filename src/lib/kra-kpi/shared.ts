@@ -348,6 +348,7 @@ export type StageProgressView = {
   title: string;
   description: string | null;
   weight: number;
+  isMandatory: boolean;
   evidenceRequired: boolean;
   evidenceTypes: string[];
   evidenceInstructions: string | null;
@@ -355,6 +356,7 @@ export type StageProgressView = {
   isCompleted: boolean;
   completedAt: Date | null;
   completedByUserId: string | null;
+  completedByName: string | null;
   notes: string | null;
   evidenceFiles: Array<{ name: string; url: string; type: string; uploadedAt?: string }> | null;
   isOverdue: boolean;
@@ -435,6 +437,7 @@ export type AchievementView = {
   verificationNote: string | null;
   rejectionReason: string | null;
   verificationLog: VerificationLogEntry[];
+  submissionTrail: SubmissionTrailView[];
   reportingDate: Date;
   createdAt: Date;
 };
@@ -450,6 +453,10 @@ export type AdditionalAchievementView = AchievementView & {
   achievementFormConfig: AchievementFormConfig | null;
   startingUnitId: string;
   startingUnitName: string;
+  stagesComplete: number;
+  stagesTotal: number;
+  allowPartialCompletion: boolean;
+  stagesDefinedCount: number;
 };
 
 export type AdditionalAchievementSummaryItem = {
@@ -785,7 +792,14 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
 // ── Verification Log Entry Type ──────────────────────────────────────────────
 
 export type VerificationLogEntry = {
-  level: "SUBMIT" | "RECOMMEND" | "VERIFY" | "REJECT" | "SEND_BACK" | "WITHDRAW";
+  level:
+    | "SUBMIT"
+    | "RECOMMEND"
+    | "VERIFY"
+    | "REJECT"
+    | "SEND_BACK"
+    | "WITHDRAW"
+    | "RESUBMIT";
   userId: string;
   userName: string;
   action: string;

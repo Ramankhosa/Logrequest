@@ -311,7 +311,7 @@ describe("R1.1a seeded integration", () => {
     });
   });
 
-  test("routes cross-department seeded submissions through recommend then verify", async () => {
+  test("routes cross-department seeded submissions to the configured starting-unit verifier", async () => {
     const allocation = await createSeededTestAllocation({
       assignedToUserId: seed.facultyTwoId,
       targetValue: 2,
@@ -329,44 +329,22 @@ describe("R1.1a seeded integration", () => {
       seed.eceHeadId,
       seed.periodId,
     );
-    const beforeRecommend = eceHeadQueue.find((item) => item.achievementId === achievementId);
-    expect(beforeRecommend).toMatchObject({
-      achievementId,
-      reviewLevel: "RECOMMEND",
-      achievementState: "SUBMITTED",
-    });
-
-    const cseHeadQueueBeforeRecommend = await getMyReviewQueue(
-      seed.tenantId,
-      seed.cseHeadId,
-      seed.periodId,
-    );
     expect(
-      cseHeadQueueBeforeRecommend.some((item) => item.achievementId === achievementId),
+      eceHeadQueue.some((item) => item.achievementId === achievementId),
     ).toBe(false);
 
-    const recommendResult = await recommendAchievement(
-      achievementId,
-      seed.tenantId,
-      true,
-      `${currentPrefix}:recommend`,
-      seed.eceHeadId,
-      "TENANT_USER",
-    );
-    expect(recommendResult.status).toBe("success");
-
-    const cseHeadQueueAfterRecommend = await getMyReviewQueue(
+    const cseHeadQueue = await getMyReviewQueue(
       seed.tenantId,
       seed.cseHeadId,
       seed.periodId,
     );
-    const verifyItem = cseHeadQueueAfterRecommend.find(
+    const verifyItem = cseHeadQueue.find(
       (item) => item.achievementId === achievementId,
     );
     expect(verifyItem).toMatchObject({
       achievementId,
       reviewLevel: "VERIFY",
-      achievementState: "RECOMMENDED",
+      achievementState: "SUBMITTED",
     });
 
     const verifyResult = await verifyAchievement(
@@ -389,7 +367,7 @@ describe("R1.1a seeded integration", () => {
     });
     expect(stored).toMatchObject({
       state: "VERIFIED",
-      recommendedByUserId: seed.eceHeadId,
+      recommendedByUserId: null,
       verifiedByUserId: seed.cseHeadId,
     });
   });

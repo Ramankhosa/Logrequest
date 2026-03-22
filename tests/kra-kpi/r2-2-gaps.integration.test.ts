@@ -1404,4 +1404,349 @@ describe("R2.2 Gap Coverage", () => {
       });
     });
   });
+
+  // ── Group 9: Unit Head Authority (non-admin path) ──────────────────────
+
+  describe("Unit head authority (non-admin review path)", () => {
+    test("G26: real unit head of startingUnit can verify single-step KPI (no admin bypass)", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const fixture = await createFullFixture(tracker);
+
+        // KPI routes to CSE (startingUnitId), no key/final
+        await prisma.kpiDefinition.update({
+          where: { id: fixture.kpi.id },
+          data: { keyUnitId: null, finalUnitId: null },
+        });
+
+        // Create CSE dept head (isUnitHead: true)
+        const deptHead = await createTestUser(tracker, { firstName: "DeptHead", lastName: "CSE" });
+        await createTestMembership({
+          tenantId: fixture.tenant.id,
+          userId: deptHead.id,
+          role: "TENANT_USER",
+          createdByUserId: fixture.actor.id,
+        });
+        await assignUserToUnit({
+          tenantId: fixture.tenant.id,
+          versionId: fixture.structure.versionId,
+          unitId: fixture.structure.cseUnitId,
+          userId: deptHead.id,
+          createdByUserId: fixture.actor.id,
+          isHead: true,
+        });
+
+        await moveToInProgress(fixture);
+        await bulkLockTargets(fixture.period.id, fixture.context.tenantId, fixture.context.actorUserId, fixture.context.actorRole);
+
+        const { user, allocation } = await createUserWithAllocation(tracker, fixture, "HeadVerify");
+
+        await recordAchievement(
+          fixture.context.tenantId,
+          {
+            periodId: fixture.period.id,
+            kpiDefinitionId: fixture.kpi.id,
+            targetAllocationId: allocation.id,
+            actualValue: 8,
+          },
+          user.id,
+          "TENANT_USER",
+        );
+
+        const ach = await prisma.achievement.findFirst({ where: { reportedByUserId: user.id } });
+        await submitForVerification(ach!.id, fixture.context.tenantId, user.id, "TENANT_USER");
+
+        // Dept head (TENANT_USER role, NOT admin) verifies through the real authority path
+        const verifyResult = await verifyAchievement(
+          ach!.id,
+          fixture.context.tenantId,
+          true,
+          "Approved by dept head",
+          deptHead.id,
+          "TENANT_USER",
+        );
+        expect(verifyResult.status).toBe("success");
+
+        const verified = await prisma.achievement.findUnique({ where: { id: ach!.id } });
+        expect(verified!.state).toBe("VERIFIED");
+        expect(verified!.verifiedByUserId).toBe(deptHead.id);
+      });
+    });
+
+    test("G27: non-head user of the same unit CANNOT verify", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const fixture = await createFullFixture(tracker);
+        await prisma.kpiDefinition.update({
+          where: { id: fixture.kpi.id },
+          data: { keyUnitId: null, finalUnitId: null },
+        });
+
+        // Create a regular faculty (NOT unit head) in CSE
+        const regularFaculty = await createTestUser(tracker, { firstName: "Regular", lastName: "Faculty" });
+        await createTestMembership({
+          tenantId: fixture.tenant.id,
+          userId: regularFaculty.id,
+          role: "TENANT_USER",
+          createdByUserId: fixture.actor.id,
+        });
+        await assignUserToUnit({
+          tenantId: fixture.tenant.id,
+          versionId: fixture.structure.versionId,
+          unitId: fixture.structure.cseUnitId,
+          userId: regularFaculty.id,
+          createdByUserId: fixture.actor.id,
+          isHead: false,
+        });
+
+        await moveToInProgress(fixture);
+        await bulkLockTargets(fixture.period.id, fixture.context.tenantId, fixture.context.actorUserId, fixture.context.actorRole);
+
+        const { user, allocation } = await createUserWithAllocation(tracker, fixture, "NoHeadVerify");
+
+        await recordAchievement(
+          fixture.context.tenantId,
+          {
+            periodId: fixture.period.id,
+            kpiDefinitionId: fixture.kpi.id,
+            targetAllocationId: allocation.id,
+            actualValue: 8,
+          },
+          user.id,
+          "TENANT_USER",
+        );
+
+        const ach = await prisma.achievement.findFirst({ where: { reportedByUserId: user.id } });
+        await submitForVerification(ach!.id, fixture.context.tenantId, user.id, "TENANT_USER");
+
+        // Regular faculty tries to verify — should be blocked
+        const verifyResult = await verifyAchievement(
+          ach!.id,
+          fixture.context.tenantId,
+          true,
+          "Trying to approve",
+          regularFaculty.id,
+          "TENANT_USER",
+        );
+        expect(verifyResult.status).toBe("error");
+        expect(verifyResult.message).toContain("permission");
+      });
+    });
+
+    test("G28: unit head of WRONG unit cannot verify (head of IQAC can't verify CSE-routed KPI)", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const fixture = await createFullFixture(tracker);
+        await prisma.kpiDefinition.update({
+          where: { id: fixture.kpi.id },
+          data: { keyUnitId: null, finalUnitId: null },
+          // Routes to CSE (startingUnitId)
+        });
+
+        // Create IQAC head (head of different unit)
+        const iqacHead = await createTestUser(tracker, { firstName: "IQACHead", lastName: "Wrong" });
+        await createTestMembership({
+          tenantId: fixture.tenant.id,
+          userId: iqacHead.id,
+          role: "TENANT_USER",
+          createdByUserId: fixture.actor.id,
+        });
+        await assignUserToUnit({
+          tenantId: fixture.tenant.id,
+          versionId: fixture.structure.versionId,
+          unitId: fixture.structure.iqacUnitId,
+          userId: iqacHead.id,
+          createdByUserId: fixture.actor.id,
+          isHead: true,
+        });
+
+        await moveToInProgress(fixture);
+        await bulkLockTargets(fixture.period.id, fixture.context.tenantId, fixture.context.actorUserId, fixture.context.actorRole);
+
+        const { user, allocation } = await createUserWithAllocation(tracker, fixture, "WrongHead");
+
+        await recordAchievement(
+          fixture.context.tenantId,
+          {
+            periodId: fixture.period.id,
+            kpiDefinitionId: fixture.kpi.id,
+            targetAllocationId: allocation.id,
+            actualValue: 8,
+          },
+          user.id,
+          "TENANT_USER",
+        );
+
+        const ach = await prisma.achievement.findFirst({ where: { reportedByUserId: user.id } });
+        await submitForVerification(ach!.id, fixture.context.tenantId, user.id, "TENANT_USER");
+
+        // IQAC head tries to verify CSE-routed achievement — should fail
+        const verifyResult = await verifyAchievement(
+          ach!.id,
+          fixture.context.tenantId,
+          true,
+          "Wrong unit",
+          iqacHead.id,
+          "TENANT_USER",
+        );
+        expect(verifyResult.status).toBe("error");
+        expect(verifyResult.message).toContain("permission");
+      });
+    });
+
+    test("G29: two-step flow — CSE head recommends, IQAC head verifies (both non-admin)", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const fixture = await createFullFixture(tracker);
+
+        // Two-step: keyUnit=CSE, finalUnit=IQAC
+        await prisma.kpiDefinition.update({
+          where: { id: fixture.kpi.id },
+          data: {
+            keyUnitId: fixture.structure.cseUnitId,
+            finalUnitId: fixture.structure.iqacUnitId,
+          },
+        });
+
+        // CSE dept head
+        const cseHead = await createTestUser(tracker, { firstName: "CSEHead", lastName: "Rec" });
+        await createTestMembership({
+          tenantId: fixture.tenant.id,
+          userId: cseHead.id,
+          role: "TENANT_USER",
+          createdByUserId: fixture.actor.id,
+        });
+        await assignUserToUnit({
+          tenantId: fixture.tenant.id,
+          versionId: fixture.structure.versionId,
+          unitId: fixture.structure.cseUnitId,
+          userId: cseHead.id,
+          createdByUserId: fixture.actor.id,
+          isHead: true,
+        });
+
+        // IQAC head
+        const iqacHead = await createTestUser(tracker, { firstName: "IQACHead", lastName: "Ver" });
+        await createTestMembership({
+          tenantId: fixture.tenant.id,
+          userId: iqacHead.id,
+          role: "TENANT_USER",
+          createdByUserId: fixture.actor.id,
+        });
+        await assignUserToUnit({
+          tenantId: fixture.tenant.id,
+          versionId: fixture.structure.versionId,
+          unitId: fixture.structure.iqacUnitId,
+          userId: iqacHead.id,
+          createdByUserId: fixture.actor.id,
+          isHead: true,
+        });
+
+        await moveToInProgress(fixture);
+        await bulkLockTargets(fixture.period.id, fixture.context.tenantId, fixture.context.actorUserId, fixture.context.actorRole);
+
+        const { user, allocation } = await createUserWithAllocation(tracker, fixture, "FullNonAdmin");
+
+        await recordAchievement(
+          fixture.context.tenantId,
+          {
+            periodId: fixture.period.id,
+            kpiDefinitionId: fixture.kpi.id,
+            targetAllocationId: allocation.id,
+            actualValue: 10,
+          },
+          user.id,
+          "TENANT_USER",
+        );
+
+        const ach = await prisma.achievement.findFirst({ where: { reportedByUserId: user.id } });
+        const subRes = await submitForVerification(ach!.id, fixture.context.tenantId, user.id, "TENANT_USER");
+        expect(subRes.status).toBe("success");
+
+        // Step 1: CSE head recommends (non-admin)
+        const recResult = await recommendAchievement(
+          ach!.id, fixture.context.tenantId, true, "Recommended by dept",
+          cseHead.id, "TENANT_USER",
+        );
+        expect(recResult.status).toBe("success");
+
+        const recommended = await prisma.achievement.findUnique({ where: { id: ach!.id } });
+        expect(recommended!.state).toBe("RECOMMENDED");
+        expect(recommended!.recommendedByUserId).toBe(cseHead.id);
+        expect(recommended!.currentVerifierUnitId).toBe(fixture.structure.iqacUnitId);
+
+        // Step 2: IQAC head verifies (non-admin)
+        const verResult = await verifyAchievement(
+          ach!.id, fixture.context.tenantId, true, "Final approval",
+          iqacHead.id, "TENANT_USER",
+        );
+        expect(verResult.status).toBe("success");
+
+        const verified = await prisma.achievement.findUnique({ where: { id: ach!.id } });
+        expect(verified!.state).toBe("VERIFIED");
+        expect(verified!.verifiedByUserId).toBe(iqacHead.id);
+
+        // Verify trail shows all 3 actions
+        const trail = await getSubmissionTrail(ach!.id, fixture.context.tenantId);
+        expect(trail).toHaveLength(3);
+        expect(trail[0].action).toBe("SUBMITTED");
+        expect(trail[1].action).toBe("RECOMMENDED");
+        expect(trail[2].action).toBe("APPROVED");
+      });
+    });
+
+    test("G30: CSE head cannot skip recommend and directly verify on two-step KPI", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const fixture = await createFullFixture(tracker);
+
+        await prisma.kpiDefinition.update({
+          where: { id: fixture.kpi.id },
+          data: {
+            keyUnitId: fixture.structure.cseUnitId,
+            finalUnitId: fixture.structure.iqacUnitId,
+          },
+        });
+
+        const cseHead = await createTestUser(tracker, { firstName: "CSEHead", lastName: "Skip" });
+        await createTestMembership({
+          tenantId: fixture.tenant.id,
+          userId: cseHead.id,
+          role: "TENANT_USER",
+          createdByUserId: fixture.actor.id,
+        });
+        await assignUserToUnit({
+          tenantId: fixture.tenant.id,
+          versionId: fixture.structure.versionId,
+          unitId: fixture.structure.cseUnitId,
+          userId: cseHead.id,
+          createdByUserId: fixture.actor.id,
+          isHead: true,
+        });
+
+        await moveToInProgress(fixture);
+        await bulkLockTargets(fixture.period.id, fixture.context.tenantId, fixture.context.actorUserId, fixture.context.actorRole);
+
+        const { user, allocation } = await createUserWithAllocation(tracker, fixture, "SkipRec");
+
+        await recordAchievement(
+          fixture.context.tenantId,
+          {
+            periodId: fixture.period.id,
+            kpiDefinitionId: fixture.kpi.id,
+            targetAllocationId: allocation.id,
+            actualValue: 8,
+          },
+          user.id,
+          "TENANT_USER",
+        );
+
+        const ach = await prisma.achievement.findFirst({ where: { reportedByUserId: user.id } });
+        await submitForVerification(ach!.id, fixture.context.tenantId, user.id, "TENANT_USER");
+
+        // CSE head tries to verify directly (should be blocked — must recommend first)
+        const verifyResult = await verifyAchievement(
+          ach!.id, fixture.context.tenantId, true, "Skipping recommend",
+          cseHead.id, "TENANT_USER",
+        );
+        expect(verifyResult.status).toBe("error");
+        expect(verifyResult.message).toContain("recommended");
+      });
+    });
+  });
 });

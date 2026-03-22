@@ -1,4 +1,4 @@
-import type { Prisma, Role } from "@prisma/client";
+import { Prisma, type Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { getMyKpiContext } from "./my-kpi-service";
@@ -58,7 +58,7 @@ function evidenceTypesMatchStage(
   files: { type: string }[],
 ): boolean {
   if (required.length === 0) return files.length > 0;
-  return files.some((f) => required.includes(f.type));
+  return files.every((f) => required.includes(f.type));
 }
 
 export async function markStageComplete(
@@ -286,7 +286,7 @@ export async function unmarkStageComplete(
         completedAt: null,
         completedByUserId: null,
         notes: null,
-        evidenceFiles: null,
+        evidenceFiles: Prisma.DbNull,
       },
     });
 
@@ -324,6 +324,24 @@ export async function getStageProgressForAchievement(
     orderBy: { stageDefinition: { stageOrder: "asc" } },
   });
 
+  const completedByIds = [
+    ...new Set(
+      rows
+        .map((row) => row.completedByUserId)
+        .filter((userId): userId is string => Boolean(userId)),
+    ),
+  ];
+  const completedByUsers =
+    completedByIds.length > 0
+      ? await prisma.user.findMany({
+          where: { id: { in: completedByIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [];
+  const completedByNameMap = new Map(
+    completedByUsers.map((user) => [user.id, `${user.firstName} ${user.lastName}`]),
+  );
+
   const now = new Date();
 
   return rows.map((r) => {
@@ -347,6 +365,7 @@ export async function getStageProgressForAchievement(
       title: d.title,
       description: d.description,
       weight: d.weight,
+      isMandatory: d.isMandatory,
       evidenceRequired: d.evidenceRequired,
       evidenceTypes: d.evidenceTypes as string[],
       evidenceInstructions: d.evidenceInstructions,
@@ -354,6 +373,10 @@ export async function getStageProgressForAchievement(
       isCompleted: r.isCompleted,
       completedAt: r.completedAt,
       completedByUserId: r.completedByUserId,
+      completedByName:
+        r.completedByUserId != null
+          ? (completedByNameMap.get(r.completedByUserId) ?? null)
+          : null,
       notes: r.notes,
       evidenceFiles,
       isOverdue,

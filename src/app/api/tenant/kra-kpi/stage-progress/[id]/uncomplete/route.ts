@@ -1,5 +1,6 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
+import type { Role } from "@prisma/client";
 import { authOptions } from "@/lib/auth/options";
 import { unmarkStageComplete } from "@/lib/kra-kpi/stage-progress-service";
 
@@ -8,7 +9,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id || !session.user.tenantId) {
+  if (!session?.user?.id || !session.user.tenantId || !session.user.role) {
     return NextResponse.json(
       { status: "error", message: "You do not have tenant access." },
       { status: 403 },
@@ -21,6 +22,7 @@ export async function POST(
     id,
     session.user.tenantId,
     session.user.id,
+    session.user.role as Role,
   );
 
   if (!result.ok) {

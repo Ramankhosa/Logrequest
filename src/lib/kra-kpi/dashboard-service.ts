@@ -1,7 +1,5 @@
 import { prisma } from "@/lib/prisma";
 
-// ── G1: Overview Stats ──────────────────────────────────────────────────────
-
 export type OverviewStats = {
   totalKpis: number;
   totalAllocations: number;
@@ -18,63 +16,6 @@ export type OverviewStats = {
   pendingReviewCount: number;
 };
 
-export async function getOverviewStats(
-  tenantId: string,
-  periodId: string,
-): Promise<OverviewStats> {
-  const [kpiCount, allocationCount, achievements, period] = await Promise.all([
-    prisma.kpiDefinition.count({
-      where: { kraDefinition: { tenantId, periodId }, state: "ACTIVE" },
-    }),
-    prisma.targetAllocation.count({
-      where: { tenantId, kpiDefinition: { kraDefinition: { periodId } } },
-    }),
-    prisma.achievement.findMany({
-      where: { tenantId, targetAllocation: { kpiDefinition: { kraDefinition: { periodId } } } },
-      select: { state: true },
-    }),
-    prisma.assessmentPeriod.findUnique({
-      where: { id: periodId },
-      select: { endDate: true },
-    }),
-  ]);
-
-  const byState = { DRAFT: 0, SUBMITTED: 0, RECOMMENDED: 0, VERIFIED: 0, REJECTED: 0 };
-  for (const a of achievements) {
-    if (a.state in byState) byState[a.state as keyof typeof byState]++;
-  }
-
-  const totalAchievements = achievements.length;
-  const overallCompletionPercent =
-    allocationCount > 0 ? Math.round((byState.VERIFIED / allocationCount) * 10000) / 100 : 0;
-
-  // Overdue: allocations with no VERIFIED achievement past period end date
-  let overdueCount = 0;
-  if (period && new Date() > period.endDate) {
-    const allocationsWithVerified = await prisma.achievement.groupBy({
-      by: ["targetAllocationId"],
-      where: {
-        tenantId,
-        state: "VERIFIED",
-        targetAllocation: { kpiDefinition: { kraDefinition: { periodId } } },
-      },
-    });
-    overdueCount = allocationCount - allocationsWithVerified.length;
-  }
-
-  return {
-    totalKpis: kpiCount,
-    totalAllocations: allocationCount,
-    totalAchievements,
-    achievementsByState: byState,
-    overallCompletionPercent,
-    overdueCount: Math.max(0, overdueCount),
-    pendingReviewCount: byState.SUBMITTED,
-  };
-}
-
-// ── G2: Org Hierarchy Stats ─────────────────────────────────────────────────
-
 export type OrgHierarchyUnit = {
   unitId: string;
   unitName: string;
@@ -86,84 +27,6 @@ export type OrgHierarchyUnit = {
   averageScore: number;
   childUnitCount: number;
 };
-
-export async function getOrgHierarchyStats(
-  tenantId: string,
-  periodId: string,
-  parentUnitId?: string,
-): Promise<{ units: OrgHierarchyUnit[] }> {
-  const units = await prisma.orgUnit.findMany({
-    where: {
-      tenantId,
-      parentId: parentUnitId ?? null,
-    },
-    select: {
-      id: true,
-      name: true,
-      code: true,
-      category: true,
-      _count: { select: { children: true } },
-    },
-    orderBy: { name: "asc" },
-  });
-
-  const result: OrgHierarchyUnit[] = [];
-
-  for (const unit of units) {
-    // Get all descendant unit IDs including this unit
-    const unitIds = [unit.id];
-
-    const allocations = await prisma.targetAllocation.findMany({
-      where: {
-        tenantId,
-        kpiDefinition: { kraDefinition: { periodId } },
-        OR: [
-          { assignedToUnitId: { in: unitIds } },
-          { assignedToUser: { orgUnits: { some: { orgUnitId: { in: unitIds } } } } },
-        ],
-      },
-      select: {
-        id: true,
-        achievements: {
-          select: { state: true, effectiveScore: true, stageCompletionScore: true },
-        },
-      },
-    });
-
-    const total = allocations.length;
-    let completed = 0;
-    let scoreSum = 0;
-    let scoreCount = 0;
-
-    for (const alloc of allocations) {
-      const verified = alloc.achievements.some((a) => a.state === "VERIFIED");
-      if (verified) completed++;
-      for (const a of alloc.achievements) {
-        const s = a.effectiveScore ?? a.stageCompletionScore ?? 0;
-        if (s > 0) {
-          scoreSum += s;
-          scoreCount++;
-        }
-      }
-    }
-
-    result.push({
-      unitId: unit.id,
-      unitName: unit.name,
-      unitCode: unit.code,
-      category: unit.category,
-      totalAllocations: total,
-      completedAllocations: completed,
-      completionPercent: total > 0 ? Math.round((completed / total) * 10000) / 100 : 0,
-      averageScore: scoreCount > 0 ? Math.round((scoreSum / scoreCount) * 100) / 100 : 0,
-      childUnitCount: unit._count.children,
-    });
-  }
-
-  return { units: result };
-}
-
-// ── G3: KPI Cross-Comparison ────────────────────────────────────────────────
 
 export type KpiCrossComparison = {
   kpiTitle: string;
@@ -179,167 +42,12 @@ export type KpiCrossComparison = {
   }[];
 };
 
-export async function getKpiCrossComparison(
-  tenantId: string,
-  periodId: string,
-  kpiId: string,
-): Promise<KpiCrossComparison | null> {
-  const kpi = await prisma.kpiDefinition.findFirst({
-    where: { id: kpiId, kraDefinition: { tenantId, periodId } },
-    select: { title: true },
-  });
-  if (!kpi) return null;
-
-  const allocations = await prisma.targetAllocation.findMany({
-    where: {
-      tenantId,
-      kpiDefinitionId: kpiId,
-    },
-    select: {
-      targetValue: true,
-      assignedToUnitId: true,
-      assignedToUnit: { select: { id: true, name: true } },
-      achievements: {
-        select: { state: true, actualValue: true },
-      },
-    },
-  });
-
-  const unitMap = new Map<string, { name: string; target: number; achieved: number; count: number }>();
-
-  for (const alloc of allocations) {
-    const unitId = alloc.assignedToUnitId ?? alloc.assignedToUnit?.id ?? "unassigned";
-    const unitName = alloc.assignedToUnit?.name ?? "Unassigned";
-    const entry = unitMap.get(unitId) ?? { name: unitName, target: 0, achieved: 0, count: 0 };
-    entry.target += parseFloat(alloc.targetValue ?? "0");
-    for (const a of alloc.achievements) {
-      if (a.state === "VERIFIED" || a.state === "SUBMITTED" || a.state === "RECOMMENDED") {
-        entry.achieved += a.actualValue ?? 0;
-        entry.count++;
-      }
-    }
-    unitMap.set(unitId, entry);
-  }
-
-  let targetTotal = 0;
-  let achievedTotal = 0;
-  const units = Array.from(unitMap.entries()).map(([unitId, data]) => {
-    targetTotal += data.target;
-    achievedTotal += data.achieved;
-    return {
-      unitId,
-      unitName: data.name,
-      target: data.target,
-      achieved: data.achieved,
-      completionPercent: data.target > 0 ? Math.round((data.achieved / data.target) * 10000) / 100 : 0,
-      achievementCount: data.count,
-    };
-  });
-
-  return { kpiTitle: kpi.title, targetTotal, achievedTotal, units };
-}
-
-// ── G4: Attention Items ─────────────────────────────────────────────────────
-
 export type AttentionItems = {
   overdueAchievements: number;
   zeroProgressEmployees: number;
   stalePendingReviews: number;
   lowCompletionKpis: { kpiId: string; kpiTitle: string; completionPercent: number }[];
 };
-
-export async function getAttentionItems(
-  tenantId: string,
-  periodId: string,
-): Promise<AttentionItems> {
-  const now = new Date();
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-  // Overdue: submitted after period end or not submitted at all
-  const period = await prisma.assessmentPeriod.findUnique({
-    where: { id: periodId },
-    select: { endDate: true },
-  });
-
-  let overdueAchievements = 0;
-  if (period && now > period.endDate) {
-    const allocWithoutSubmission = await prisma.targetAllocation.count({
-      where: {
-        tenantId,
-        kpiDefinition: { kraDefinition: { periodId } },
-        achievements: { none: { state: { in: ["SUBMITTED", "RECOMMENDED", "VERIFIED"] } } },
-      },
-    });
-    overdueAchievements = allocWithoutSubmission;
-  }
-
-  // Zero progress: employees with allocations but zero completed stages
-  const allocsWithProgress = await prisma.targetAllocation.findMany({
-    where: {
-      tenantId,
-      kpiDefinition: { kraDefinition: { periodId } },
-    },
-    select: {
-      id: true,
-      assignedToUserId: true,
-      stageProgress: { where: { isCompleted: true }, select: { id: true } },
-      achievements: { select: { id: true } },
-    },
-  });
-
-  const usersWithProgress = new Set<string>();
-  const usersWithAllocs = new Set<string>();
-  for (const alloc of allocsWithProgress) {
-    if (alloc.assignedToUserId) {
-      usersWithAllocs.add(alloc.assignedToUserId);
-      if (alloc.stageProgress.length > 0 || alloc.achievements.length > 0) {
-        usersWithProgress.add(alloc.assignedToUserId);
-      }
-    }
-  }
-  const zeroProgressEmployees = [...usersWithAllocs].filter((u) => !usersWithProgress.has(u)).length;
-
-  // Stale pending reviews: submitted > 7 days ago
-  const stalePendingReviews = await prisma.achievement.count({
-    where: {
-      tenantId,
-      state: "SUBMITTED",
-      updatedAt: { lt: sevenDaysAgo },
-      targetAllocation: { kpiDefinition: { kraDefinition: { periodId } } },
-    },
-  });
-
-  // Low completion KPIs: < 50%
-  const kpis = await prisma.kpiDefinition.findMany({
-    where: { kraDefinition: { tenantId, periodId }, state: "ACTIVE" },
-    select: {
-      id: true,
-      title: true,
-      targetAllocations: {
-        select: {
-          achievements: { select: { state: true } },
-        },
-      },
-    },
-  });
-
-  const lowCompletionKpis: AttentionItems["lowCompletionKpis"] = [];
-  for (const kpi of kpis) {
-    const totalAllocs = kpi.targetAllocations.length;
-    if (totalAllocs === 0) continue;
-    const verified = kpi.targetAllocations.filter((ta) =>
-      ta.achievements.some((a) => a.state === "VERIFIED"),
-    ).length;
-    const pct = Math.round((verified / totalAllocs) * 10000) / 100;
-    if (pct < 50) {
-      lowCompletionKpis.push({ kpiId: kpi.id, kpiTitle: kpi.title, completionPercent: pct });
-    }
-  }
-
-  return { overdueAchievements, zeroProgressEmployees, stalePendingReviews, lowCompletionKpis };
-}
-
-// ── G5: Stage Bottleneck Analysis ───────────────────────────────────────────
 
 export type StageBottleneck = {
   kpiTitle: string;
@@ -352,61 +60,6 @@ export type StageBottleneck = {
     averageDaysToComplete: number | null;
   }[];
 };
-
-export async function getStageBottleneckAnalysis(
-  tenantId: string,
-  periodId: string,
-  kpiId: string,
-): Promise<StageBottleneck | null> {
-  const kpi = await prisma.kpiDefinition.findFirst({
-    where: { id: kpiId, kraDefinition: { tenantId, periodId } },
-    select: { title: true },
-  });
-  if (!kpi) return null;
-
-  const stageDefs = await prisma.kpiStageDefinition.findMany({
-    where: { kpiDefinitionId: kpiId },
-    orderBy: { stageOrder: "asc" },
-    select: {
-      id: true,
-      stageOrder: true,
-      title: true,
-      stageProgress: {
-        select: { isCompleted: true, completedAt: true, createdAt: true },
-      },
-    },
-  });
-
-  return {
-    kpiTitle: kpi.title,
-    stages: stageDefs.map((sd) => {
-      const total = sd.stageProgress.length;
-      const completed = sd.stageProgress.filter((p) => p.isCompleted);
-      let avgDays: number | null = null;
-
-      if (completed.length > 0) {
-        const totalDays = completed.reduce((sum, p) => {
-          if (p.completedAt && p.createdAt) {
-            return sum + (p.completedAt.getTime() - p.createdAt.getTime()) / (1000 * 60 * 60 * 24);
-          }
-          return sum;
-        }, 0);
-        avgDays = Math.round((totalDays / completed.length) * 10) / 10;
-      }
-
-      return {
-        stageOrder: sd.stageOrder,
-        title: sd.title,
-        totalAssigned: total,
-        completedCount: completed.length,
-        completionPercent: total > 0 ? Math.round((completed.length / total) * 10000) / 100 : 0,
-        averageDaysToComplete: avgDays,
-      };
-    }),
-  };
-}
-
-// ── G6: Person Detail ───────────────────────────────────────────────────────
 
 export type PersonDetail = {
   userId: string;
@@ -426,46 +79,201 @@ export type PersonDetail = {
   overallCompletion: number;
 };
 
-export async function getPersonDetail(
+type PublishedUnit = {
+  id: string;
+  name: string;
+  code: string;
+  parentId: string | null;
+  type: { displayLabel: string };
+};
+
+async function getPublishedVersionId(tenantId: string): Promise<string | null> {
+  const version = await prisma.orgStructureVersion.findFirst({
+    where: { tenantId, state: { in: ["PUBLISHED", "VALIDATED"] } },
+    orderBy: { versionNumber: "desc" },
+    select: { id: true },
+  });
+
+  return version?.id ?? null;
+}
+
+async function getPublishedUnits(tenantId: string): Promise<PublishedUnit[]> {
+  const versionId = await getPublishedVersionId(tenantId);
+  if (!versionId) return [];
+
+  return prisma.orgUnit.findMany({
+    where: { tenantId, versionId },
+    select: {
+      id: true,
+      name: true,
+      code: true,
+      parentId: true,
+      type: { select: { displayLabel: true } },
+    },
+    orderBy: [{ level: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
+  });
+}
+
+function buildChildrenMap(units: PublishedUnit[]): Map<string | null, PublishedUnit[]> {
+  const map = new Map<string | null, PublishedUnit[]>();
+  for (const unit of units) {
+    const siblings = map.get(unit.parentId) ?? [];
+    siblings.push(unit);
+    map.set(unit.parentId, siblings);
+  }
+  return map;
+}
+
+function collectDescendantIds(
+  rootUnitId: string,
+  childrenMap: Map<string | null, PublishedUnit[]>,
+): Set<string> {
+  const ids = new Set<string>();
+  const queue = [rootUnitId];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (ids.has(current)) continue;
+    ids.add(current);
+    for (const child of childrenMap.get(current) ?? []) {
+      queue.push(child.id);
+    }
+  }
+
+  return ids;
+}
+
+async function getPrimaryAssignmentMap(
+  tenantId: string,
+  userIds: string[],
+): Promise<Map<string, string>> {
+  if (userIds.length === 0) return new Map();
+
+  const versionId = await getPublishedVersionId(tenantId);
+  if (!versionId) return new Map();
+
+  const assignments = await prisma.userOrgAssignment.findMany({
+    where: {
+      versionId,
+      userId: { in: userIds },
+    },
+    orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+    select: { userId: true, unitId: true, isPrimary: true },
+  });
+
+  const map = new Map<string, string>();
+  for (const assignment of assignments) {
+    if (!map.has(assignment.userId)) {
+      map.set(assignment.userId, assignment.unitId);
+    }
+  }
+
+  return map;
+}
+
+function scoreFromAchievement(achievement: {
+  effectiveScore: number | null;
+  stageCompletionScore: number | null;
+  computedScore: number | null;
+} | null | undefined): number {
+  return achievement?.effectiveScore
+    ?? achievement?.stageCompletionScore
+    ?? achievement?.computedScore
+    ?? 0;
+}
+
+function formatTargetValue(allocation: {
+  targetValue: number | null;
+  targetDate: Date | null;
+  targetMilestone: string | null;
+  targetGrade: string | null;
+  targetBoolean: boolean | null;
+  targetRating: number | null;
+}): string {
+  if (allocation.targetValue != null) return String(allocation.targetValue);
+  if (allocation.targetDate != null) return allocation.targetDate.toISOString().slice(0, 10);
+  if (allocation.targetMilestone != null) return allocation.targetMilestone;
+  if (allocation.targetGrade != null) return allocation.targetGrade;
+  if (allocation.targetBoolean != null) return allocation.targetBoolean ? "Yes" : "No";
+  if (allocation.targetRating != null) return String(allocation.targetRating);
+  return "—";
+}
+
+export async function getOverviewStats(
   tenantId: string,
   periodId: string,
-  userId: string,
-): Promise<PersonDetail | null> {
-  const user = await prisma.user.findFirst({
-    where: { id: userId, tenantId },
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      orgUnits: {
-        select: { orgUnit: { select: { name: true } } },
-        take: 1,
+): Promise<OverviewStats> {
+  const [kpiCount, allocationCount, achievements, period] = await Promise.all([
+    prisma.kpiDefinition.count({
+      where: { kraDefinition: { tenantId, periodId }, state: "ACTIVE" },
+    }),
+    prisma.targetAllocation.count({
+      where: { tenantId, periodId },
+    }),
+    prisma.achievement.findMany({
+      where: { tenantId, periodId },
+      select: { state: true },
+    }),
+    prisma.assessmentPeriod.findFirst({
+      where: { id: periodId, tenantId },
+      select: { achievementDeadline: true, endDate: true },
+    }),
+  ]);
+
+  const byState = { DRAFT: 0, SUBMITTED: 0, RECOMMENDED: 0, VERIFIED: 0, REJECTED: 0 };
+  for (const achievement of achievements) {
+    byState[achievement.state]++;
+  }
+
+  const totalAchievements = achievements.length;
+  const overallCompletionPercent =
+    allocationCount > 0 ? Math.round((byState.VERIFIED / allocationCount) * 10000) / 100 : 0;
+
+  let overdueCount = 0;
+  const dueDate = period?.achievementDeadline ?? period?.endDate ?? null;
+  if (dueDate && new Date() > dueDate) {
+    const allocationsWithVerified = await prisma.achievement.groupBy({
+      by: ["targetAllocationId"],
+      where: {
+        tenantId,
+        periodId,
+        state: "VERIFIED",
+        targetAllocationId: { not: null },
       },
-    },
-  });
-  if (!user) return null;
+    });
+    overdueCount = allocationCount - allocationsWithVerified.length;
+  }
+
+  return {
+    totalKpis: kpiCount,
+    totalAllocations: allocationCount,
+    totalAchievements,
+    achievementsByState: byState,
+    overallCompletionPercent,
+    overdueCount: Math.max(0, overdueCount),
+    pendingReviewCount: byState.SUBMITTED + byState.RECOMMENDED,
+  };
+}
+
+export async function getOrgHierarchyStats(
+  tenantId: string,
+  periodId: string,
+  parentUnitId?: string,
+): Promise<{ units: OrgHierarchyUnit[] }> {
+  const units = await getPublishedUnits(tenantId);
+  if (units.length === 0) return { units: [] };
+
+  const childrenMap = buildChildrenMap(units);
+  const visibleUnits = childrenMap.get(parentUnitId ?? null) ?? [];
+  if (visibleUnits.length === 0) return { units: [] };
 
   const allocations = await prisma.targetAllocation.findMany({
-    where: {
-      tenantId,
-      assignedToUserId: userId,
-      kpiDefinition: { kraDefinition: { periodId } },
-    },
+    where: { tenantId, periodId },
     select: {
-      id: true,
-      targetValue: true,
-      kpiDefinition: {
-        select: {
-          title: true,
-          kraDefinition: { select: { period: { select: { endDate: true } } } },
-        },
-      },
-      stageProgress: {
-        select: { isCompleted: true },
-      },
+      assignedToUnitId: true,
+      assignedToUserId: true,
       achievements: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
+        orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
         select: {
           state: true,
           effectiveScore: true,
@@ -476,28 +284,388 @@ export async function getPersonDetail(
     },
   });
 
-  const now = new Date();
-  let totalScore = 0;
-  let totalCompleted = 0;
+  const primaryAssignmentMap = await getPrimaryAssignmentMap(
+    tenantId,
+    allocations
+      .map((allocation) => allocation.assignedToUserId)
+      .filter((userId): userId is string => Boolean(userId)),
+  );
 
-  const allocViews = allocations.map((alloc) => {
-    const totalStages = alloc.stageProgress.length;
-    const completedStages = alloc.stageProgress.filter((sp) => sp.isCompleted).length;
-    const latest = alloc.achievements[0];
-    const score = latest?.effectiveScore ?? latest?.stageCompletionScore ?? latest?.computedScore ?? 0;
-    const state = latest?.state ?? "NOT_STARTED";
-    const endDate = alloc.kpiDefinition.kraDefinition.period.endDate;
-    const isOverdue = now > endDate && state !== "VERIFIED";
+  const results = visibleUnits.map((unit): OrgHierarchyUnit => {
+    const descendantIds = collectDescendantIds(unit.id, childrenMap);
+    const scopedAllocations = allocations.filter((allocation) => {
+      const allocationUnitId =
+        allocation.assignedToUnitId
+        ?? (allocation.assignedToUserId
+          ? primaryAssignmentMap.get(allocation.assignedToUserId) ?? null
+          : null);
+      return allocationUnitId ? descendantIds.has(allocationUnitId) : false;
+    });
 
-    if (state === "VERIFIED") totalCompleted++;
-    totalScore += score;
+    const totalAllocations = scopedAllocations.length;
+    const completedAllocations = scopedAllocations.filter((allocation) =>
+      allocation.achievements.some((achievement) => achievement.state === "VERIFIED"),
+    ).length;
+    const latestScores = scopedAllocations
+      .map((allocation) => scoreFromAchievement(allocation.achievements[0]))
+      .filter((score) => score > 0);
 
     return {
-      kpiTitle: alloc.kpiDefinition.title,
-      target: alloc.targetValue ?? "—",
-      stagesComplete: completedStages,
-      stagesTotal: totalStages,
-      completionPercent: totalStages > 0 ? Math.round((completedStages / totalStages) * 100) : 0,
+      unitId: unit.id,
+      unitName: unit.name,
+      unitCode: unit.code,
+      category: unit.type.displayLabel,
+      totalAllocations,
+      completedAllocations,
+      completionPercent:
+        totalAllocations > 0
+          ? Math.round((completedAllocations / totalAllocations) * 10000) / 100
+          : 0,
+      averageScore:
+        latestScores.length > 0
+          ? Math.round((latestScores.reduce((sum, score) => sum + score, 0) / latestScores.length) * 100) / 100
+          : 0,
+      childUnitCount: (childrenMap.get(unit.id) ?? []).length,
+    };
+  });
+
+  return { units: results };
+}
+
+export async function getKpiCrossComparison(
+  tenantId: string,
+  periodId: string,
+  kpiId: string,
+): Promise<KpiCrossComparison | null> {
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiId, kraDefinition: { tenantId, periodId } },
+    select: { title: true },
+  });
+  if (!kpi) return null;
+
+  const allocations = await prisma.targetAllocation.findMany({
+    where: {
+      tenantId,
+      periodId,
+      kpiDefinitionId: kpiId,
+    },
+    select: {
+      targetValue: true,
+      assignedToUnitId: true,
+      assignedToUserId: true,
+      assignedToUnit: { select: { id: true, name: true } },
+      achievements: {
+        orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
+        select: { state: true, actualValue: true },
+      },
+    },
+  });
+
+  const primaryAssignmentMap = await getPrimaryAssignmentMap(
+    tenantId,
+    allocations
+      .map((allocation) => allocation.assignedToUserId)
+      .filter((userId): userId is string => Boolean(userId)),
+  );
+  const units = await getPublishedUnits(tenantId);
+  const unitNameMap = new Map(units.map((unit) => [unit.id, unit.name]));
+
+  const unitMap = new Map<string, { name: string; target: number; achieved: number; count: number }>();
+  for (const allocation of allocations) {
+    const unitId =
+      allocation.assignedToUnitId
+      ?? (allocation.assignedToUserId
+        ? primaryAssignmentMap.get(allocation.assignedToUserId) ?? "unassigned"
+        : "unassigned");
+    const unitName =
+      allocation.assignedToUnit?.name
+      ?? unitNameMap.get(unitId)
+      ?? "Unassigned";
+    const entry = unitMap.get(unitId) ?? { name: unitName, target: 0, achieved: 0, count: 0 };
+    entry.target += allocation.targetValue ?? 0;
+
+    const latestAchievement = allocation.achievements[0];
+    if (latestAchievement && ["SUBMITTED", "RECOMMENDED", "VERIFIED"].includes(latestAchievement.state)) {
+      entry.achieved += latestAchievement.actualValue ?? 0;
+      entry.count += 1;
+    }
+
+    unitMap.set(unitId, entry);
+  }
+
+  let targetTotal = 0;
+  let achievedTotal = 0;
+  const unitRows = Array.from(unitMap.entries()).map(([unitId, unit]) => {
+    targetTotal += unit.target;
+    achievedTotal += unit.achieved;
+
+    return {
+      unitId,
+      unitName: unit.name,
+      target: unit.target,
+      achieved: unit.achieved,
+      completionPercent:
+        unit.target > 0 ? Math.round((unit.achieved / unit.target) * 10000) / 100 : 0,
+      achievementCount: unit.count,
+    };
+  });
+
+  return {
+    kpiTitle: kpi.title,
+    targetTotal,
+    achievedTotal,
+    units: unitRows,
+  };
+}
+
+export async function getAttentionItems(
+  tenantId: string,
+  periodId: string,
+): Promise<AttentionItems> {
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+    select: { achievementDeadline: true, endDate: true },
+  });
+
+  let overdueAchievements = 0;
+  const dueDate = period?.achievementDeadline ?? period?.endDate ?? null;
+  if (dueDate && now > dueDate) {
+    const allocationsWithVerified = await prisma.achievement.groupBy({
+      by: ["targetAllocationId"],
+      where: {
+        tenantId,
+        periodId,
+        state: "VERIFIED",
+        targetAllocationId: { not: null },
+      },
+    });
+    const allocationCount = await prisma.targetAllocation.count({
+      where: { tenantId, periodId },
+    });
+    overdueAchievements = Math.max(0, allocationCount - allocationsWithVerified.length);
+  }
+
+  const allocations = await prisma.targetAllocation.findMany({
+    where: {
+      tenantId,
+      periodId,
+      assignedToUserId: { not: null },
+    },
+    select: {
+      assignedToUserId: true,
+      achievements: { select: { id: true } },
+      stageProgress: { where: { isCompleted: true }, select: { id: true } },
+    },
+  });
+
+  const usersWithAllocations = new Set<string>();
+  const usersWithProgress = new Set<string>();
+  for (const allocation of allocations) {
+    if (!allocation.assignedToUserId) continue;
+    usersWithAllocations.add(allocation.assignedToUserId);
+    if (allocation.achievements.length > 0 || allocation.stageProgress.length > 0) {
+      usersWithProgress.add(allocation.assignedToUserId);
+    }
+  }
+
+  const stalePendingReviews = await prisma.achievement.count({
+    where: {
+      tenantId,
+      periodId,
+      state: { in: ["SUBMITTED", "RECOMMENDED"] },
+      updatedAt: { lt: sevenDaysAgo },
+    },
+  });
+
+  const kpis = await prisma.kpiDefinition.findMany({
+    where: { kraDefinition: { tenantId, periodId }, state: "ACTIVE" },
+    select: {
+      id: true,
+      title: true,
+      targetAllocations: {
+        select: {
+          achievements: { select: { state: true } },
+        },
+      },
+    },
+  });
+
+  const lowCompletionKpis = kpis
+    .map((kpi) => {
+      const totalAllocations = kpi.targetAllocations.length;
+      const verifiedAllocations = kpi.targetAllocations.filter((allocation) =>
+        allocation.achievements.some((achievement) => achievement.state === "VERIFIED"),
+      ).length;
+      const completionPercent =
+        totalAllocations > 0
+          ? Math.round((verifiedAllocations / totalAllocations) * 10000) / 100
+          : 0;
+
+      return {
+        kpiId: kpi.id,
+        kpiTitle: kpi.title,
+        completionPercent,
+        totalAllocations,
+      };
+    })
+    .filter((kpi) => kpi.totalAllocations > 0 && kpi.completionPercent < 50)
+    .map(({ kpiId, kpiTitle, completionPercent }) => ({
+      kpiId,
+      kpiTitle,
+      completionPercent,
+    }));
+
+  return {
+    overdueAchievements,
+    zeroProgressEmployees: [...usersWithAllocations].filter((userId) => !usersWithProgress.has(userId)).length,
+    stalePendingReviews,
+    lowCompletionKpis,
+  };
+}
+
+export async function getStageBottleneckAnalysis(
+  tenantId: string,
+  periodId: string,
+  kpiId: string,
+): Promise<StageBottleneck | null> {
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: kpiId, kraDefinition: { tenantId, periodId } },
+    select: { title: true },
+  });
+  if (!kpi) return null;
+
+  const stageDefinitions = await prisma.kpiStageDefinition.findMany({
+    where: { kpiDefinitionId: kpiId },
+    orderBy: { stageOrder: "asc" },
+    select: {
+      stageOrder: true,
+      title: true,
+      stageProgress: {
+        select: {
+          isCompleted: true,
+          completedAt: true,
+          createdAt: true,
+        },
+      },
+    },
+  });
+
+  return {
+    kpiTitle: kpi.title,
+    stages: stageDefinitions.map((stage) => {
+      const totalAssigned = stage.stageProgress.length;
+      const completed = stage.stageProgress.filter((progress) => progress.isCompleted);
+      const averageDaysToComplete =
+        completed.length > 0
+          ? Math.round(
+              (completed.reduce((sum, progress) => {
+                if (!progress.completedAt) return sum;
+                return sum + ((progress.completedAt.getTime() - progress.createdAt.getTime()) / (1000 * 60 * 60 * 24));
+              }, 0) / completed.length)
+              * 10,
+            ) / 10
+          : null;
+
+      return {
+        stageOrder: stage.stageOrder,
+        title: stage.title,
+        totalAssigned,
+        completedCount: completed.length,
+        completionPercent:
+          totalAssigned > 0 ? Math.round((completed.length / totalAssigned) * 10000) / 100 : 0,
+        averageDaysToComplete,
+      };
+    }),
+  };
+}
+
+export async function getPersonDetail(
+  tenantId: string,
+  periodId: string,
+  userId: string,
+): Promise<PersonDetail | null> {
+  const [user, versionId] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, firstName: true, lastName: true },
+    }),
+    getPublishedVersionId(tenantId),
+  ]);
+  if (!user) return null;
+
+  const primaryAssignment = versionId
+    ? await prisma.userOrgAssignment.findFirst({
+        where: { versionId, userId, isPrimary: true },
+        include: { unit: { select: { name: true } } },
+      })
+    : null;
+
+  const allocations = await prisma.targetAllocation.findMany({
+    where: {
+      tenantId,
+      periodId,
+      assignedToUserId: userId,
+    },
+    select: {
+      targetValue: true,
+      targetDate: true,
+      targetMilestone: true,
+      targetGrade: true,
+      targetBoolean: true,
+      targetRating: true,
+      kpiDefinition: {
+        select: {
+          title: true,
+          _count: { select: { stages: true } },
+        },
+      },
+      achievements: {
+        orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
+        select: {
+          id: true,
+          state: true,
+          effectiveScore: true,
+          stageCompletionScore: true,
+          computedScore: true,
+          stageProgress: { select: { isCompleted: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: periodId, tenantId },
+    select: { achievementDeadline: true, endDate: true },
+  });
+  const dueDate = period?.achievementDeadline ?? period?.endDate ?? null;
+  const now = new Date();
+
+  let overallScore = 0;
+  let completedCount = 0;
+
+  const allocationRows = allocations.map((allocation) => {
+    const latestAchievement = allocation.achievements[0];
+    const stagesTotal = latestAchievement?.stageProgress.length ?? allocation.kpiDefinition._count.stages;
+    const stagesComplete =
+      latestAchievement?.stageProgress.filter((stage) => stage.isCompleted).length ?? 0;
+    const state = latestAchievement?.state ?? "NOT_STARTED";
+    const score = scoreFromAchievement(latestAchievement);
+    const isOverdue = Boolean(dueDate && now > dueDate && state !== "VERIFIED");
+
+    overallScore += score;
+    if (state === "VERIFIED") {
+      completedCount += 1;
+    }
+
+    return {
+      kpiTitle: allocation.kpiDefinition.title,
+      target: formatTargetValue(allocation),
+      stagesComplete,
+      stagesTotal,
+      completionPercent: stagesTotal > 0 ? Math.round((stagesComplete / stagesTotal) * 100) : 0,
       score,
       state,
       isOverdue,
@@ -507,10 +675,10 @@ export async function getPersonDetail(
   return {
     userId: user.id,
     userName: `${user.firstName} ${user.lastName}`,
-    unitName: user.orgUnits[0]?.orgUnit?.name ?? "—",
-    allocations: allocViews,
-    overallScore: Math.round(totalScore * 100) / 100,
+    unitName: primaryAssignment?.unit?.name ?? "—",
+    allocations: allocationRows,
+    overallScore: Math.round(overallScore * 100) / 100,
     overallCompletion:
-      allocations.length > 0 ? Math.round((totalCompleted / allocations.length) * 100) : 0,
+      allocationRows.length > 0 ? Math.round((completedCount / allocationRows.length) * 100) : 0,
   };
 }

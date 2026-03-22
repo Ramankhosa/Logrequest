@@ -25,6 +25,10 @@ type NotificationType =
   | "ACHIEVEMENT_SENT_BACK"
   | "ACHIEVEMENT_VERIFIED"
   | "ACHIEVEMENT_NOT_APPROVED"
+  | "ACHIEVEMENT_APPROVED"
+  | "ACHIEVEMENT_REJECTED"
+  | "ACHIEVEMENT_WITHDRAWN"
+  | "ACHIEVEMENT_RESUBMITTED"
   | "PERIOD_STATE_CHANGED";
 
 type NotificationItem = {
@@ -46,6 +50,10 @@ const NOTIFICATION_ICONS: Record<string, { icon: React.ElementType; color: strin
   ACHIEVEMENT_SENT_BACK: { icon: Undo2, color: "text-amber-500" },
   ACHIEVEMENT_VERIFIED: { icon: CheckCircle2, color: "text-green-500" },
   ACHIEVEMENT_NOT_APPROVED: { icon: XCircle, color: "text-red-500" },
+  ACHIEVEMENT_APPROVED: { icon: CheckCircle2, color: "text-green-500" },
+  ACHIEVEMENT_REJECTED: { icon: XCircle, color: "text-red-500" },
+  ACHIEVEMENT_WITHDRAWN: { icon: Undo2, color: "text-amber-500" },
+  ACHIEVEMENT_RESUBMITTED: { icon: RefreshCw, color: "text-blue-500" },
   PERIOD_STATE_CHANGED: { icon: Calendar, color: "text-purple-500" },
 };
 
