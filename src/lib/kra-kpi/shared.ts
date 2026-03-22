@@ -313,6 +313,65 @@ export type KpiDefinitionView = {
   sopDescription: string | null;
   isTeamKpi: boolean;
   teamCreditMethod: string;
+  allowPartialCompletion: boolean;
+  contributionRoles: ContributionRoleDefinition[] | null;
+  createdAt: Date;
+};
+
+export type ContributionRoleDefinition = {
+  role: string;
+  creditPercent: number;
+  isDefault: boolean;
+};
+
+export type KpiStageView = {
+  id: string;
+  kpiDefinitionId: string;
+  stageOrder: number;
+  title: string;
+  description: string | null;
+  isMandatory: boolean;
+  weight: number;
+  evidenceRequired: boolean;
+  evidenceTypes: string[];
+  evidenceInstructions: string | null;
+  deadline: Date | null;
+  completedProgressCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type StageProgressView = {
+  progressId: string;
+  stageDefinitionId: string;
+  stageOrder: number;
+  title: string;
+  description: string | null;
+  weight: number;
+  evidenceRequired: boolean;
+  evidenceTypes: string[];
+  evidenceInstructions: string | null;
+  deadline: Date | null;
+  isCompleted: boolean;
+  completedAt: Date | null;
+  completedByUserId: string | null;
+  notes: string | null;
+  evidenceFiles: Array<{ name: string; url: string; type: string; uploadedAt?: string }> | null;
+  isOverdue: boolean;
+  daysRemaining: number | null;
+};
+
+export type SubmissionTrailView = {
+  id: string;
+  achievementId: string;
+  action: string;
+  actorUserId: string;
+  actorName: string;
+  actorRole: string;
+  actorUnitName: string | null;
+  note: string | null;
+  scoreAtAction: number | null;
+  metadata: Record<string, unknown> | null;
   createdAt: Date;
 };
 
@@ -352,6 +411,11 @@ export type AchievementView = {
   targetAllocationId: string | null;
   reportedByUserId: string;
   reportedByUserName: string;
+  title: string | null;
+  contributionRole: string | null;
+  creditPercent: number | null;
+  effectiveScore: number | null;
+  stageCompletionScore: number | null;
   actualValue: number | null;
   actualDate: Date | null;
   actualMilestone: MilestoneStatus | null;
@@ -762,6 +826,10 @@ export type MyAllocationView = TargetAllocationView & {
   periodEndDate: Date;
   reviewFrequency: ReviewCycleFrequency;
   achievement: AchievementView | null;
+  /** All achievement instances for this allocation (R2.2 multi-target); newest first */
+  achievements: AchievementView[];
+  allowPartialCompletion: boolean;
+  stagesDefinedCount: number;
   parentTargetValue: number | null;
   section: "department" | "individual";
   childAllocations: ChildAllocationSummary[];
@@ -786,6 +854,7 @@ export type ReviewQueueItem = {
   facultyDesignation: string | null;
   kpiTitle: string;
   kpiDefinitionId: string;
+  achievementTitle: string | null;
   targetValue: number | null;
   actualValue: number | null;
   measurementType: KpiMeasurementType;
@@ -796,9 +865,16 @@ export type ReviewQueueItem = {
   evidenceDescription: string | null;
   evidenceLinks: string[];
   verificationLog: VerificationLogEntry[];
+  submissionTrail: SubmissionTrailView[];
   reportingDate: Date;
   reviewLevel: "RECOMMEND" | "VERIFY";
   startingUnitId: string;
+  contributionRole: string | null;
+  creditPercent: number | null;
+  stageCompletionScore: number | null;
+  effectiveScore: number | null;
+  stagesComplete: number;
+  stagesTotal: number;
 };
 
 export type MyDashboardSummary = {

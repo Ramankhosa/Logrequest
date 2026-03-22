@@ -7,6 +7,7 @@ import type {
   KpiTargetUnitView,
   AchievementFormConfig,
   MeasurementConfig,
+  ContributionRoleDefinition,
 } from "./shared";
 import {
   measurementConfigSchema,
@@ -19,6 +20,54 @@ import {
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
+
+const contributionRoleEntrySchema = z.object({
+  role: z.string().trim().min(1).max(100),
+  creditPercent: z.number().min(1).max(100),
+  isDefault: z.boolean(),
+});
+
+export function validateContributionRolesJson(value: unknown): string | null {
+  if (value == null) return null;
+  const arr = contributionRoleEntrySchema.array().safeParse(value);
+  if (!arr.success) {
+    return arr.error.issues[0]?.message ?? "Invalid contribution roles.";
+  }
+  const roles = arr.data;
+  const names = new Set<string>();
+  let defaultCount = 0;
+  for (const r of roles) {
+    const key = r.role.toLowerCase();
+    if (names.has(key)) {
+      return "Duplicate contribution role names are not allowed.";
+    }
+    names.add(key);
+    if (r.isDefault) defaultCount++;
+  }
+  if (defaultCount > 1) {
+    return "At most one contribution role can be marked as default.";
+  }
+  return null;
+}
+
+function parseContributionRoles(
+  value: unknown,
+): ContributionRoleDefinition[] | null {
+  if (value == null) return null;
+  const parsed = contributionRoleEntrySchema.array().safeParse(value);
+  if (!parsed.success || parsed.data.length === 0) return null;
+  return parsed.data;
+}
+
+export function lookupContributionCreditPercent(
+  contributionRoles: unknown,
+  roleName: string,
+): number | null {
+  const parsed = contributionRoleEntrySchema.array().safeParse(contributionRoles);
+  if (!parsed.success) return null;
+  const r = parsed.data.find((x) => x.role === roleName);
+  return r?.creditPercent ?? null;
+}
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +110,8 @@ const createKpiSchema = z.object({
   evidenceInstructions: z.string().trim().max(2000).optional(),
   isTeamKpi: z.boolean().default(false),
   teamCreditMethod: z.enum(["FULL_EACH", "EQUAL_SPLIT", "WEIGHTED_SPLIT", "PRIMARY_ONLY"]).default("FULL_EACH"),
+  allowPartialCompletion: z.boolean().default(true),
+  contributionRoles: z.array(contributionRoleEntrySchema).optional(),
 });
 
 const updateKpiSchema = z.object({
@@ -103,6 +154,8 @@ const updateKpiSchema = z.object({
   evidenceInstructions: z.string().trim().max(2000).nullable().optional(),
   isTeamKpi: z.boolean().optional(),
   teamCreditMethod: z.enum(["FULL_EACH", "EQUAL_SPLIT", "WEIGHTED_SPLIT", "PRIMARY_ONLY"]).optional(),
+  allowPartialCompletion: z.boolean().optional(),
+  contributionRoles: z.array(contributionRoleEntrySchema).nullable().optional(),
 });
 
 const changeKpiStateSchema = z.object({
@@ -165,6 +218,8 @@ function mapKpiView(k: any): KpiDefinitionView {
     sopDescription: k.sopDescription,
     isTeamKpi: k.isTeamKpi,
     teamCreditMethod: k.teamCreditMethod,
+    allowPartialCompletion: k.allowPartialCompletion ?? true,
+    contributionRoles: parseContributionRoles(k.contributionRoles),
     createdAt: k.createdAt,
   };
 }
@@ -362,6 +417,11 @@ export async function createKpi(
     if (!finalUnit) return { status: "error", message: "Final department not found." };
   }
 
+  const rolesError = validateContributionRolesJson(data.contributionRoles ?? null);
+  if (rolesError) {
+    return { status: "error", message: rolesError };
+  }
+
   await prisma.$transaction(async (tx) => {
     const kpi = await tx.kpiDefinition.create({
       data: {
@@ -391,6 +451,11 @@ export async function createKpi(
         evidenceInstructions: data.evidenceInstructions,
         isTeamKpi: data.isTeamKpi,
         teamCreditMethod: !data.isTeamKpi ? "FULL_EACH" : data.teamCreditMethod,
+        allowPartialCompletion: data.allowPartialCompletion,
+        contributionRoles:
+          data.contributionRoles && data.contributionRoles.length > 0
+            ? (data.contributionRoles as object[])
+            : undefined,
       },
     });
 
@@ -518,6 +583,15 @@ export async function updateKpi(
     };
   }
 
+  if (data.contributionRoles !== undefined) {
+    const rolesError = validateContributionRolesJson(
+      data.contributionRoles === null ? null : data.contributionRoles,
+    );
+    if (rolesError) {
+      return { status: "error", message: rolesError };
+    }
+  }
+
   await prisma.$transaction(async (tx) => {
     // Build update payload — use Prisma's unchecked input to avoid relation type conflicts
     const updateData: Record<string, unknown> = {};
@@ -550,6 +624,15 @@ export async function updateKpi(
     if (data.evidenceInstructions !== undefined) updateData.evidenceInstructions = data.evidenceInstructions;
     if (data.isTeamKpi !== undefined) updateData.isTeamKpi = data.isTeamKpi;
     if (data.teamCreditMethod !== undefined) updateData.teamCreditMethod = data.teamCreditMethod;
+    if (data.allowPartialCompletion !== undefined) {
+      updateData.allowPartialCompletion = data.allowPartialCompletion;
+    }
+    if (data.contributionRoles !== undefined) {
+      updateData.contributionRoles =
+        data.contributionRoles === null || data.contributionRoles.length === 0
+          ? null
+          : (data.contributionRoles as object[]);
+    }
 
     await tx.kpiDefinition.update({
       where: { id: kpiId },

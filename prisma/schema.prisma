@@ -833,6 +833,9 @@ model KpiDefinition {
   // ── R2: Team KPI ──
   isTeamKpi             Boolean            @default(false)
   teamCreditMethod      TeamCreditMethod   @default(FULL_EACH)
+  // ── R2.2: Stages & submission ──
+  allowPartialCompletion Boolean           @default(true)
+  contributionRoles      Json?
   // ── State ──
   state             KpiDefinitionState @default(DRAFT)
   sortOrder         Int                @default(0)
@@ -930,6 +933,12 @@ model Achievement {
   computedScore         Float?             // 0-100
   // Dynamic form data (R1.1a)
   achievementFormData       Json?      // filled-in custom fields per KPI template
+  // ── R2.2: Named instance & stage score ──
+  title                 String?
+  contributionRole      String?
+  creditPercent         Float?
+  effectiveScore        Float?
+  stageCompletionScore  Float?
   // 2-level verification (R1.1a)
   state                 AchievementState   @default(DRAFT)
   recommendedByUserId       String?
@@ -946,6 +955,8 @@ model Achievement {
   tenant                Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   kpiDefinition         KpiDefinition      @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
   targetAllocation      TargetAllocation?  @relation(fields: [targetAllocationId], references: [id], onDelete: SetNull)
+  stageProgress         KpiStageProgress[]
+  submissionTrail       SubmissionTrail[]
 
   @@index([tenantId, periodId])
   @@index([targetAllocationId])
@@ -968,16 +979,21 @@ model KpiTargetUnit {
 }
 
 model KpiStageDefinition {
-  id              String        @id @default(cuid())
-  kpiDefinitionId String
-  stageOrder      Int
-  title           String
-  description     String?
-  isMandatory     Boolean       @default(true)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  kpiDefinition   KpiDefinition @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
-  stageProgress   KpiStageProgress[]
+  id                   String         @id @default(cuid())
+  kpiDefinitionId      String
+  stageOrder           Int
+  title                String
+  description          String?
+  isMandatory          Boolean        @default(true)
+  weight               Float          @default(0)
+  evidenceRequired     Boolean        @default(false)
+  evidenceTypes        EvidenceType[] @default([])
+  evidenceInstructions String?
+  deadline             DateTime?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  kpiDefinition        KpiDefinition  @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  stageProgress        KpiStageProgress[]
 
   @@unique([kpiDefinitionId, stageOrder])
   @@index([kpiDefinitionId])
@@ -987,17 +1003,39 @@ model KpiStageProgress {
   id                  String             @id @default(cuid())
   targetAllocationId  String
   stageDefinitionId   String
+  achievementId       String?
   isCompleted         Boolean            @default(false)
   completedByUserId   String?
   completedAt         DateTime?
   evidenceNote        String?
+  notes               String?
+  evidenceFiles       Json?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
   targetAllocation    TargetAllocation   @relation(fields: [targetAllocationId], references: [id], onDelete: Cascade)
   stageDefinition     KpiStageDefinition @relation(fields: [stageDefinitionId], references: [id], onDelete: Cascade)
+  achievement         Achievement?       @relation(fields: [achievementId], references: [id], onDelete: Cascade)
 
-  @@unique([targetAllocationId, stageDefinitionId])
+  @@unique([targetAllocationId, stageDefinitionId, achievementId])
   @@index([targetAllocationId])
+  @@index([achievementId])
+}
+
+model SubmissionTrail {
+  id            String      @id @default(cuid())
+  achievementId String
+  action        String
+  actorUserId   String
+  actorName     String
+  actorRole     String
+  actorUnitName String?
+  note          String?
+  scoreAtAction Float?
+  metadata      Json?
+  createdAt     DateTime    @default(now())
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@index([achievementId, createdAt])
 }
 
 model ReviewCycle {

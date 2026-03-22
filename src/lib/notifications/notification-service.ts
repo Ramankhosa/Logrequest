@@ -32,7 +32,15 @@ export async function resolveUnitHead(
   tenantId: string,
   unitId: string,
 ): Promise<string | null> {
-  // Find the most recent published/validated org structure version
+  const ids = await resolveUnitHeadUserIds(tenantId, unitId);
+  return ids[0] ?? null;
+}
+
+/** All active unit-head user IDs for a unit (there may be more than one). */
+export async function resolveUnitHeadUserIds(
+  tenantId: string,
+  unitId: string,
+): Promise<string[]> {
   const version = await prisma.orgStructureVersion.findFirst({
     where: {
       tenantId,
@@ -41,9 +49,9 @@ export async function resolveUnitHead(
     orderBy: { createdAt: "desc" },
     select: { id: true },
   });
-  if (!version) return null;
+  if (!version) return [];
 
-  const headAssignment = await prisma.orgRoleAssignment.findFirst({
+  const headAssignments = await prisma.orgRoleAssignment.findMany({
     where: {
       versionId: version.id,
       unitId,
@@ -53,7 +61,7 @@ export async function resolveUnitHead(
     select: { userId: true },
   });
 
-  return headAssignment?.userId ?? null;
+  return [...new Set(headAssignments.map((h) => h.userId))];
 }
 
 /**
@@ -78,6 +86,32 @@ export async function resolveAllocateeUserId(
 }
 
 // ── Create Notification ───────────────────────────────────────────────────────
+
+export type CreateNotificationInput = {
+  type: string;
+  title: string;
+  message: string;
+  entityType?: string;
+  entityId?: string;
+  linkUrl?: string;
+};
+
+export async function createNotificationFromInput(
+  tenantId: string,
+  userId: string,
+  data: CreateNotificationInput,
+): Promise<void> {
+  await createNotification(
+    tenantId,
+    userId,
+    data.type,
+    data.title,
+    data.message,
+    data.entityType,
+    data.entityId,
+    data.linkUrl,
+  );
+}
 
 export async function createNotification(
   tenantId: string,
@@ -142,15 +176,28 @@ export async function createBulkNotifications(
 
 // ── List Notifications ────────────────────────────────────────────────────────
 
-export async function listNotifications(
+export type GetNotificationsOptions = {
+  unreadOnly?: boolean;
+  limit?: number;
+  offset?: number;
+};
+
+export async function getNotifications(
   tenantId: string,
   userId: string,
-  limit = 20,
-  offset = 0,
+  options?: GetNotificationsOptions,
 ): Promise<NotificationListResult> {
+  const limit = options?.limit ?? 20;
+  const offset = options?.offset ?? 0;
+  const baseWhere = {
+    tenantId,
+    userId,
+    ...(options?.unreadOnly ? { isRead: false } : {}),
+  };
+
   const [notifications, total, unreadCount] = await Promise.all([
     prisma.notification.findMany({
-      where: { tenantId, userId },
+      where: baseWhere,
       orderBy: { createdAt: "desc" },
       take: limit,
       skip: offset,
@@ -178,7 +225,25 @@ export async function listNotifications(
   };
 }
 
+/** @deprecated Prefer getNotifications */
+export async function listNotifications(
+  tenantId: string,
+  userId: string,
+  limit = 20,
+  offset = 0,
+): Promise<NotificationListResult> {
+  return getNotifications(tenantId, userId, { limit, offset });
+}
+
 // ── Mark Single Read ──────────────────────────────────────────────────────────
+
+export async function markAsRead(
+  notificationId: string,
+  tenantId: string,
+  userId: string,
+): Promise<void> {
+  await markRead(notificationId, tenantId, userId);
+}
 
 export async function markRead(
   notificationId: string,
@@ -192,6 +257,10 @@ export async function markRead(
 }
 
 // ── Mark All Read ─────────────────────────────────────────────────────────────
+
+export async function markAllAsRead(tenantId: string, userId: string): Promise<void> {
+  await markAllRead(tenantId, userId);
+}
 
 export async function markAllRead(
   tenantId: string,

@@ -1,8 +1,8 @@
-import type { Role } from "@prisma/client";
+import type { Prisma, Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { canRecord } from "./assignee-access";
-import { getMyKpiContext } from "./my-kpi-service";
+import { getMyKpiContext, isUserHeadOfUnit } from "./my-kpi-service";
 import {
   computeReviewCycles,
   isDateWithinInclusiveUtcRange,
@@ -12,14 +12,19 @@ import type {
   AchievementView,
   VerificationLogEntry,
   AchievementFormConfig,
+  SubmissionTrailView,
 } from "./shared";
 import { computeScore } from "./scoring-service";
 import type { MeasurementConfig, ScoringConfig } from "./shared";
 import { buildFormDataValidator } from "./shared";
 import {
   createNotification,
+  createBulkNotifications,
   resolveUnitHead,
+  resolveUnitHeadUserIds,
 } from "@/lib/notifications/notification-service";
+import { initializeStageProgress, calculateStageScore } from "./stage-progress-service";
+import { lookupContributionCreditPercent } from "./kpi-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -44,6 +49,8 @@ const createAchievementSchema = z.object({
   evidenceLinks: z.array(z.string().url()).max(10).default([]),
   achievementFormData: z.record(z.string(), z.unknown()).optional(),
   reportingDate: z.coerce.date().optional(),
+  title: z.string().trim().max(200).optional(),
+  contributionRole: z.string().trim().max(100).optional(),
 });
 
 const updateAchievementSchema = z.object({
@@ -58,6 +65,8 @@ const updateAchievementSchema = z.object({
   evidenceDescription: z.string().trim().max(2000).nullable().optional(),
   evidenceLinks: z.array(z.string().url()).max(10).optional(),
   achievementFormData: z.record(z.string(), z.unknown()).optional(),
+  title: z.string().trim().max(200).nullable().optional(),
+  contributionRole: z.string().trim().max(100).nullable().optional(),
 });
 
 export type CreateAchievementInput = z.input<typeof createAchievementSchema>;
@@ -71,6 +80,110 @@ function isAdminOrOwner(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+function roleToTrailLabel(role: Role): string {
+  switch (role) {
+    case "TENANT_OWNER":
+      return "Tenant Owner";
+    case "TENANT_ADMIN":
+      return "IQAC Admin";
+    case "SUPERADMIN":
+      return "Superadmin";
+    default:
+      return "Employee";
+  }
+}
+
+async function getActorUnitName(
+  tenantId: string,
+  userId: string,
+): Promise<string | null> {
+  const publishedVersion = await prisma.orgStructureVersion.findFirst({
+    where: { tenantId, state: { in: ["PUBLISHED", "VALIDATED"] } },
+    orderBy: { versionNumber: "desc" },
+    select: { id: true },
+  });
+  if (!publishedVersion) return null;
+  const primary = await prisma.userOrgAssignment.findFirst({
+    where: { versionId: publishedVersion.id, userId, isPrimary: true },
+    include: { unit: { select: { name: true } } },
+  });
+  return primary?.unit?.name ?? null;
+}
+
+async function appendSubmissionTrailEntry(
+  tx: Prisma.TransactionClient,
+  input: {
+    achievementId: string;
+    action: string;
+    actorUserId: string;
+    actorName: string;
+    actorRole: string;
+    actorUnitName: string | null;
+    note?: string | null;
+    scoreAtAction?: number | null;
+    metadata?: Record<string, unknown> | null;
+  },
+): Promise<void> {
+  await tx.submissionTrail.create({
+    data: {
+      achievementId: input.achievementId,
+      action: input.action,
+      actorUserId: input.actorUserId,
+      actorName: input.actorName,
+      actorRole: input.actorRole,
+      actorUnitName: input.actorUnitName,
+      note: input.note ?? null,
+      scoreAtAction: input.scoreAtAction ?? null,
+      metadata: input.metadata as object | undefined,
+    },
+  });
+}
+
+export async function getSubmissionTrail(
+  achievementId: string,
+  tenantId: string,
+): Promise<SubmissionTrailView[]> {
+  const ach = await prisma.achievement.findFirst({
+    where: { id: achievementId, tenantId },
+    select: { id: true },
+  });
+  if (!ach) return [];
+
+  const rows = await prisma.submissionTrail.findMany({
+    where: { achievementId },
+    orderBy: { createdAt: "asc" },
+  });
+
+  return rows.map((r) => ({
+    id: r.id,
+    achievementId: r.achievementId,
+    action: r.action,
+    actorUserId: r.actorUserId,
+    actorName: r.actorName,
+    actorRole: r.actorRole,
+    actorUnitName: r.actorUnitName,
+    note: r.note,
+    scoreAtAction: r.scoreAtAction,
+    metadata: (r.metadata as Record<string, unknown> | null) ?? null,
+    createdAt: r.createdAt,
+  }));
+}
+
+function approvingUnitIdForKpi(kpi: {
+  finalUnitId: string | null;
+  keyUnitId: string | null;
+  startingUnitId: string;
+}): string {
+  return kpi.finalUnitId ?? kpi.keyUnitId ?? kpi.startingUnitId;
+}
+
+function kpiHasTwoStepReview(kpi: {
+  keyUnitId: string | null;
+  finalUnitId: string | null;
+}): boolean {
+  return !!(kpi.keyUnitId && kpi.finalUnitId);
 }
 
 function hasConfiguredTarget(allocation: {
@@ -300,6 +413,11 @@ function mapAchievementView(
     targetAllocationId: a.targetAllocationId,
     reportedByUserId: a.reportedByUserId,
     reportedByUserName,
+    title: a.title ?? null,
+    contributionRole: a.contributionRole ?? null,
+    creditPercent: a.creditPercent ?? null,
+    effectiveScore: a.effectiveScore ?? null,
+    stageCompletionScore: a.stageCompletionScore ?? null,
     actualValue: a.actualValue,
     actualDate: a.actualDate,
     actualMilestone: a.actualMilestone,
@@ -407,6 +525,7 @@ export async function recordAchievement(
       kraDefinition: {
         select: { state: true },
       },
+      _count: { select: { stages: true } },
     },
   });
   if (!kpi) {
@@ -482,8 +601,8 @@ export async function recordAchievement(
     }
   }
 
-  // Duplicate prevention: only one achievement per allocation per review cycle
-  if (data.targetAllocationId) {
+  // Duplicate prevention (R1 / KPIs without stages): one achievement per allocation per review cycle
+  if (data.targetAllocationId && kpi._count.stages === 0) {
     const newCycleNumber = findCycleNumberForDate(reportingDate, period);
     const existingAchievements = await prisma.achievement.findMany({
       where: {
@@ -524,6 +643,18 @@ export async function recordAchievement(
     };
   }
 
+  let creditPercent: number | null = null;
+  if (data.contributionRole) {
+    const credit = lookupContributionCreditPercent(kpi.contributionRoles, data.contributionRole);
+    if (credit == null) {
+      return {
+        status: "error",
+        message: "Contribution role does not match a defined role for this KPI.",
+      };
+    }
+    creditPercent = credit;
+  }
+
   // Compute score if we have target data
   let computedScoreValue: number | null = null;
   if (allocation) {
@@ -559,6 +690,9 @@ export async function recordAchievement(
         kpiDefinitionId: data.kpiDefinitionId,
         targetAllocationId: data.targetAllocationId,
         reportedByUserId: actorUserId,
+        title: data.title,
+        contributionRole: data.contributionRole,
+        creditPercent,
         actualValue: data.actualValue,
         actualDate: data.actualDate,
         actualMilestone: data.actualMilestone,
@@ -590,6 +724,19 @@ export async function recordAchievement(
       },
     });
   });
+
+  if (
+    createdAchievementId &&
+    data.targetAllocationId &&
+    kpi._count.stages > 0
+  ) {
+    await initializeStageProgress(
+      createdAchievementId,
+      data.targetAllocationId,
+      data.kpiDefinitionId,
+    );
+    await calculateStageScore(createdAchievementId);
+  }
 
   return {
     status: "success",
@@ -731,6 +878,23 @@ export async function submitForVerification(
 ): Promise<KraKpiActionResult> {
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
+    include: {
+      kpiDefinition: {
+        select: {
+          title: true,
+          startingUnitId: true,
+          keyUnitId: true,
+          finalUnitId: true,
+          allowPartialCompletion: true,
+          contributionRoles: true,
+          evidenceRequired: true,
+          stages: { select: { id: true } },
+        },
+      },
+      targetAllocation: {
+        select: { assignedToUnitId: true, assignedToUserId: true },
+      },
+    },
   });
   if (!achievement) {
     return { status: "error", message: "Achievement not found." };
@@ -747,11 +911,52 @@ export async function submitForVerification(
     return { status: "error", message: "Only the reporter can submit." };
   }
 
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: achievement.periodId, tenantId },
+    select: { state: true },
+  });
+  if (!period || period.state !== "IN_PROGRESS") {
+    return { status: "error", message: "Submissions are closed for this period." };
+  }
+
+  const kpi = achievement.kpiDefinition;
+  const stageCount = kpi.stages.length;
+
+  if (stageCount > 0) {
+    const progresses = await prisma.kpiStageProgress.findMany({
+      where: { achievementId },
+    });
+    const completed = progresses.filter((p) => p.isCompleted).length;
+    if (!kpi.allowPartialCompletion && completed < stageCount) {
+      return { status: "error", message: "Complete all stages before submitting." };
+    }
+    if (completed < 1) {
+      return { status: "error", message: "Complete at least one stage before submitting." };
+    }
+    await calculateStageScore(achievementId);
+  }
+
+  if (kpi.evidenceRequired) {
+    const files = achievement.evidenceFiles;
+    const hasFiles = Array.isArray(files) && files.length > 0;
+    const hasEvidence = achievement.evidenceLinks.length > 0 || hasFiles;
+    if (!hasEvidence) {
+      return { status: "error", message: "Evidence is required for this KPI." };
+    }
+  }
+
+  const cr = kpi.contributionRoles;
+  const hasContributionRoles = Array.isArray(cr) && cr.length > 0;
+  if (hasContributionRoles && !achievement.contributionRole) {
+    return { status: "error", message: "Please select your contribution role." };
+  }
+
   const actor = await prisma.user.findUnique({
     where: { id: actorUserId },
     select: { firstName: true, lastName: true },
   });
   const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
+  const actorUnitName = await getActorUnitName(tenantId, actorUserId);
 
   const existingLog = (achievement.verificationLog as VerificationLogEntry[]) ?? [];
   const newLogEntry: VerificationLogEntry = {
@@ -762,13 +967,59 @@ export async function submitForVerification(
     at: new Date().toISOString(),
   };
 
+  const twoStep = kpiHasTwoStepReview(kpi);
+  const reviewUnitId = twoStep ? (kpi.keyUnitId as string) : approvingUnitIdForKpi(kpi);
+  const headIds = await resolveUnitHeadUserIds(tenantId, reviewUnitId);
+  const firstHead = headIds[0] ?? null;
+
+  const latest = await prisma.achievement.findFirst({
+    where: { id: achievementId },
+    select: {
+      stageCompletionScore: true,
+      effectiveScore: true,
+      computedScore: true,
+      creditPercent: true,
+    },
+  });
+
+  const baseScore =
+    stageCount > 0
+      ? (latest?.stageCompletionScore ?? 0)
+      : (latest?.computedScore ?? 0);
+  const scoreForTrail = baseScore;
+
+  let nextEffective = latest?.effectiveScore ?? null;
+  if (stageCount === 0) {
+    const base = latest?.computedScore ?? 0;
+    const cp = latest?.creditPercent;
+    nextEffective = cp != null && cp > 0 ? base * (cp / 100) : base;
+  }
+
   await prisma.$transaction(async (tx) => {
     await tx.achievement.update({
       where: { id: achievementId },
       data: {
         state: "SUBMITTED",
         verificationLog: [...existingLog, newLogEntry] as unknown as object[],
+        currentVerifierUnitId: reviewUnitId,
+        currentVerifierUserId: firstHead,
+        ...(stageCount === 0
+          ? { effectiveScore: nextEffective, stageCompletionScore: null }
+          : {
+              effectiveScore: latest?.effectiveScore,
+              stageCompletionScore: latest?.stageCompletionScore,
+            }),
       },
+    });
+
+    await appendSubmissionTrailEntry(tx, {
+      achievementId,
+      action: "SUBMITTED",
+      actorUserId,
+      actorName,
+      actorRole: roleToTrailLabel(actorRole),
+      actorUnitName,
+      scoreAtAction: scoreForTrail,
     });
 
     await tx.auditLog.create({
@@ -785,55 +1036,20 @@ export async function submitForVerification(
     });
   });
 
-  // Notify dept head (recommender) — find the unit head for the assignee's unit
   try {
-    const fullAchievement = await prisma.achievement.findFirst({
-      where: { id: achievementId },
-      include: {
-        kpiDefinition: { select: { title: true, startingUnitId: true } },
-        targetAllocation: {
-          select: { assignedToUnitId: true, assignedToUserId: true },
-        },
-      },
-    });
-    if (fullAchievement) {
-      const kpiTitle = fullAchievement.kpiDefinition.title;
-      // Determine the dept head to notify
-      let deptHeadUserId: string | null = null;
-      const alloc = fullAchievement.targetAllocation;
-      if (alloc?.assignedToUnitId) {
-        deptHeadUserId = await resolveUnitHead(tenantId, alloc.assignedToUnitId);
-      } else if (alloc?.assignedToUserId) {
-        const primaryUnitId = await getPrimaryMemberUnitId(
-          tenantId,
-          alloc.assignedToUserId,
-        );
-        if (primaryUnitId) {
-          deptHeadUserId = await resolveUnitHead(tenantId, primaryUnitId);
-        }
-      } else {
-        // Additional achievement — use reporter's primary unit
-        const primaryUnitId = await getPrimaryMemberUnitId(
-          tenantId,
-          fullAchievement.reportedByUserId,
-        );
-        if (primaryUnitId) {
-          deptHeadUserId = await resolveUnitHead(tenantId, primaryUnitId);
-        }
-      }
-
-      if (deptHeadUserId && deptHeadUserId !== actorUserId) {
-        await createNotification(
-          tenantId,
-          deptHeadUserId,
-          "ACHIEVEMENT_SUBMITTED",
-          "Achievement submitted for review",
-          `${actorName} submitted an achievement for '${kpiTitle}'`,
-          "Achievement",
-          achievementId,
-          "/my-kpis",
-        );
-      }
+    const title = achievement.title ?? kpi.title;
+    const notifyIds = headIds.filter((id) => id !== actorUserId);
+    if (notifyIds.length > 0) {
+      await createBulkNotifications(
+        tenantId,
+        notifyIds,
+        "ACHIEVEMENT_SUBMITTED",
+        "Achievement submitted for review",
+        `${actorName} submitted "${title}" for review`,
+        "Achievement",
+        achievementId,
+        "/my-kpis",
+      );
     }
   } catch (err) {
     console.warn("[achievement-service] submitForVerification notification failed:", err);
@@ -863,6 +1079,8 @@ export async function verifyAchievement(
           scoringConfig: true,
           measurementConfig: true,
           startingUnitId: true,
+          keyUnitId: true,
+          finalUnitId: true,
           title: true,
         },
       },
@@ -886,25 +1104,41 @@ export async function verifyAchievement(
     };
   }
 
-  const isShortcut = await usesSameDepartmentShortcut(tenantId, achievement);
+  const twoStep = kpiHasTwoStepReview(achievement.kpiDefinition);
+  const isShortcut =
+    !twoStep && (await usesSameDepartmentShortcut(tenantId, achievement));
 
   if (!isAdminOrOwner(actorRole)) {
-    const canVerify = await canActorVerifyAchievement(
-      tenantId,
-      actorUserId,
-      achievement.kpiDefinition.startingUnitId,
-    );
-    if (!canVerify) {
-      return {
-        status: "error",
-        message: "Only the source department head can verify this achievement.",
-      };
-    }
-    if (achievement.state === "SUBMITTED" && !isShortcut) {
-      return {
-        status: "error",
-        message: "This achievement must be recommended before final verification.",
-      };
+    if (achievement.state === "RECOMMENDED" && twoStep && achievement.kpiDefinition.finalUnitId) {
+      const ok = await isUserHeadOfUnit(
+        tenantId,
+        actorUserId,
+        achievement.kpiDefinition.finalUnitId,
+      );
+      if (!ok) {
+        return {
+          status: "error",
+          message: "Only the final department head can verify this achievement.",
+        };
+      }
+    } else {
+      const canVerify = await canActorVerifyAchievement(
+        tenantId,
+        actorUserId,
+        achievement.kpiDefinition.startingUnitId,
+      );
+      if (!canVerify) {
+        return {
+          status: "error",
+          message: "Only the source department head can verify this achievement.",
+        };
+      }
+      if (achievement.state === "SUBMITTED" && !isShortcut) {
+        return {
+          status: "error",
+          message: "This achievement must be recommended before final verification.",
+        };
+      }
     }
   }
 
@@ -953,6 +1187,8 @@ export async function verifyAchievement(
     );
   }
 
+  const actorUnitNameV = await getActorUnitName(tenantId, actorUserId);
+
   await prisma.$transaction(async (tx) => {
     await tx.achievement.update({
       where: { id: achievementId },
@@ -965,6 +1201,17 @@ export async function verifyAchievement(
         computedScore: approved ? finalScore : achievement.computedScore,
         verificationLog: [...existingLog, logEntry] as unknown as object[],
       },
+    });
+
+    await appendSubmissionTrailEntry(tx, {
+      achievementId,
+      action: approved ? "APPROVED" : "REJECTED",
+      actorUserId,
+      actorName,
+      actorRole: roleToTrailLabel(actorRole),
+      actorUnitName: actorUnitNameV,
+      note,
+      scoreAtAction: approved ? finalScore : achievement.effectiveScore,
     });
 
     await tx.auditLog.create({
@@ -991,9 +1238,9 @@ export async function verifyAchievement(
         await createNotification(
           tenantId,
           reporterId,
-          "ACHIEVEMENT_VERIFIED",
-          "Achievement verified",
-          `'${kpiTitle}' achievement has been verified!${scoreText}`,
+          "ACHIEVEMENT_APPROVED",
+          "Achievement approved",
+          `'${kpiTitle}' achievement has been approved!${scoreText}`,
           "Achievement",
           achievementId,
           "/my-kpis",
@@ -1002,9 +1249,9 @@ export async function verifyAchievement(
         await createNotification(
           tenantId,
           reporterId,
-          "ACHIEVEMENT_NOT_APPROVED",
-          "Achievement not approved",
-          `'${kpiTitle}' was not approved.${note ? ` Reason: ${note}` : ""}`,
+          "ACHIEVEMENT_REJECTED",
+          "Achievement rejected",
+          `'${kpiTitle}' was rejected.${note ? ` Reason: ${note}` : ""}`,
           "Achievement",
           achievementId,
           "/my-kpis",
@@ -1036,7 +1283,14 @@ export async function recommendAchievement(
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
     include: {
-      kpiDefinition: { select: { startingUnitId: true, title: true } },
+      kpiDefinition: {
+        select: {
+          startingUnitId: true,
+          title: true,
+          keyUnitId: true,
+          finalUnitId: true,
+        },
+      },
       targetAllocation: {
         include: {
           parentAllocation: {
@@ -1057,24 +1311,40 @@ export async function recommendAchievement(
     };
   }
 
+  const twoStep = kpiHasTwoStepReview(achievement.kpiDefinition);
+
   if (!isAdminOrOwner(actorRole)) {
-    const canRecommend = await canActorRecommendAchievement(
-      tenantId,
-      actorUserId,
-      achievement,
-    );
-    if (!canRecommend) {
-      return {
-        status: "error",
-        message: "Only the assignee's department head can recommend this achievement.",
-      };
-    }
-    if (await usesSameDepartmentShortcut(tenantId, achievement)) {
-      return {
-        status: "error",
-        message:
-          "This achievement should be verified directly because the assignee and source unit are the same.",
-      };
+    if (twoStep && achievement.kpiDefinition.keyUnitId) {
+      const isKeyHead = await isUserHeadOfUnit(
+        tenantId,
+        actorUserId,
+        achievement.kpiDefinition.keyUnitId,
+      );
+      if (!isKeyHead) {
+        return {
+          status: "error",
+          message: "Only the key department head can recommend this achievement.",
+        };
+      }
+    } else {
+      const canRecommend = await canActorRecommendAchievement(
+        tenantId,
+        actorUserId,
+        achievement,
+      );
+      if (!canRecommend) {
+        return {
+          status: "error",
+          message: "Only the assignee's department head can recommend this achievement.",
+        };
+      }
+      if (await usesSameDepartmentShortcut(tenantId, achievement)) {
+        return {
+          status: "error",
+          message:
+            "This achievement should be verified directly because the assignee and source unit are the same.",
+        };
+      }
     }
   }
 
@@ -1096,6 +1366,18 @@ export async function recommendAchievement(
       at: new Date().toISOString(),
     };
 
+    const finalUnitId = achievement.kpiDefinition.finalUnitId;
+    const finalHeadIds =
+      twoStep && finalUnitId
+        ? await resolveUnitHeadUserIds(tenantId, finalUnitId)
+        : await resolveUnitHeadUserIds(
+            tenantId,
+            achievement.kpiDefinition.startingUnitId,
+          );
+    const nextVerifier = finalHeadIds[0] ?? null;
+
+    const actorUnitNameR = await getActorUnitName(tenantId, actorUserId);
+
     await prisma.$transaction(async (tx) => {
       await tx.achievement.update({
         where: { id: achievementId },
@@ -1105,7 +1387,24 @@ export async function recommendAchievement(
           recommendedAt: new Date(),
           recommendationNote: note,
           verificationLog: [...existingLog, logEntry] as unknown as object[],
+          ...(twoStep && finalUnitId
+            ? {
+                currentVerifierUnitId: finalUnitId,
+                currentVerifierUserId: nextVerifier,
+              }
+            : {}),
         },
+      });
+
+      await appendSubmissionTrailEntry(tx, {
+        achievementId,
+        action: "SUBMITTED",
+        actorUserId,
+        actorName,
+        actorRole: roleToTrailLabel(actorRole),
+        actorUnitName: actorUnitNameR,
+        note: note ?? "Recommended",
+        metadata: { kind: "RECOMMEND_ENDORSE" },
       });
 
       await tx.auditLog.create({
@@ -1122,19 +1421,17 @@ export async function recommendAchievement(
       });
     });
 
-    // Notify source dept head (verifier)
     try {
-      const sourceHeadUserId = await resolveUnitHead(
-        tenantId,
-        achievement.kpiDefinition.startingUnitId,
-      );
-      if (sourceHeadUserId && sourceHeadUserId !== actorUserId) {
-        await createNotification(
+      const notifyUnit = twoStep && finalUnitId ? finalUnitId : achievement.kpiDefinition.startingUnitId;
+      const heads = await resolveUnitHeadUserIds(tenantId, notifyUnit);
+      const notifyIds = heads.filter((id) => id !== actorUserId);
+      if (notifyIds.length > 0) {
+        await createBulkNotifications(
           tenantId,
-          sourceHeadUserId,
+          notifyIds,
           "ACHIEVEMENT_RECOMMENDED",
           "Achievement recommended for verification",
-          `${actorName} recommended an achievement for '${achievement.kpiDefinition?.title ?? ""}' — ready for your verification`,
+          `${actorName} recommended '${achievement.kpiDefinition?.title ?? ""}' — ready for verification`,
           "Achievement",
           achievementId,
           "/my-kpis",
