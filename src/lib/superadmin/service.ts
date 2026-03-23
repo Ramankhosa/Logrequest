@@ -12,6 +12,8 @@ import { z } from "zod";
 import { getBaseUrl, sendAuthEmail } from "@/lib/auth/email";
 import { createRawToken } from "@/lib/auth/password";
 import { normalizeEmail } from "@/lib/auth/utils";
+import { seedDefaultBenefitTypes } from "@/lib/kra-kpi/benefit-type-service";
+import { seedDefaultContributorRoles } from "@/lib/kra-kpi/contributor-role-service";
 import { prisma } from "@/lib/prisma";
 import type { TenantCreationResult } from "@/lib/superadmin/shared";
 
@@ -245,6 +247,11 @@ export async function createTenantForSuperadmin(input: {
       status: "error",
       message: "Tenant creation failed. No tenant data was saved.",
     };
+  }
+
+  if (created) {
+    await seedDefaultBenefitTypes(created.tenantId);
+    await seedDefaultContributorRoles(created.tenantId);
   }
 
   let message = ownerCanSignIn

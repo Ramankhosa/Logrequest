@@ -9,6 +9,8 @@ import {
   ClipboardCheck,
   LayoutDashboard,
   Tag,
+  Gift,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MeasurementConfig } from "@/lib/kra-kpi/shared";
@@ -20,12 +22,25 @@ import { TargetAllocationTable } from "@/components/tenant/kra-kpi/target-alloca
 import { AchievementReviewList } from "@/components/tenant/kra-kpi/achievement-review-list";
 import { AchievementForm } from "@/components/tenant/kra-kpi/achievement-form";
 import { PeriodDashboard } from "@/components/tenant/kra-kpi/period-dashboard";
+import { BenefitTypeManager } from "@/components/tenant/kra-kpi/benefit-type-manager";
+import { ContributorRoleManager } from "@/components/tenant/kra-kpi/contributor-role-manager";
 
-type Tab = "periods" | "categories" | "kras" | "kpis" | "targets" | "achievements" | "dashboard";
+type Tab =
+  | "periods"
+  | "categories"
+  | "benefitTypes"
+  | "contributorRoles"
+  | "kras"
+  | "kpis"
+  | "targets"
+  | "achievements"
+  | "dashboard";
 
 const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
   { key: "periods", label: "Periods", icon: Calendar },
   { key: "categories", label: "Categories", icon: Tag },
+  { key: "benefitTypes", label: "Benefit Types", icon: Gift },
+  { key: "contributorRoles", label: "Contributor Roles", icon: Users },
   { key: "kras", label: "KRAs", icon: Target },
   { key: "kpis", label: "KPIs", icon: BarChart3 },
   { key: "targets", label: "Targets", icon: Crosshair },
@@ -276,6 +291,14 @@ export function KraKpiHub() {
 
         {activeTab === "categories" && (
           <KraCategoryList />
+        )}
+
+        {activeTab === "benefitTypes" && (
+          <BenefitTypeManager />
+        )}
+
+        {activeTab === "contributorRoles" && (
+          <ContributorRoleManager />
         )}
 
         {activeTab === "kras" && selectedPeriodId && (

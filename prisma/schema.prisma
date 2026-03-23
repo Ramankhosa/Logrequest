@@ -365,6 +365,8 @@ model Tenant {
   resignationRecords    ResignationRecord[]
   personnelActions      PersonnelAction[]
   actingAssignments     ActingAssignment[]
+  benefitTypes          BenefitType[]
+  contributorRoles      ContributorRole[]
 
   @@index([lifecycleState, entitlementState])
 }
@@ -851,11 +853,60 @@ model KpiDefinition {
   achievements      Achievement[]
   targetUnits       KpiTargetUnit[]
   stages            KpiStageDefinition[]
+  applicableRoles   KpiApplicableRole[]
 
   @@index([kraDefinitionId])
   @@index([startingUnitId])
   @@index([keyUnitId])
   @@index([finalUnitId])
+}
+
+model BenefitType {
+  id          String   @id @default(cuid())
+  tenantId    String
+  code        String
+  name        String
+  description String?
+  unit        String
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive])
+}
+
+model ContributorRole {
+  id                   String              @id @default(cuid())
+  tenantId             String
+  code                 String
+  name                 String
+  description          String?
+  defaultCreditPercent Float
+  isActive             Boolean             @default(true)
+  sortOrder            Int                 @default(0)
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  applicableKpis       KpiApplicableRole[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive])
+}
+
+model KpiApplicableRole {
+  id                String          @id @default(cuid())
+  kpiDefinitionId   String
+  contributorRoleId String
+  isDefault         Boolean         @default(false)
+  sortOrder         Int             @default(0)
+  kpiDefinition     KpiDefinition   @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  contributorRole   ContributorRole @relation(fields: [contributorRoleId], references: [id], onDelete: Cascade)
+
+  @@unique([kpiDefinitionId, contributorRoleId])
+  @@index([kpiDefinitionId])
 }
 
 model TargetAllocation {

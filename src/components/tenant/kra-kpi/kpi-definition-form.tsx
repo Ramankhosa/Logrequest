@@ -10,6 +10,7 @@ import {
   type AchievementFormConfig,
   type MeasurementConfig,
 } from "@/lib/kra-kpi/shared";
+import { KpiApplicableRoles } from "@/components/tenant/kra-kpi/kpi-applicable-roles";
 
 const MEASUREMENT_TYPES = [
   { value: "NUMERIC", label: "Numeric" },
@@ -468,6 +469,12 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
             </div>
           )}
         </div>
+
+        {mode === "edit" && initial?.id && (
+          <div className="sm:col-span-2 lg:col-span-3 border-t border-slate-200 pt-3 mt-1">
+            <KpiApplicableRoles kpiDefinitionId={initial.id} />
+          </div>
+        )}
       </div>
 
       {/* R2 Sections — Collapsible */}

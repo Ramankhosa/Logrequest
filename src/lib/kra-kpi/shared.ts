@@ -48,6 +48,14 @@ const kraKpiErrorStatusMap: Record<string, number> = {
   TARGET_PERIOD_NOT_EMPTY: 409,
   TARGET_UNIT_ORIGIN_CONFLICT: 409,
   REVIEW_CYCLE_CONFLICT: 409,
+  DUPLICATE_CODE: 409,
+  ROLE_IN_USE: 409,
+  BENEFIT_TYPE_NOT_FOUND: 404,
+  CONTRIBUTOR_ROLE_NOT_FOUND: 404,
+  ROLE_WRONG_TENANT: 400,
+  APPLICABLE_ROLES_DEFAULT: 400,
+  APPLICABLE_ROLES_DUPLICATE: 400,
+  ROLE_ARCHIVED: 400,
 };
 
 export function getKraKpiActionHttpStatus(
@@ -568,6 +576,16 @@ export const ACHIEVEMENT_FIELD_TYPES: AchievementFieldType[] = [
   "SELECT", "MULTI_SELECT", "BOOLEAN", "FILE_LINK",
 ];
 
+export const achievementFieldMarkerSchema = z.enum([
+  "VALUE_FIELD",
+  "CATEGORY_FIELD",
+  "UNIT_FIELD",
+  "SCORE_FIELD",
+  "UNIQUE_CHECK",
+]);
+
+export type AchievementFieldMarker = z.infer<typeof achievementFieldMarkerSchema>;
+
 export const achievementFieldSchema = z.object({
   key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*$/),
   label: z.string().min(1).max(100),
@@ -581,6 +599,7 @@ export const achievementFieldSchema = z.object({
   placeholder: z.string().optional(),
   helpText: z.string().optional(),
   sortOrder: z.number().int().default(0),
+  marker: achievementFieldMarkerSchema.optional(),
 });
 
 export type AchievementFieldConfig = z.infer<typeof achievementFieldSchema>;
@@ -701,9 +720,9 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
       { key: "issn", label: "ISSN / ISBN", type: "TEXT", required: false, sortOrder: 2 },
       { key: "volume", label: "Volume", type: "TEXT", required: false, sortOrder: 3 },
       { key: "issue", label: "Issue", type: "TEXT", required: false, sortOrder: 4 },
-      { key: "doi", label: "DOI", type: "TEXT", required: false, placeholder: "10.xxxx/...", sortOrder: 5 },
+      { key: "doi", label: "DOI", type: "TEXT", required: false, placeholder: "10.xxxx/...", sortOrder: 5, marker: "UNIQUE_CHECK" },
       { key: "indexing", label: "Indexing", type: "MULTI_SELECT", required: true,
-        options: ["Scopus", "Web of Science", "UGC CARE List", "PubMed", "IEEE Xplore", "Other"], sortOrder: 6 },
+        options: ["Scopus", "Web of Science", "UGC CARE List", "PubMed", "IEEE Xplore", "Other"], sortOrder: 6, marker: "CATEGORY_FIELD" },
       { key: "publicationDate", label: "Publication Date", type: "DATE", required: true, sortOrder: 7 },
       { key: "pdfLink", label: "Paper PDF / URL", type: "URL", required: true, sortOrder: 8 },
       { key: "coAuthors", label: "Co-Authors", type: "TEXTAREA", required: false, sortOrder: 9 },
@@ -713,12 +732,12 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
     label: "Patent",
     fields: [
       { key: "patentTitle", label: "Patent Title", type: "TEXT", required: true, sortOrder: 0 },
-      { key: "applicationNumber", label: "Application Number", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "applicationNumber", label: "Application Number", type: "TEXT", required: true, sortOrder: 1, marker: "UNIQUE_CHECK" },
       { key: "patentOffice", label: "Patent Office", type: "SELECT", required: true,
         options: ["Indian Patent Office", "USPTO", "EPO", "WIPO", "Other"], sortOrder: 2 },
       { key: "filingDate", label: "Filing Date", type: "DATE", required: true, sortOrder: 3 },
       { key: "status", label: "Status", type: "SELECT", required: true,
-        options: ["Filed", "Published", "Granted", "Abandoned"], sortOrder: 4 },
+        options: ["Filed", "Published", "Granted", "Abandoned"], sortOrder: 4, marker: "CATEGORY_FIELD" },
       { key: "grantDate", label: "Grant Date", type: "DATE", required: false, sortOrder: 5 },
       { key: "inventors", label: "Inventors", type: "TEXTAREA", required: true, sortOrder: 6 },
       { key: "certificateLink", label: "Certificate / Proof", type: "URL", required: false, sortOrder: 7 },
@@ -729,10 +748,11 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
     fields: [
       { key: "projectTitle", label: "Project Title", type: "TEXT", required: true, sortOrder: 0 },
       { key: "fundingAgency", label: "Funding Agency", type: "TEXT", required: true, sortOrder: 1 },
-      { key: "sanctionedAmount", label: "Sanctioned Amount", type: "NUMBER", required: true, sortOrder: 2 },
-      { key: "duration", label: "Duration (months)", type: "NUMBER", required: false, sortOrder: 3 },
-      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 4 },
-      { key: "sanctionLetterLink", label: "Sanction Letter", type: "URL", required: true, sortOrder: 5 },
+      { key: "sanctionedAmount", label: "Sanctioned Amount", type: "NUMBER", required: true, sortOrder: 2, marker: "VALUE_FIELD" },
+      { key: "sanctionNumber", label: "Sanction / Reference Number", type: "TEXT", required: false, sortOrder: 3, marker: "UNIQUE_CHECK" },
+      { key: "duration", label: "Duration (months)", type: "NUMBER", required: false, sortOrder: 4 },
+      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 5 },
+      { key: "sanctionLetterLink", label: "Sanction Letter", type: "URL", required: true, sortOrder: 6 },
     ],
   },
   CONFERENCE: {
@@ -741,7 +761,7 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
       { key: "conferenceName", label: "Conference Name", type: "TEXT", required: true, sortOrder: 0 },
       { key: "paperTitle", label: "Paper Title", type: "TEXT", required: true, sortOrder: 1 },
       { key: "presentationType", label: "Presentation Type", type: "SELECT", required: true,
-        options: ["Oral", "Poster", "Keynote", "Invited Talk", "Workshop"], sortOrder: 2 },
+        options: ["Oral", "Poster", "Keynote", "Invited Talk", "Workshop"], sortOrder: 2, marker: "CATEGORY_FIELD" },
       { key: "location", label: "Location", type: "TEXT", required: false, sortOrder: 3 },
       { key: "date", label: "Date", type: "DATE", required: true, sortOrder: 4 },
       { key: "proceedingsLink", label: "Proceedings / Certificate", type: "URL", required: false, sortOrder: 5 },
@@ -766,7 +786,7 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
         options: ["Participant", "Resource Person", "Coordinator", "Organizer"], sortOrder: 2 },
       { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 3 },
       { key: "endDate", label: "End Date", type: "DATE", required: true, sortOrder: 4 },
-      { key: "hours", label: "Duration (hours)", type: "NUMBER", required: false, sortOrder: 5 },
+      { key: "hours", label: "Duration (hours)", type: "NUMBER", required: false, sortOrder: 5, marker: "UNIT_FIELD" },
       { key: "certificateLink", label: "Certificate", type: "URL", required: true, sortOrder: 6 },
     ],
   },
