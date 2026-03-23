@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "KpiStageProgress_targetAllocationId_stageDefinitionId_achieveme" RENAME TO "KpiStageProgress_targetAllocationId_stageDefinitionId_achie_key";

@@ -1080,10 +1080,65 @@ model AchievementReward {
 |---|---|---|---|
 | **R1** | 5 new (+1 replaced) | 3-4 days | Create KRAs/KPIs, set targets, cascade, record achievements, compute scores |
 | **R2** | +4 new, extend 3 | 4-5 days | 4-dept workflow, stages, SOP files, evidence uploads, reverse-route verification, team KPIs |
-| **R3** | +8 new, extend 2 | 4-5 days | Accreditation mapping, contributor roles, reward definitions, auto-reward calculation |
-| **Total** | 17 models | ~12-14 days | Full system as designed |
+| **R3** | +24 new | 10-14 days | **Standalone Accreditation Management System** — framework engine (7), assessment workspace & collaboration (12), KPI integration (2), competitive analysis + cross-check + DVV + recommendations (5) |
+| **R4** | +5 new, extend 2 | 4-5 days | Contributor roles, team achievements, reward definitions, auto-reward calculation |
+| **R5** | AI layer | TBD | SSR narrative generation, auto KPI-criteria mapping, evidence gap detection, predictive scoring, competitive intelligence |
+| **Total** | ~36 models | ~24-30 days | Full system as designed |
 
-Each release is **independently deployable and usable**. R2 adds nullable columns to R1 models (non-breaking). R3 adds new tables with FK to existing (non-breaking).
+Each release is **independently deployable and usable**. R2 adds nullable columns to R1 models (non-breaking). R3 adds new tables (non-breaking). R4 adds contributor/reward tables with FK to existing (non-breaking). R5 is a pure service layer, no schema changes.
+
+**R3 Standalone Product Note**: The accreditation module is designed to be sellable as an independent SaaS product. It works in two modes: (1) Standalone — manual data entry with competitive analysis, (2) Integrated — auto-pulls data from KRA/KPI achievements with configurable filters. The KPI integration (R3.3) is optional.
+
+---
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUB-PLAN INDEX & STATUS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+## Release 1 — Core Framework ✅ COMPLETE
+
+| Sub-part | Plan File | Status | Tests |
+|----------|-----------|--------|-------|
+| R1 (full) | *(inline above)* | ✅ Done | — |
+| R1.1a — Core Assignee Experience | [clever-riding-fiddle.md](clever-riding-fiddle.md) | ✅ Done | — |
+| R1.2a — Engagement Discovery | [R1.2a-engagement-discovery.md](R1.2a-engagement-discovery.md) | ✅ Done | — |
+
+## Release 2 — Workflow + Verification ✅ COMPLETE
+
+| Sub-part | Plan File | Status | Tests |
+|----------|-----------|--------|-------|
+| R2.1 — Schema, Review Cycles, Target Units | [R2.1-schema-review-cycles-target-units.md](R2.1-schema-review-cycles-target-units.md) | ✅ Done | — |
+| R2.2 — Stages, Submission, Approval & Dashboard | [R2.2-stages-submission-approval-dashboard.md](R2.2-stages-submission-approval-dashboard.md) | ✅ Done | 30 integration tests (r2-2-gaps.integration.test.ts) |
+
+## Release 3 — Accreditation Management System 🔲 NEXT
+
+> **Design philosophy**: Standalone product, sellable independently. Supports manual data entry, KPI auto-linking (hybrid), competitive benchmarking. Pre-seeded with NAAC/NIRF/NBA/QS frameworks.
+
+| Sub-part | Plan File | Status | Depends on |
+|----------|-----------|--------|------------|
+| R3.1 — Framework & Criteria Engine (7 models) | [R3.1-accreditation-framework-criteria-engine.md](R3.1-accreditation-framework-criteria-engine.md) | 🔲 Not started | Nothing (foundation) |
+| R3.2 — Assessment Workspace, Score Engine & Collaboration (12 models) | [R3.2-assessment-workspace-score-engine.md](R3.2-assessment-workspace-score-engine.md) | 🔲 Not started | R3.1 |
+| R3.3 — KPI Integration & Smart Linking (2 models) | [R3.3-kpi-integration-smart-linking.md](R3.3-kpi-integration-smart-linking.md) | 🔲 Not started | R3.1 + R3.2 |
+| R3.4 — Competitive Analysis, Cross-Check Intelligence & Reporting (5 models) | [R3.4-competitive-analysis-reporting.md](R3.4-competitive-analysis-reporting.md) | 🔲 Not started | R3.1 + R3.2 |
+
+## Release 4 — Contributor Roles & Rewards 🔲 FUTURE
+
+| Sub-part | Plan File | Status | Depends on |
+|----------|-----------|--------|------------|
+| R4.1 — Contributor Roles & Team Achievements | [R4.1-contributor-roles-team-achievements.md](R4.1-contributor-roles-team-achievements.md) | 🔲 Not started | Standalone |
+| R4.2 — Rewards, Distribution & Auto-Calculation | [R4.2-rewards-distribution-auto-calculation.md](R4.2-rewards-distribution-auto-calculation.md) | 🔲 Not started | R4.1 |
+
+## Release 5 — AI Layer 🔲 FUTURE
+
+| Feature | Status | Depends on |
+|---------|--------|------------|
+| SSR Narrative Generation | 🔲 Deferred | R3.2 |
+| Auto KPI-to-Criteria Mapping | 🔲 Deferred | R3.3 |
+| Evidence Gap Detection | 🔲 Deferred | R3.2 |
+| Predictive Scoring Advisor | 🔲 Deferred | R3.2 |
+| Document Data Extraction (Vision API) | 🔲 Deferred | R3.2 |
+| Competitive Intelligence Summary | 🔲 Deferred | R3.4 |
+| DVV Prep Assistant | 🔲 Deferred | R3.2 |
 
 ---
 
@@ -1093,6 +1148,5 @@ Each release is **independently deployable and usable**. R2 adds nullable column
 - Global KRA/KPI templates (framework first, templates later)
 - Email/push notifications
 - Cross-period trend analysis
-- Accreditation report generation
 - Bulk achievement import
 - Reward disbursement tracking (payment processing, payroll integration)
