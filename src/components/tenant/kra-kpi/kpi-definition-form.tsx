@@ -11,6 +11,7 @@ import {
   type MeasurementConfig,
 } from "@/lib/kra-kpi/shared";
 import { KpiApplicableRoles } from "@/components/tenant/kra-kpi/kpi-applicable-roles";
+import { KpiContributorConfig } from "@/components/tenant/kra-kpi/kpi-contributor-config";
 
 const MEASUREMENT_TYPES = [
   { value: "NUMERIC", label: "Numeric" },
@@ -472,7 +473,13 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
 
         {mode === "edit" && initial?.id && (
           <div className="sm:col-span-2 lg:col-span-3 border-t border-slate-200 pt-3 mt-1">
-            <KpiApplicableRoles kpiDefinitionId={initial.id} />
+            <div className="space-y-3">
+              <KpiApplicableRoles kpiDefinitionId={initial.id} />
+              <KpiContributorConfig
+                kpiDefinitionId={initial.id}
+                achievementFields={customFields}
+              />
+            </div>
           </div>
         )}
       </div>

@@ -14,6 +14,7 @@ import { createRawToken } from "@/lib/auth/password";
 import { normalizeEmail } from "@/lib/auth/utils";
 import { seedDefaultBenefitTypes } from "@/lib/kra-kpi/benefit-type-service";
 import { seedDefaultContributorRoles } from "@/lib/kra-kpi/contributor-role-service";
+import { seedDefaultTemplates } from "@/lib/kra-kpi/external-contrib-template-service";
 import { prisma } from "@/lib/prisma";
 import type { TenantCreationResult } from "@/lib/superadmin/shared";
 
@@ -252,6 +253,7 @@ export async function createTenantForSuperadmin(input: {
   if (created) {
     await seedDefaultBenefitTypes(created.tenantId);
     await seedDefaultContributorRoles(created.tenantId);
+    await seedDefaultTemplates(created.tenantId);
   }
 
   let message = ownerCanSignIn

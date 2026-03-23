@@ -329,6 +329,7 @@ export async function copyKrasFromPeriod(
       kpiDefinitions: {
         where: { state: { not: "ARCHIVED" } },
         include: {
+          contributorConfig: true,
           targetUnits: {
             orderBy: { createdAt: "asc" },
           },
@@ -402,6 +403,20 @@ export async function copyKrasFromPeriod(
           },
         });
         copiedKpiCount += 1;
+
+        if (sourceKpi.contributorConfig) {
+          await tx.kpiContributorConfig.create({
+            data: {
+              kpiDefinitionId: copiedKpi.id,
+              externalContribTemplateId: sourceKpi.contributorConfig.externalContribTemplateId,
+              allowExternalContributors: sourceKpi.contributorConfig.allowExternalContributors,
+              duplicateCheckFields: toOptionalJsonInput(
+                sourceKpi.contributorConfig.duplicateCheckFields,
+              ),
+              creditSumMode: sourceKpi.contributorConfig.creditSumMode,
+            },
+          });
+        }
 
         for (const sourceTargetUnit of sourceKpi.targetUnits) {
           await tx.kpiTargetUnit.create({

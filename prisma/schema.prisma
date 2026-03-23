@@ -63,6 +63,16 @@ enum Role {
   TENANT_USER
 }
 
+enum ContributorType {
+  INTERNAL
+  EXTERNAL
+}
+
+enum ExternalContributorScope {
+  NATIONAL
+  INTERNATIONAL
+}
+
 enum AuthProvider {
   GOOGLE
   MICROSOFT
@@ -367,6 +377,7 @@ model Tenant {
   actingAssignments     ActingAssignment[]
   benefitTypes          BenefitType[]
   contributorRoles      ContributorRole[]
+  externalContribTemplates ExternalContributorTemplate[]
 
   @@index([lifecycleState, entitlementState])
 }
@@ -854,6 +865,7 @@ model KpiDefinition {
   targetUnits       KpiTargetUnit[]
   stages            KpiStageDefinition[]
   applicableRoles   KpiApplicableRole[]
+  contributorConfig KpiContributorConfig?
 
   @@index([kraDefinitionId])
   @@index([startingUnitId])
@@ -907,6 +919,38 @@ model KpiApplicableRole {
 
   @@unique([kpiDefinitionId, contributorRoleId])
   @@index([kpiDefinitionId])
+}
+
+model ExternalContributorTemplate {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  fields      Json
+  isDefault   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kpiConfigs  KpiContributorConfig[]
+
+  @@index([tenantId, isActive])
+}
+
+model KpiContributorConfig {
+  id                        String                      @id @default(cuid())
+  kpiDefinitionId           String                      @unique
+  externalContribTemplateId String?
+  allowExternalContributors Boolean                     @default(true)
+  duplicateCheckFields      Json?
+  creditSumMode             String                      @default("MUST_EQUAL_100")
+  createdAt                 DateTime                    @default(now())
+  updatedAt                 DateTime                    @updatedAt
+  kpiDefinition             KpiDefinition               @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  externalContribTemplate   ExternalContributorTemplate? @relation(fields: [externalContribTemplateId], references: [id])
+
+  @@index([externalContribTemplateId])
 }
 
 model TargetAllocation {

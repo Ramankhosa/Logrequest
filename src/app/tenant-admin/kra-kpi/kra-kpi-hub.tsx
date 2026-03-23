@@ -11,6 +11,7 @@ import {
   Tag,
   Gift,
   Users,
+  Handshake,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MeasurementConfig } from "@/lib/kra-kpi/shared";
@@ -24,12 +25,14 @@ import { AchievementForm } from "@/components/tenant/kra-kpi/achievement-form";
 import { PeriodDashboard } from "@/components/tenant/kra-kpi/period-dashboard";
 import { BenefitTypeManager } from "@/components/tenant/kra-kpi/benefit-type-manager";
 import { ContributorRoleManager } from "@/components/tenant/kra-kpi/contributor-role-manager";
+import { ExternalTemplateManager } from "@/components/tenant/kra-kpi/external-template-manager";
 
 type Tab =
   | "periods"
   | "categories"
   | "benefitTypes"
   | "contributorRoles"
+  | "externalContributors"
   | "kras"
   | "kpis"
   | "targets"
@@ -41,6 +44,7 @@ const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
   { key: "categories", label: "Categories", icon: Tag },
   { key: "benefitTypes", label: "Benefit Types", icon: Gift },
   { key: "contributorRoles", label: "Contributor Roles", icon: Users },
+  { key: "externalContributors", label: "External Contributors", icon: Handshake },
   { key: "kras", label: "KRAs", icon: Target },
   { key: "kpis", label: "KPIs", icon: BarChart3 },
   { key: "targets", label: "Targets", icon: Crosshair },
@@ -299,6 +303,10 @@ export function KraKpiHub() {
 
         {activeTab === "contributorRoles" && (
           <ContributorRoleManager />
+        )}
+
+        {activeTab === "externalContributors" && (
+          <ExternalTemplateManager />
         )}
 
         {activeTab === "kras" && selectedPeriodId && (

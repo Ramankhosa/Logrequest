@@ -50,12 +50,19 @@ const kraKpiErrorStatusMap: Record<string, number> = {
   REVIEW_CYCLE_CONFLICT: 409,
   DUPLICATE_CODE: 409,
   ROLE_IN_USE: 409,
+  ROLE_LAST_APPLICABLE: 409,
   BENEFIT_TYPE_NOT_FOUND: 404,
   CONTRIBUTOR_ROLE_NOT_FOUND: 404,
+  APPLICABLE_ROLES_REQUIRED: 400,
   ROLE_WRONG_TENANT: 400,
   APPLICABLE_ROLES_DEFAULT: 400,
   APPLICABLE_ROLES_DUPLICATE: 400,
   ROLE_ARCHIVED: 400,
+  EXTERNAL_TEMPLATE_NOT_FOUND: 404,
+  EXTERNAL_TEMPLATE_IN_USE: 409,
+  EXTERNAL_TEMPLATE_LAST_DEFAULT: 409,
+  EXTERNAL_TEMPLATE_WRONG_TENANT: 400,
+  EXTERNAL_TEMPLATE_ARCHIVED: 400,
 };
 
 export function getKraKpiActionHttpStatus(
@@ -615,7 +622,10 @@ export type AchievementFormConfig = z.infer<typeof achievementFormConfigSchema>;
  * Builds a Zod schema dynamically from an AchievementFormConfig to validate
  * the user-filled form data at save time.
  */
-export function buildFormDataValidator(fields: AchievementFieldConfig[]) {
+export function buildFormDataValidator(
+  fields: AchievementFieldConfig[],
+  options?: { unknownKeys?: "passthrough" | "strip" },
+) {
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const f of fields) {
     let fieldSchema: z.ZodTypeAny;
@@ -701,7 +711,10 @@ export function buildFormDataValidator(fields: AchievementFieldConfig[]) {
     }
     shape[f.key] = fieldSchema;
   }
-  return z.object(shape).passthrough();
+  const objectSchema = z.object(shape);
+  return options?.unknownKeys === "strip"
+    ? objectSchema.strip()
+    : objectSchema.passthrough();
 }
 
 // ── Predefined Achievement Templates ─────────────────────────────────────────
