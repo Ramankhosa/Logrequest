@@ -415,6 +415,7 @@ model User {
   failedLoginCount    Int                  @default(0)
   lockedUntil         DateTime?
   memberships         Membership[]
+  achievementContributions AchievementContributor[] @relation("AchievementContributorUser")
   invitations         Invitation[]
   socialAccounts      SocialAccount[]
   passwordResetTokens PasswordResetToken[]
@@ -903,6 +904,7 @@ model ContributorRole {
   updatedAt            DateTime            @updatedAt
   tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   applicableKpis       KpiApplicableRole[]
+  achievementContributors AchievementContributor[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -1007,6 +1009,7 @@ model Achievement {
   kpiDefinitionId       String
   targetAllocationId    String?
   reportedByUserId      String
+  oboReportedForUserId  String?
   // Actuals (polymorphic)
   actualValue           Float?
   actualDate            DateTime?
@@ -1034,6 +1037,8 @@ model Achievement {
   creditPercent         Float?
   effectiveScore        Float?
   stageCompletionScore  Float?
+  duplicateCheckResult  Json?
+  isOBO                 Boolean            @default(false)
   // 2-level verification (R1.1a)
   state                 AchievementState   @default(DRAFT)
   recommendedByUserId       String?
@@ -1050,13 +1055,40 @@ model Achievement {
   tenant                Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   kpiDefinition         KpiDefinition      @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
   targetAllocation      TargetAllocation?  @relation(fields: [targetAllocationId], references: [id], onDelete: SetNull)
+  contributors          AchievementContributor[]
   stageProgress         KpiStageProgress[]
   submissionTrail       SubmissionTrail[]
 
   @@index([tenantId, periodId])
   @@index([targetAllocationId])
   @@index([reportedByUserId, periodId])
+  @@index([oboReportedForUserId, periodId])
   @@index([tenantId, state])
+}
+
+model AchievementContributor {
+  id                  String                   @id @default(cuid())
+  achievementId       String
+  type                ContributorType          @default(INTERNAL)
+  userId              String?
+  externalName        String?
+  externalAffiliation String?
+  externalScope       ExternalContributorScope?
+  externalData        Json?
+  contributorRoleId   String
+  creditPercent       Float
+  isExcludedFromReward Boolean                 @default(false)
+  note                String?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  achievement         Achievement              @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  user                User?                    @relation("AchievementContributorUser", fields: [userId], references: [id], onDelete: SetNull)
+  contributorRole     ContributorRole          @relation(fields: [contributorRoleId], references: [id], onDelete: Restrict)
+
+  @@unique([achievementId, userId])
+  @@index([achievementId])
+  @@index([userId])
+  @@index([contributorRoleId])
 }
 
 model KpiTargetUnit {

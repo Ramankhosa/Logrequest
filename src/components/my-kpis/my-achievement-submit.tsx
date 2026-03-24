@@ -69,10 +69,6 @@ export function MyAchievementSubmit({
   const completedCount = stages.filter((s) => s.isCompleted).length;
   const totalWeight = stages.reduce((s, x) => s + x.weight, 0);
   const completedWeight = stages.filter((s) => s.isCompleted).reduce((s, x) => s + x.weight, 0);
-  const effectiveScore =
-    creditPercent != null
-      ? Math.round(completedWeight * (creditPercent / 100) * 100) / 100
-      : completedWeight;
 
   async function handleSubmit() {
     setSubmitting(true);
@@ -122,9 +118,9 @@ export function MyAchievementSubmit({
         <p className="text-sm font-medium text-slate-700">{kpiTitle}</p>
         {contributionRole && (
           <p className="text-xs text-slate-500">
-            Role: {contributionRole}{" "}
+            Role: {contributionRole}
             {creditPercent != null && (
-              <span className="text-slate-400">({creditPercent}% credit)</span>
+              <span className="text-slate-400"> ({creditPercent}% share)</span>
             )}
           </p>
         )}
@@ -171,10 +167,10 @@ export function MyAchievementSubmit({
                 {completedWeight}/{totalWeight}
               </span>
             </div>
-            {creditPercent != null && creditPercent < 100 && (
-              <div className="flex justify-between text-brand">
-                <span>Effective Score ({creditPercent}%)</span>
-                <span className="tabular-nums font-medium">{effectiveScore}</span>
+            {creditPercent != null && (
+              <div className="flex justify-between text-slate-500">
+                <span>Contributor Share</span>
+                <span className="tabular-nums font-medium">{creditPercent}%</span>
               </div>
             )}
           </div>

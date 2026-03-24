@@ -53,7 +53,6 @@ type KpiView = {
   isTeamKpi?: boolean;
   evidenceRequired?: boolean;
   allowPartialCompletion?: boolean;
-  contributionRoles?: { role: string; creditPercent: number; isDefault: boolean }[] | null;
 };
 
 type UnitOption = { id: string; name: string };
@@ -327,11 +326,6 @@ export function KpiDefinitionList({
                         Per capita
                       </span>
                     )}
-                    {kpi.isTeamKpi && (
-                      <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-indigo-600">
-                        Team KPI
-                      </span>
-                    )}
                     {(kpi.targetUnitCount ?? 0) > 0 && (
                       <span className="rounded-md bg-cyan-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-cyan-700">
                         {kpi.targetUnitCount} target dept{kpi.targetUnitCount !== 1 ? "s" : ""}
@@ -441,7 +435,6 @@ export function KpiDefinitionList({
                 <div className="mt-1 rounded-xl border border-slate-200/80 bg-white px-5 py-4">
                   <KpiStageManager
                     kpiId={kpi.id}
-                    contributionRoles={kpi.contributionRoles ?? null}
                     allowPartialCompletion={kpi.allowPartialCompletion ?? true}
                     onUpdate={() => void fetchData()}
                   />

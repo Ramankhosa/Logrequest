@@ -50,13 +50,6 @@ const EVIDENCE_TYPE_OPTIONS = [
   { value: "NONE", label: "None" },
 ];
 
-const CREDIT_METHODS = [
-  { value: "FULL_EACH", label: "Full Each" },
-  { value: "EQUAL_SPLIT", label: "Equal Split" },
-  { value: "WEIGHTED_SPLIT", label: "Weighted Split" },
-  { value: "PRIMARY_ONLY", label: "Primary Only" },
-];
-
 type KpiFormProps = {
   mode: "create" | "edit";
   kraDefinitionId: string;
@@ -170,8 +163,6 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   const [evidenceTypes, setEvidenceTypes] = useState<string[]>(initial?.evidenceTypes ?? []);
   const [evidenceInstructions, setEvidenceInstructions] = useState(initial?.evidenceInstructions ?? "");
   const [sopDescription, setSopDescription] = useState(initial?.sopDescription ?? "");
-  const [isTeamKpi, setIsTeamKpi] = useState(initial?.isTeamKpi ?? false);
-  const [teamCreditMethod, setTeamCreditMethod] = useState(initial?.teamCreditMethod ?? "FULL_EACH");
   const [showR2Sections, setShowR2Sections] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -295,8 +286,6 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         evidenceTypes,
         evidenceInstructions: evidenceInstructions.trim() || (mode === "edit" ? null : undefined),
         sopDescription: sopDescription.trim() || (mode === "edit" ? null : undefined),
-        isTeamKpi,
-        teamCreditMethod: isTeamKpi ? teamCreditMethod : "FULL_EACH",
       };
 
       const res = await fetch(url, {
@@ -592,32 +581,6 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
                   className={`${inputCls} resize-none`}
                 />
               </div>
-            </div>
-
-            {/* Team KPI */}
-            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                Team KPI (optional)
-              </p>
-              <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={isTeamKpi}
-                  onChange={(e) => setIsTeamKpi(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/30"
-                />
-                Is Team KPI
-              </label>
-              {isTeamKpi && (
-                <div className="mt-2">
-                  <label className={labelCls}>Credit Method</label>
-                  <select value={teamCreditMethod} onChange={(e) => setTeamCreditMethod(e.target.value)} className={inputCls}>
-                    {CREDIT_METHODS.map((cm) => (
-                      <option key={cm.value} value={cm.value}>{cm.label}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
             </div>
           </div>
         )}

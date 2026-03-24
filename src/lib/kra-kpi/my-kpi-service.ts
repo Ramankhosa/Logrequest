@@ -1,9 +1,14 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getUserAssignments } from "@/lib/org-structure/roles-service";
 import {
   computeReviewCycles,
   isDateWithinInclusiveUtcRange,
 } from "./period-service";
+import {
+  achievementContributorInclude,
+  mapAchievementContributors,
+} from "./achievement-contributor-service";
 import type {
   MyKpiContext,
   MyAllocationView,
@@ -170,6 +175,8 @@ function mapAchievementView(
     kpiDefinitionId: string;
     targetAllocationId: string | null;
     reportedByUserId: string;
+    oboReportedForUserId: string | null;
+    isOBO: boolean;
     title: string | null;
     contributionRole: string | null;
     creditPercent: number | null;
@@ -194,6 +201,22 @@ function mapAchievementView(
     verificationNote: string | null;
     rejectionReason: string | null;
     verificationLog: unknown;
+    duplicateCheckResult: unknown;
+    contributors: Array<{
+      id: string;
+      type: "INTERNAL" | "EXTERNAL";
+      userId: string | null;
+      externalName: string | null;
+      externalAffiliation: string | null;
+      externalScope: "NATIONAL" | "INTERNATIONAL" | null;
+      externalData: Prisma.JsonValue;
+      contributorRoleId: string;
+      creditPercent: number;
+      isExcludedFromReward: boolean;
+      note: string | null;
+      user?: { id: string; firstName: string; lastName: string } | null;
+      contributorRole?: { id: string; name: string } | null;
+    }>;
     reportingDate: Date;
     createdAt: Date;
     submissionTrail: Array<{
@@ -213,6 +236,27 @@ function mapAchievementView(
   },
   reportedByUserName: string,
 ): AchievementView {
+  const contributors =
+    achievement.contributors.length > 0
+      ? mapAchievementContributors(achievement.contributors)
+      : achievement.contributionRole
+        ? [{
+            id: `legacy-inline-${achievement.id}`,
+            type: "INTERNAL" as const,
+            userId: achievement.oboReportedForUserId ?? achievement.reportedByUserId,
+            userName: achievement.isOBO ? null : reportedByUserName,
+            externalName: null,
+            externalAffiliation: null,
+            externalScope: null,
+            externalData: null,
+            contributorRoleId: "legacy-inline",
+            roleName: achievement.contributionRole,
+            creditPercent: achievement.creditPercent ?? 0,
+            isExcludedFromReward: false,
+            note: null,
+          }]
+        : [];
+
   return {
     id: achievement.id,
     tenantId: achievement.tenantId,
@@ -222,6 +266,8 @@ function mapAchievementView(
     targetAllocationId: achievement.targetAllocationId,
     reportedByUserId: achievement.reportedByUserId,
     reportedByUserName,
+    isOBO: achievement.isOBO,
+    oboReportedForUserId: achievement.oboReportedForUserId,
     title: achievement.title ?? null,
     contributionRole: achievement.contributionRole ?? null,
     creditPercent: achievement.creditPercent ?? null,
@@ -246,6 +292,8 @@ function mapAchievementView(
     verificationNote: achievement.verificationNote,
     rejectionReason: achievement.rejectionReason,
     verificationLog: (achievement.verificationLog as VerificationLogEntry[]) ?? [],
+    contributors,
+    duplicateCheckResult: (achievement.duplicateCheckResult as AchievementView["duplicateCheckResult"]) ?? null,
     submissionTrail: mapSubmissionTrailRows(achievement.submissionTrail),
     reportingDate: achievement.reportingDate,
     createdAt: achievement.createdAt,
@@ -309,6 +357,7 @@ export async function getMyAllocations(
         orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
         include: {
           kpiDefinition: { select: { title: true } },
+          contributors: { include: achievementContributorInclude },
           submissionTrail: { orderBy: { createdAt: "asc" } },
         },
       },
@@ -622,6 +671,7 @@ export async function getMyReviewQueue(
       targetAllocation: {
         select: { targetValue: true },
       },
+      contributors: { include: achievementContributorInclude },
       submissionTrail: { orderBy: { createdAt: "asc" } },
       stageProgress: { select: { isCompleted: true } },
     },
@@ -686,6 +736,12 @@ export async function getMyReviewQueue(
       startingUnitId: achievement.kpiDefinition.startingUnitId,
       contributionRole: achievement.contributionRole ?? null,
       creditPercent: achievement.creditPercent ?? null,
+      contributors:
+        achievement.contributors.length > 0
+          ? mapAchievementContributors(achievement.contributors)
+          : [],
+      duplicateCheckResult:
+        (achievement.duplicateCheckResult as ReviewQueueItem["duplicateCheckResult"]) ?? null,
       stageCompletionScore: achievement.stageCompletionScore ?? null,
       effectiveScore: achievement.effectiveScore ?? null,
       stagesComplete,
@@ -1254,6 +1310,7 @@ export async function listAdditionalAchievements(
           },
         },
       },
+      contributors: { include: achievementContributorInclude },
       submissionTrail: { orderBy: { createdAt: "asc" } },
       stageProgress: { select: { isCompleted: true } },
     },

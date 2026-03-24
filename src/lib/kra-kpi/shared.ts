@@ -50,14 +50,22 @@ const kraKpiErrorStatusMap: Record<string, number> = {
   REVIEW_CYCLE_CONFLICT: 409,
   DUPLICATE_CODE: 409,
   ROLE_IN_USE: 409,
+  ROLE_IN_USE_ACHIEVEMENTS: 409,
   ROLE_LAST_APPLICABLE: 409,
   BENEFIT_TYPE_NOT_FOUND: 404,
   CONTRIBUTOR_ROLE_NOT_FOUND: 404,
+  CONTRIBUTOR_NOT_FOUND: 404,
   APPLICABLE_ROLES_REQUIRED: 400,
   ROLE_WRONG_TENANT: 400,
   APPLICABLE_ROLES_DEFAULT: 400,
   APPLICABLE_ROLES_DUPLICATE: 400,
   ROLE_ARCHIVED: 400,
+  CONTRIBUTOR_DRAFT_ONLY: 409,
+  CONTRIBUTOR_DUPLICATE_USER: 409,
+  CONTRIBUTOR_EXTERNAL_NOT_ALLOWED: 403,
+  CONTRIBUTOR_ROLE_NOT_APPLICABLE: 400,
+  CONTRIBUTORS_REQUIRED: 400,
+  OBO_BENEFICIARY_REQUIRED: 400,
   EXTERNAL_TEMPLATE_NOT_FOUND: 404,
   EXTERNAL_TEMPLATE_IN_USE: 409,
   EXTERNAL_TEMPLATE_LAST_DEFAULT: 409,
@@ -428,6 +436,8 @@ export type AchievementView = {
   targetAllocationId: string | null;
   reportedByUserId: string;
   reportedByUserName: string;
+  isOBO: boolean;
+  oboReportedForUserId: string | null;
   title: string | null;
   contributionRole: string | null;
   creditPercent: number | null;
@@ -452,9 +462,47 @@ export type AchievementView = {
   verificationNote: string | null;
   rejectionReason: string | null;
   verificationLog: VerificationLogEntry[];
+  contributors: AchievementContributorView[];
+  duplicateCheckResult: DuplicateCheckResult | null;
   submissionTrail: SubmissionTrailView[];
   reportingDate: Date;
   createdAt: Date;
+};
+
+export type AchievementContributorView = {
+  id: string;
+  type: "INTERNAL" | "EXTERNAL";
+  userId: string | null;
+  userName: string | null;
+  externalName: string | null;
+  externalAffiliation: string | null;
+  externalScope: "NATIONAL" | "INTERNATIONAL" | null;
+  externalData: Record<string, unknown> | null;
+  contributorRoleId: string;
+  roleName: string;
+  creditPercent: number;
+  isExcludedFromReward: boolean;
+  note: string | null;
+};
+
+export type DuplicateMatch = {
+  achievementId: string;
+  matchedField: string;
+  matchedValue: string;
+  reportedByName: string;
+  reportedByUserId: string;
+  sameReporter: boolean;
+  achievementState: string;
+  achievementTitle: string | null;
+  periodId: string;
+  samePeriod: boolean;
+  similarity: "EXACT" | "FUZZY";
+};
+
+export type DuplicateCheckResult = {
+  checked: boolean;
+  hasDuplicates: boolean;
+  matches: DuplicateMatch[];
 };
 
 export type AdditionalAchievementView = AchievementView & {
@@ -918,6 +966,8 @@ export type ReviewQueueItem = {
   startingUnitId: string;
   contributionRole: string | null;
   creditPercent: number | null;
+  contributors: AchievementContributorView[];
+  duplicateCheckResult: DuplicateCheckResult | null;
   stageCompletionScore: number | null;
   effectiveScore: number | null;
   stagesComplete: number;

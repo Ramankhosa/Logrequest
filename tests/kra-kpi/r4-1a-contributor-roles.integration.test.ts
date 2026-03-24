@@ -161,7 +161,7 @@ async function createRole(input: {
 }
 
 describe("R4.1a contributor role regressions", () => {
-  test("setApplicableRoles rejects an empty role list", async () => {
+  test("setApplicableRoles rejects an empty role list but KPI keeps its seeded baseline role", async () => {
     const { tenant, actor, kpiId } = await createFixture();
 
     const result = await setApplicableRoles(
@@ -176,10 +176,10 @@ describe("R4.1a contributor role regressions", () => {
     expect(result.code).toBe("APPLICABLE_ROLES_REQUIRED");
     expect(
       await prisma.kpiApplicableRole.count({ where: { kpiDefinitionId: kpiId } }),
-    ).toBe(0);
+    ).toBe(1);
   });
 
-  test("archiving a linked role removes KPI links and promotes another default", async () => {
+  test("archiving a linked role keeps the KPI link and promotes another active default", async () => {
     const { tenant, actor, kpiId } = await createFixture();
     const defaultRole = await createRole({
       tenantId: tenant.id,
@@ -222,12 +222,12 @@ describe("R4.1a contributor role regressions", () => {
     expect(role?.isActive).toBe(false);
 
     const remaining = await getApplicableRoles(kpiId, tenant.id);
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0]?.id).toBe(backupRole.id);
-    expect(remaining[0]?.linkIsDefault).toBe(true);
+    expect(remaining).toHaveLength(2);
+    expect(remaining.find((row) => row.id === defaultRole.id)?.linkIsDefault).toBe(false);
+    expect(remaining.find((row) => row.id === backupRole.id)?.linkIsDefault).toBe(true);
   });
 
-  test("deactivating via update also removes KPI links and preserves a default", async () => {
+  test("deactivating via update keeps KPI links and promotes another active default", async () => {
     const { tenant, actor, kpiId } = await createFixture();
     const defaultRole = await createRole({
       tenantId: tenant.id,
@@ -265,9 +265,9 @@ describe("R4.1a contributor role regressions", () => {
 
     expect(updated.status).toBe("success");
     const remaining = await getApplicableRoles(kpiId, tenant.id);
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0]?.id).toBe(backupRole.id);
-    expect(remaining[0]?.linkIsDefault).toBe(true);
+    expect(remaining).toHaveLength(2);
+    expect(remaining.find((row) => row.id === defaultRole.id)?.linkIsDefault).toBe(false);
+    expect(remaining.find((row) => row.id === backupRole.id)?.linkIsDefault).toBe(true);
   });
 
   test("archiving is blocked when the role is the only active applicable role", async () => {

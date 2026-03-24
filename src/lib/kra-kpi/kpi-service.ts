@@ -15,6 +15,7 @@ import {
   achievementFormConfigSchema,
   getMeasurementCapValue,
 } from "./shared";
+import { ensureApplicableRolesBaseline } from "./contributor-role-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ export function validateContributionRolesJson(value: unknown): string | null {
   return null;
 }
 
-function parseContributionRoles(
+export function parseContributionRoles(
   value: unknown,
 ): ContributionRoleDefinition[] | null {
   if (value == null) return null;
@@ -459,6 +460,13 @@ export async function createKpi(
       },
     });
 
+    await ensureApplicableRolesBaseline(
+      kpi.id,
+      tenantId,
+      data.contributionRoles ?? null,
+      tx,
+    );
+
     await tx.auditLog.create({
       data: {
         tenantId,
@@ -510,6 +518,10 @@ export async function updateKpi(
             select: { id: true, weightage: true },
           },
         },
+      },
+      applicableRoles: {
+        select: { id: true },
+        take: 1,
       },
     },
   });
@@ -639,6 +651,20 @@ export async function updateKpi(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       data: updateData as any,
     });
+
+    if (
+      data.contributionRoles !== undefined ||
+      kpi.applicableRoles.length === 0
+    ) {
+      await ensureApplicableRolesBaseline(
+        kpiId,
+        tenantId,
+        data.contributionRoles !== undefined
+          ? data.contributionRoles
+          : kpi.contributionRoles,
+        tx,
+      );
+    }
 
     await tx.auditLog.create({
       data: {

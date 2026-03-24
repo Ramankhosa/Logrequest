@@ -2,6 +2,7 @@ import type { Role, ContributorRole, Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult } from "./shared";
+import { parseContributionRoles } from "./kpi-service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -74,131 +75,32 @@ const DEFAULT_CONTRIBUTOR_ROLES: Array<{
   { code: "MEMBER", name: "Team Member", defaultCreditPercent: 20, sortOrder: 11 },
 ];
 
-type ContributorRoleArchiveImpact = {
-  removedLinkCount: number;
-  reassignedDefaultKpiCount: number;
-  affectedKpiCount: number;
-};
-
 function buildLastApplicableRoleMessage(kpiCount: number): string {
   const noun = kpiCount === 1 ? "KPI" : "KPIs";
   return `This role is the only active applicable role for ${kpiCount} ${noun}. Assign another role first.`;
 }
 
-async function removeContributorRoleFromApplicableKpis(
-  tx: Prisma.TransactionClient,
-  contributorRoleId: string,
-  tenantId: string,
-): Promise<
-  | { status: "ok"; impact: ContributorRoleArchiveImpact }
-  | { status: "error"; result: KraKpiActionResult }
-> {
-  const linksToRemove = await tx.kpiApplicableRole.findMany({
-    where: {
-      contributorRoleId,
-      kpiDefinition: {
-        kraDefinition: { tenantId },
-      },
-    },
-    select: {
-      id: true,
-      kpiDefinitionId: true,
-      isDefault: true,
-    },
-  });
+type DbClient = Prisma.TransactionClient | typeof prisma;
 
-  if (linksToRemove.length === 0) {
-    return {
-      status: "ok",
-      impact: {
-        removedLinkCount: 0,
-        reassignedDefaultKpiCount: 0,
-        affectedKpiCount: 0,
-      },
-    };
-  }
-
-  const affectedKpiIds = [...new Set(linksToRemove.map((row) => row.kpiDefinitionId))];
-  const remainingLinks = await tx.kpiApplicableRole.findMany({
-    where: {
-      kpiDefinitionId: { in: affectedKpiIds },
-      contributorRoleId: { not: contributorRoleId },
-      contributorRole: { isActive: true },
-    },
-    select: {
-      id: true,
-      kpiDefinitionId: true,
-      isDefault: true,
-      sortOrder: true,
-    },
-    orderBy: [{ kpiDefinitionId: "asc" }, { sortOrder: "asc" }, { id: "asc" }],
-  });
-
-  const remainingByKpi = new Map<string, typeof remainingLinks>();
-  for (const row of remainingLinks) {
-    const existing = remainingByKpi.get(row.kpiDefinitionId) ?? [];
-    existing.push(row);
-    remainingByKpi.set(row.kpiDefinitionId, existing);
-  }
-
-  const blockingKpiIds = affectedKpiIds.filter(
-    (kpiDefinitionId) => (remainingByKpi.get(kpiDefinitionId) ?? []).length === 0,
-  );
-  if (blockingKpiIds.length > 0) {
-    return {
-      status: "error",
-      result: {
-        status: "error",
-        message: buildLastApplicableRoleMessage(blockingKpiIds.length),
-        code: "ROLE_LAST_APPLICABLE",
-      },
-    };
-  }
-
-  await tx.kpiApplicableRole.deleteMany({
-    where: { id: { in: linksToRemove.map((row) => row.id) } },
-  });
-
-  let reassignedDefaultKpiCount = 0;
-  for (const kpiDefinitionId of affectedKpiIds) {
-    const remaining = remainingByKpi.get(kpiDefinitionId) ?? [];
-    const removedWasDefault = linksToRemove.some(
-      (row) => row.kpiDefinitionId === kpiDefinitionId && row.isDefault,
-    );
-    const defaultCount = remaining.filter((row) => row.isDefault).length;
-    if (!removedWasDefault && defaultCount === 1) {
-      continue;
-    }
-
-    const nextDefault = remaining.find((row) => row.isDefault) ?? remaining[0];
-    await tx.kpiApplicableRole.updateMany({
-      where: { kpiDefinitionId },
-      data: { isDefault: false },
-    });
-    await tx.kpiApplicableRole.update({
-      where: { id: nextDefault.id },
-      data: { isDefault: true },
-    });
-    reassignedDefaultKpiCount += 1;
-  }
-
-  return {
-    status: "ok",
-    impact: {
-      removedLinkCount: linksToRemove.length,
-      reassignedDefaultKpiCount,
-      affectedKpiCount: affectedKpiIds.length,
-    },
-  };
+function makeRoleCode(name: string): string {
+  const normalized = name
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized.slice(0, 80) || "ROLE";
 }
 
-export async function seedDefaultContributorRoles(tenantId: string): Promise<void> {
+async function ensureDefaultContributorRolesInTx(
+  tx: DbClient,
+  tenantId: string,
+): Promise<void> {
   for (const row of DEFAULT_CONTRIBUTOR_ROLES) {
-    const existing = await prisma.contributorRole.findUnique({
+    const existing = await tx.contributorRole.findUnique({
       where: { tenantId_code: { tenantId, code: row.code } },
     });
     if (existing) continue;
-    await prisma.contributorRole.create({
+    await tx.contributorRole.create({
       data: {
         tenantId,
         code: row.code,
@@ -208,6 +110,255 @@ export async function seedDefaultContributorRoles(tenantId: string): Promise<voi
       },
     });
   }
+}
+
+async function findOrCreateRoleForLegacyEntry(
+  tx: DbClient,
+  tenantId: string,
+  entry: { role: string; creditPercent: number },
+): Promise<ContributorRole> {
+  const desiredCode = makeRoleCode(entry.role);
+  const existing = await tx.contributorRole.findFirst({
+    where: {
+      tenantId,
+      OR: [
+        { name: entry.role },
+        { code: desiredCode },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  if (existing) {
+    return existing;
+  }
+
+  let code = desiredCode;
+  let suffix = 2;
+  while (await tx.contributorRole.findUnique({ where: { tenantId_code: { tenantId, code } } })) {
+    const suffixText = `_${suffix}`;
+    code = `${desiredCode.slice(0, Math.max(1, 80 - suffixText.length))}${suffixText}`;
+    suffix += 1;
+  }
+
+  return tx.contributorRole.create({
+    data: {
+      tenantId,
+      code,
+      name: entry.role,
+      defaultCreditPercent: entry.creditPercent,
+      sortOrder: 999,
+    },
+  });
+}
+
+async function buildBaselineApplicableRoles(
+  tx: DbClient,
+  kpiDefinitionId: string,
+  tenantId: string,
+  legacyContributionRoles: unknown,
+): Promise<Array<{ contributorRoleId: string; isDefault: boolean; sortOrder: number }>> {
+  await ensureDefaultContributorRolesInTx(tx, tenantId);
+
+  const legacyRoles = parseContributionRoles(legacyContributionRoles) ?? [];
+  if (legacyRoles.length > 0) {
+    const rows: Array<{ contributorRoleId: string; isDefault: boolean; sortOrder: number }> = [];
+    const seen = new Set<string>();
+    let defaultAssigned = false;
+
+    for (const [index, legacyRole] of legacyRoles.entries()) {
+      const role = await findOrCreateRoleForLegacyEntry(tx, tenantId, legacyRole);
+      if (seen.has(role.id)) continue;
+      const isDefault = legacyRole.isDefault || (!defaultAssigned && index === 0);
+      rows.push({
+        contributorRoleId: role.id,
+        isDefault,
+        sortOrder: index,
+      });
+      seen.add(role.id);
+      if (isDefault) defaultAssigned = true;
+    }
+
+    if (!defaultAssigned && rows.length > 0) {
+      rows[0] = { ...rows[0], isDefault: true };
+    }
+    return rows;
+  }
+
+  const memberRole = await tx.contributorRole.findUnique({
+    where: { tenantId_code: { tenantId, code: "MEMBER" } },
+  });
+  if (!memberRole) {
+    throw new Error("Default MEMBER contributor role could not be resolved.");
+  }
+  return [
+    {
+      contributorRoleId: memberRole.id,
+      isDefault: true,
+      sortOrder: 0,
+    },
+  ];
+}
+
+export async function ensureApplicableRolesBaseline(
+  kpiDefinitionId: string,
+  tenantId: string,
+  legacyContributionRoles: unknown = null,
+  tx: DbClient = prisma,
+): Promise<ApplicableContributorRoleView[]> {
+  const existing = await tx.kpiApplicableRole.findMany({
+    where: { kpiDefinitionId },
+    include: { contributorRole: true },
+    orderBy: [{ sortOrder: "asc" }, { contributorRole: { name: "asc" } }],
+  });
+
+  if (existing.length > 0) {
+    const hasDefault = existing.some((row) => row.isDefault);
+    if (!hasDefault) {
+      const first = existing[0]!;
+      await tx.kpiApplicableRole.updateMany({
+        where: { kpiDefinitionId },
+        data: { isDefault: false },
+      });
+      await tx.kpiApplicableRole.update({
+        where: { id: first.id },
+        data: { isDefault: true },
+      });
+      return existing.map((row, index) => ({
+        ...row.contributorRole,
+        linkIsDefault: index === 0,
+        linkSortOrder: row.sortOrder,
+      }));
+    }
+
+    return existing.map((row) => ({
+      ...row.contributorRole,
+      linkIsDefault: row.isDefault,
+      linkSortOrder: row.sortOrder,
+    }));
+  }
+
+  const baseline = await buildBaselineApplicableRoles(
+    tx,
+    kpiDefinitionId,
+    tenantId,
+    legacyContributionRoles,
+  );
+
+  await tx.kpiApplicableRole.createMany({
+    data: baseline.map((row) => ({
+      kpiDefinitionId,
+      contributorRoleId: row.contributorRoleId,
+      isDefault: row.isDefault,
+      sortOrder: row.sortOrder,
+    })),
+  });
+
+  const linked = await tx.kpiApplicableRole.findMany({
+    where: { kpiDefinitionId },
+    include: { contributorRole: true },
+    orderBy: [{ sortOrder: "asc" }, { contributorRole: { name: "asc" } }],
+  });
+
+  return linked.map((row) => ({
+    ...row.contributorRole,
+    linkIsDefault: row.isDefault,
+    linkSortOrder: row.sortOrder,
+  }));
+}
+
+async function validateRoleDeactivation(
+  tx: DbClient,
+  contributorRoleId: string,
+  tenantId: string,
+): Promise<KraKpiActionResult | null> {
+  const achievementUsage = await tx.achievementContributor.count({
+    where: { contributorRoleId },
+  });
+  if (achievementUsage > 0) {
+    return {
+      status: "error",
+      message: `Cannot archive role — referenced by ${achievementUsage} achievement contributor(s).`,
+      code: "ROLE_IN_USE_ACHIEVEMENTS",
+    };
+  }
+
+  const links = await tx.kpiApplicableRole.findMany({
+    where: {
+      contributorRoleId,
+      kpiDefinition: { kraDefinition: { tenantId } },
+    },
+    select: { kpiDefinitionId: true },
+  });
+  if (links.length === 0) {
+    return null;
+  }
+
+  const affectedKpiIds = [...new Set(links.map((row) => row.kpiDefinitionId))];
+  for (const kpiDefinitionId of affectedKpiIds) {
+    const otherActiveRoles = await tx.kpiApplicableRole.count({
+      where: {
+        kpiDefinitionId,
+        contributorRoleId: { not: contributorRoleId },
+        contributorRole: { isActive: true },
+      },
+    });
+    if (otherActiveRoles === 0) {
+      return {
+        status: "error",
+        message: buildLastApplicableRoleMessage(1),
+        code: "ROLE_LAST_APPLICABLE",
+      };
+    }
+  }
+
+  return null;
+}
+
+async function promoteReplacementDefaults(
+  tx: DbClient,
+  contributorRoleId: string,
+  tenantId: string,
+): Promise<void> {
+  const defaultLinks = await tx.kpiApplicableRole.findMany({
+    where: {
+      contributorRoleId,
+      isDefault: true,
+      kpiDefinition: { kraDefinition: { tenantId } },
+    },
+    select: {
+      id: true,
+      kpiDefinitionId: true,
+    },
+  });
+
+  for (const link of defaultLinks) {
+    const replacement = await tx.kpiApplicableRole.findFirst({
+      where: {
+        kpiDefinitionId: link.kpiDefinitionId,
+        contributorRoleId: { not: contributorRoleId },
+        contributorRole: { isActive: true },
+      },
+      orderBy: [{ sortOrder: "asc" }, { contributorRole: { name: "asc" } }],
+      select: { id: true },
+    });
+
+    if (!replacement) {
+      continue;
+    }
+
+    await tx.kpiApplicableRole.update({
+      where: { id: link.id },
+      data: { isDefault: false },
+    });
+    await tx.kpiApplicableRole.update({
+      where: { id: replacement.id },
+      data: { isDefault: true },
+    });
+  }
+}
+
+export async function seedDefaultContributorRoles(tenantId: string): Promise<void> {
+  await ensureDefaultContributorRolesInTx(prisma, tenantId);
 }
 
 export async function listContributorRoles(
@@ -335,18 +486,12 @@ export async function updateContributorRole(
   const isDeactivating = parsed.data.isActive === false && existing.isActive;
 
   return prisma.$transaction(async (tx) => {
-    let impact: ContributorRoleArchiveImpact = {
-      removedLinkCount: 0,
-      reassignedDefaultKpiCount: 0,
-      affectedKpiCount: 0,
-    };
-
     if (isDeactivating) {
-      const removal = await removeContributorRoleFromApplicableKpis(tx, id, tenantId);
-      if (removal.status === "error") {
-        return removal.result;
+      const blockingResult = await validateRoleDeactivation(tx, id, tenantId);
+      if (blockingResult) {
+        return blockingResult;
       }
-      impact = removal.impact;
+      await promoteReplacementDefaults(tx, id, tenantId);
     }
 
     const updated = await tx.contributorRole.update({
@@ -362,20 +507,11 @@ export async function updateContributorRole(
         targetType: "ContributorRole",
         targetId: id,
         action: "UPDATE",
-        newState: {
-          ...parsed.data,
-          removedApplicableLinks: impact.removedLinkCount,
-          reassignedDefaultKpis: impact.reassignedDefaultKpiCount,
-        } as object,
+        newState: parsed.data as object,
       },
     });
 
-    const message =
-      impact.removedLinkCount > 0
-        ? `Contributor role updated and removed from ${impact.affectedKpiCount} KPI(s).`
-        : "Contributor role updated.";
-
-    return { status: "success", message, id: updated.id } satisfies KraKpiActionResult;
+    return { status: "success", message: "Contributor role updated.", id: updated.id } satisfies KraKpiActionResult;
   });
 }
 
@@ -405,10 +541,12 @@ export async function archiveContributorRole(
   }
 
   return prisma.$transaction(async (tx) => {
-    const removal = await removeContributorRoleFromApplicableKpis(tx, id, tenantId);
-    if (removal.status === "error") {
-      return removal.result;
+    const blockingResult = await validateRoleDeactivation(tx, id, tenantId);
+    if (blockingResult) {
+      return blockingResult;
     }
+
+    await promoteReplacementDefaults(tx, id, tenantId);
 
     await tx.contributorRole.update({
       where: { id },
@@ -423,20 +561,10 @@ export async function archiveContributorRole(
         targetType: "ContributorRole",
         targetId: id,
         action: "ARCHIVE",
-        newState: {
-          isActive: false,
-          removedApplicableLinks: removal.impact.removedLinkCount,
-          reassignedDefaultKpis: removal.impact.reassignedDefaultKpiCount,
-        } as object,
+        newState: { isActive: false } as object,
       },
     });
-
-    const message =
-      removal.impact.removedLinkCount > 0
-        ? `Contributor role archived and removed from ${removal.impact.affectedKpiCount} KPI(s).`
-        : "Contributor role archived.";
-
-    return { status: "success", message } satisfies KraKpiActionResult;
+    return { status: "success", message: "Contributor role archived." } satisfies KraKpiActionResult;
   });
 }
 

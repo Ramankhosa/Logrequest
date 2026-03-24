@@ -205,7 +205,6 @@ export async function calculateStageScore(
   const achievement = await tx.achievement.findFirst({
     where: { id: achievementId },
     select: {
-      creditPercent: true,
       kpiDefinition: {
         select: {
           id: true,
@@ -240,11 +239,7 @@ export async function calculateStageScore(
     stageCompletionScore += weightByStage.get(row.stageDefinitionId) ?? 0;
   }
 
-  const credit = achievement.creditPercent;
-  const effectiveScore =
-    credit != null && credit > 0
-      ? stageCompletionScore * (credit / 100)
-      : stageCompletionScore;
+  const effectiveScore = stageCompletionScore;
 
   await tx.achievement.update({
     where: { id: achievementId },

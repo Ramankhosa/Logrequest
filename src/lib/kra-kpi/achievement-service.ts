@@ -24,7 +24,17 @@ import {
   resolveUnitHeadUserIds,
 } from "@/lib/notifications/notification-service";
 import { initializeStageProgress, calculateStageScore } from "./stage-progress-service";
-import { lookupContributionCreditPercent } from "./kpi-service";
+import {
+  achievementContributorInclude,
+  achievementContributorInputSchema,
+  buildStarterContributorInputs,
+  contributorMutationToActionResult,
+  ensureAchievementContributorRows,
+  mapAchievementContributors,
+  setAchievementContributors,
+} from "./achievement-contributor-service";
+import { runDuplicateDetection } from "./duplicate-detection-service";
+import { ensureApplicableRolesBaseline } from "./contributor-role-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -51,6 +61,9 @@ const createAchievementSchema = z.object({
   reportingDate: z.coerce.date().optional(),
   title: z.string().trim().max(200).optional(),
   contributionRole: z.string().trim().max(100).optional(),
+  isOBO: z.boolean().default(false),
+  oboReportedForUserId: z.string().trim().min(1).optional(),
+  contributors: z.array(achievementContributorInputSchema).optional(),
 });
 
 const updateAchievementSchema = z.object({
@@ -67,6 +80,7 @@ const updateAchievementSchema = z.object({
   achievementFormData: z.record(z.string(), z.unknown()).optional(),
   title: z.string().trim().max(200).nullable().optional(),
   contributionRole: z.string().trim().max(100).nullable().optional(),
+  contributors: z.array(achievementContributorInputSchema).optional(),
 });
 
 export type CreateAchievementInput = z.input<typeof createAchievementSchema>;
@@ -216,15 +230,9 @@ function currentReviewUnitIdForAchievement(achievement: {
 
 function calculateEffectiveScore(
   baseScore: number | null,
-  creditPercent: number | null,
+  _creditPercent: number | null,
 ): number | null {
-  if (baseScore == null) {
-    return null;
-  }
-
-  return creditPercent != null
-    ? baseScore * (creditPercent / 100)
-    : baseScore;
+  return baseScore;
 }
 
 function mapSubmissionTrailRows(
@@ -389,11 +397,73 @@ async function getPrimaryMemberUnitId(
   return context.memberOfUnits[0]?.unitId ?? null;
 }
 
+function getCreditedUserId(input: {
+  reportedByUserId: string;
+  oboReportedForUserId?: string | null;
+}): string {
+  return input.oboReportedForUserId ?? input.reportedByUserId;
+}
+
+async function validateOboRequest(input: {
+  tenantId: string;
+  actorUserId: string;
+  actorRole: Role;
+  isOBO: boolean;
+  oboReportedForUserId?: string | null;
+}): Promise<KraKpiActionResult | null> {
+  if (!input.isOBO) {
+    return null;
+  }
+
+  if (!input.oboReportedForUserId) {
+    return {
+      status: "error",
+      message: "Select the user you are reporting for.",
+      code: "OBO_BENEFICIARY_REQUIRED",
+    };
+  }
+
+  if (input.oboReportedForUserId === input.actorUserId) {
+    return null;
+  }
+
+  if (isAdminOrOwner(input.actorRole)) {
+    return null;
+  }
+
+  const beneficiaryUnitId = await getPrimaryMemberUnitId(
+    input.tenantId,
+    input.oboReportedForUserId,
+  );
+  if (!beneficiaryUnitId) {
+    return {
+      status: "error",
+      message: "The selected beneficiary has no active unit assignment.",
+      code: "CONTRIBUTOR_NOT_FOUND",
+    };
+  }
+
+  const canReportForBeneficiary = await isUserHeadOfUnit(
+    input.tenantId,
+    input.actorUserId,
+    beneficiaryUnitId,
+  );
+  if (!canReportForBeneficiary) {
+    return {
+      status: "error",
+      message: "Only tenant admins or the beneficiary's unit head can report on behalf of another user.",
+      code: "PERMISSION_DENIED",
+    };
+  }
+
+  return null;
+}
+
 async function findExistingAdditionalAchievementForCycle(input: {
   tenantId: string;
   periodId: string;
   kpiDefinitionId: string;
-  reportedByUserId: string;
+  subjectUserId: string;
   reportingDate: Date;
   period: { startDate: Date; endDate: Date; reviewFrequency: string };
   excludeAchievementId?: string;
@@ -404,7 +474,10 @@ async function findExistingAdditionalAchievementForCycle(input: {
       tenantId: input.tenantId,
       periodId: input.periodId,
       kpiDefinitionId: input.kpiDefinitionId,
-      reportedByUserId: input.reportedByUserId,
+      OR: [
+        { reportedByUserId: input.subjectUserId },
+        { oboReportedForUserId: input.subjectUserId },
+      ],
       targetAllocationId: null,
       ...(input.excludeAchievementId ? { id: { not: input.excludeAchievementId } } : {}),
     },
@@ -441,6 +514,8 @@ function mapAchievementView(
     kpiDefinitionId: string;
     targetAllocationId: string | null;
     reportedByUserId: string;
+    oboReportedForUserId: string | null;
+    isOBO: boolean;
     title: string | null;
     contributionRole: string | null;
     creditPercent: number | null;
@@ -465,6 +540,22 @@ function mapAchievementView(
     verificationNote: string | null;
     rejectionReason: string | null;
     verificationLog: Prisma.JsonValue;
+    duplicateCheckResult: Prisma.JsonValue;
+    contributors: Array<{
+      id: string;
+      type: "INTERNAL" | "EXTERNAL";
+      userId: string | null;
+      externalName: string | null;
+      externalAffiliation: string | null;
+      externalScope: "NATIONAL" | "INTERNATIONAL" | null;
+      externalData: Prisma.JsonValue;
+      contributorRoleId: string;
+      creditPercent: number;
+      isExcludedFromReward: boolean;
+      note: string | null;
+      user?: { id: string; firstName: string; lastName: string } | null;
+      contributorRole?: { id: string; name: string } | null;
+    }>;
     reportingDate: Date;
     createdAt: Date;
     submissionTrail: Array<{
@@ -484,6 +575,30 @@ function mapAchievementView(
   },
   reportedByUserName: string
 ): AchievementView {
+  const mappedContributors =
+    a.contributors.length > 0
+      ? mapAchievementContributors(a.contributors)
+      : a.contributionRole
+        ? [{
+            id: `legacy-inline-${a.id}`,
+            type: "INTERNAL" as const,
+            userId: getCreditedUserId({
+              reportedByUserId: a.reportedByUserId,
+              oboReportedForUserId: a.oboReportedForUserId,
+            }),
+            userName: !a.isOBO ? reportedByUserName : null,
+            externalName: null,
+            externalAffiliation: null,
+            externalScope: null,
+            externalData: null,
+            contributorRoleId: "legacy-inline",
+            roleName: a.contributionRole,
+            creditPercent: a.creditPercent ?? 0,
+            isExcludedFromReward: false,
+            note: null,
+          }]
+        : [];
+
   return {
     id: a.id,
     tenantId: a.tenantId,
@@ -493,6 +608,8 @@ function mapAchievementView(
     targetAllocationId: a.targetAllocationId,
     reportedByUserId: a.reportedByUserId,
     reportedByUserName,
+    isOBO: a.isOBO,
+    oboReportedForUserId: a.oboReportedForUserId,
     title: a.title ?? null,
     contributionRole: a.contributionRole ?? null,
     creditPercent: a.creditPercent ?? null,
@@ -517,6 +634,8 @@ function mapAchievementView(
     verificationNote: a.verificationNote,
     rejectionReason: a.rejectionReason,
     verificationLog: (a.verificationLog as VerificationLogEntry[]) ?? [],
+    contributors: mappedContributors,
+    duplicateCheckResult: (a.duplicateCheckResult as AchievementView["duplicateCheckResult"]) ?? null,
     submissionTrail: mapSubmissionTrailRows(a.submissionTrail),
     reportingDate: a.reportingDate,
     createdAt: a.createdAt,
@@ -546,6 +665,7 @@ export async function listAchievements(
     },
     include: {
       kpiDefinition: { select: { title: true } },
+      contributors: { include: achievementContributorInclude },
       submissionTrail: { orderBy: { createdAt: "asc" } },
     },
     orderBy: { reportingDate: "desc" },
@@ -578,6 +698,20 @@ export async function recordAchievement(
   }
   const data = parsed.data;
   const reportingDate = data.reportingDate ?? new Date();
+  const oboValidation = await validateOboRequest({
+    tenantId,
+    actorUserId,
+    actorRole,
+    isOBO: data.isOBO,
+    oboReportedForUserId: data.oboReportedForUserId,
+  });
+  if (oboValidation) {
+    return oboValidation;
+  }
+  const creditedUserId = getCreditedUserId({
+    reportedByUserId: actorUserId,
+    oboReportedForUserId: data.isOBO ? (data.oboReportedForUserId ?? null) : null,
+  });
 
   // Verify period
   const period = await prisma.assessmentPeriod.findFirst({
@@ -662,8 +796,8 @@ export async function recordAchievement(
   }
 
   if (allocation && !isAdminOrOwner(actorRole)) {
-    const context = await getMyKpiContext(tenantId, actorUserId);
-    const allowed = canRecord(
+    const actorContext = await getMyKpiContext(tenantId, actorUserId);
+    let allowed = canRecord(
       {
         assignedToUnitId: allocation.assignedToUnitId,
         assignedToUserId: allocation.assignedToUserId,
@@ -672,9 +806,27 @@ export async function recordAchievement(
         childCount: allocation._count.childAllocations,
         parentAllocationId: allocation.parentAllocationId,
       },
-      context,
+      actorContext,
       period.state,
     );
+    if (!allowed && data.isOBO && data.oboReportedForUserId) {
+      const beneficiaryContext = await getMyKpiContext(
+        tenantId,
+        data.oboReportedForUserId,
+      );
+      allowed = canRecord(
+        {
+          assignedToUnitId: allocation.assignedToUnitId,
+          assignedToUserId: allocation.assignedToUserId,
+          allocationType: kpi.allocationType,
+          state: allocation.state,
+          childCount: allocation._count.childAllocations,
+          parentAllocationId: allocation.parentAllocationId,
+        },
+        beneficiaryContext,
+        period.state,
+      );
+    }
     if (!allowed) {
       return {
         status: "error",
@@ -725,18 +877,6 @@ export async function recordAchievement(
     };
   }
 
-  let creditPercent: number | null = null;
-  if (data.contributionRole) {
-    const credit = lookupContributionCreditPercent(kpi.contributionRoles, data.contributionRole);
-    if (credit == null) {
-      return {
-        status: "error",
-        message: "Contribution role does not match a defined role for this KPI.",
-      };
-    }
-    creditPercent = credit;
-  }
-
   // Compute score if we have target data
   let computedScoreValue: number | null = null;
   if (allocation) {
@@ -763,13 +903,14 @@ export async function recordAchievement(
     );
   }
 
-  const initialEffectiveScore =
-    kpi._count.stages > 0
-      ? null
-      : calculateEffectiveScore(computedScoreValue, creditPercent);
+  const result = await prisma.$transaction(async (tx) => {
+    await ensureApplicableRolesBaseline(
+      data.kpiDefinitionId,
+      tenantId,
+      kpi.contributionRoles,
+      tx,
+    );
 
-  let createdAchievementId: string | undefined;
-  await prisma.$transaction(async (tx) => {
     const achievement = await tx.achievement.create({
       data: {
         tenantId,
@@ -777,9 +918,9 @@ export async function recordAchievement(
         kpiDefinitionId: data.kpiDefinitionId,
         targetAllocationId: data.targetAllocationId,
         reportedByUserId: actorUserId,
+        oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
+        isOBO: data.isOBO,
         title: data.title,
-        contributionRole: data.contributionRole,
-        creditPercent,
         actualValue: data.actualValue,
         actualDate: data.actualDate,
         actualMilestone: data.actualMilestone,
@@ -790,11 +931,39 @@ export async function recordAchievement(
         evidenceLinks: data.evidenceLinks,
         achievementFormData: data.achievementFormData as object | undefined,
         computedScore: computedScoreValue,
-        effectiveScore: initialEffectiveScore,
+        effectiveScore:
+          kpi._count.stages > 0
+            ? null
+            : calculateEffectiveScore(computedScoreValue, null),
         reportingDate,
       },
     });
-    createdAchievementId = achievement.id;
+
+    const contributorInputs =
+      data.contributors ??
+      (await buildStarterContributorInputs({
+        tenantId,
+        kpiDefinitionId: data.kpiDefinitionId,
+        legacyContributionRoles: kpi.contributionRoles,
+        userId: creditedUserId,
+        preferredRoleName: data.contributionRole ?? null,
+        tx,
+      }));
+
+    const contributorResult = await setAchievementContributors({
+      achievementId: achievement.id,
+      tenantId,
+      kpiDefinitionId: data.kpiDefinitionId,
+      legacyContributionRoles: kpi.contributionRoles,
+      reportedByUserId: actorUserId,
+      oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
+      contributors: contributorInputs,
+      tx,
+    });
+    const contributorError = contributorMutationToActionResult(contributorResult);
+    if (contributorError) {
+      return contributorError;
+    }
 
     await tx.auditLog.create({
       data: {
@@ -808,29 +977,36 @@ export async function recordAchievement(
           kpiDefinitionId: data.kpiDefinitionId,
           actualValue: data.actualValue,
           computedScore: computedScoreValue,
+          isOBO: data.isOBO,
         },
       },
     });
+
+    return {
+      status: "success",
+      message: "Achievement recorded.",
+      id: achievement.id,
+    } satisfies KraKpiActionResult;
   });
 
+  if (result.status !== "success") {
+    return result;
+  }
+
   if (
-    createdAchievementId &&
+    result.id &&
     data.targetAllocationId &&
     kpi._count.stages > 0
   ) {
     await initializeStageProgress(
-      createdAchievementId,
+      result.id,
       data.targetAllocationId,
       data.kpiDefinitionId,
     );
-    await calculateStageScore(createdAchievementId);
+    await calculateStageScore(result.id);
   }
 
-  return {
-    status: "success",
-    message: "Achievement recorded.",
-    id: createdAchievementId,
-  };
+  return result;
 }
 
 // ── Update Achievement ───────────────────────────────────────────────────────
@@ -850,6 +1026,11 @@ export async function updateAchievement(
 
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
+    include: {
+      contributors: {
+        select: { id: true },
+      },
+    },
   });
   if (!achievement) {
     return { status: "error", message: "Achievement not found." };
@@ -896,28 +1077,6 @@ export async function updateAchievement(
     };
   }
 
-  let nextContributionRole = achievement.contributionRole;
-  if (data.contributionRole !== undefined) {
-    nextContributionRole = data.contributionRole ?? null;
-  }
-
-  let creditPercent = achievement.creditPercent;
-  if (nextContributionRole) {
-    const credit = lookupContributionCreditPercent(
-      kpi?.contributionRoles,
-      nextContributionRole,
-    );
-    if (credit == null) {
-      return {
-        status: "error",
-        message: "Contribution role does not match a defined role for this KPI.",
-      };
-    }
-    creditPercent = credit;
-  } else if (data.contributionRole !== undefined) {
-    creditPercent = null;
-  }
-
   // Recompute score if actuals changed and we have a target allocation
   let newScore = achievement.computedScore;
   if (achievement.targetAllocationId) {
@@ -953,10 +1112,10 @@ export async function updateAchievement(
     achievement.stageCompletionScore != null ? achievement.stageCompletionScore : null;
   const effectiveScore =
     kpi && kpi._count.stages > 0
-      ? calculateEffectiveScore(stageBaseScore, creditPercent)
-      : calculateEffectiveScore(newScore, creditPercent);
+      ? calculateEffectiveScore(stageBaseScore, achievement.creditPercent)
+      : calculateEffectiveScore(newScore, achievement.creditPercent);
 
-  await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     await tx.achievement.update({
       where: { id: achievementId },
       data: {
@@ -974,10 +1133,6 @@ export async function updateAchievement(
           achievementFormData: data.achievementFormData as object,
         }),
         ...(data.title !== undefined && { title: data.title }),
-        ...(data.contributionRole !== undefined && {
-          contributionRole: data.contributionRole,
-        }),
-        creditPercent,
         effectiveScore,
         computedScore: newScore,
         state: "DRAFT",
@@ -990,6 +1145,56 @@ export async function updateAchievement(
       },
     });
 
+    await ensureApplicableRolesBaseline(
+      achievement.kpiDefinitionId,
+      tenantId,
+      kpi?.contributionRoles ?? null,
+      tx,
+    );
+
+    if (data.contributors !== undefined) {
+      const contributorResult = await setAchievementContributors({
+        achievementId,
+        tenantId,
+        kpiDefinitionId: achievement.kpiDefinitionId,
+        legacyContributionRoles: kpi?.contributionRoles ?? null,
+        reportedByUserId: achievement.reportedByUserId,
+        oboReportedForUserId: achievement.oboReportedForUserId,
+        contributors: data.contributors,
+        tx,
+      });
+      const contributorError = contributorMutationToActionResult(contributorResult);
+      if (contributorError) {
+        return contributorError;
+      }
+    } else if (achievement.contributors.length === 0 && data.contributionRole !== undefined) {
+      const starter = await buildStarterContributorInputs({
+        tenantId,
+        kpiDefinitionId: achievement.kpiDefinitionId,
+        legacyContributionRoles: kpi?.contributionRoles ?? null,
+        userId: getCreditedUserId({
+          reportedByUserId: achievement.reportedByUserId,
+          oboReportedForUserId: achievement.oboReportedForUserId,
+        }),
+        preferredRoleName: data.contributionRole,
+        tx,
+      });
+      const contributorResult = await setAchievementContributors({
+        achievementId,
+        tenantId,
+        kpiDefinitionId: achievement.kpiDefinitionId,
+        legacyContributionRoles: kpi?.contributionRoles ?? null,
+        reportedByUserId: achievement.reportedByUserId,
+        oboReportedForUserId: achievement.oboReportedForUserId,
+        contributors: starter,
+        tx,
+      });
+      const contributorError = contributorMutationToActionResult(contributorResult);
+      if (contributorError) {
+        return contributorError;
+      }
+    }
+
     await tx.auditLog.create({
       data: {
         tenantId,
@@ -1001,9 +1206,11 @@ export async function updateAchievement(
         newState: data as object,
       },
     });
+
+    return { status: "success", message: "Achievement updated." } satisfies KraKpiActionResult;
   });
 
-  return { status: "success", message: "Achievement updated." };
+  return result;
 }
 
 // ── Submit for Verification ──────────────────────────────────────────────────
@@ -1025,10 +1232,12 @@ export async function submitForVerification(
           finalUnitId: true,
           allowPartialCompletion: true,
           contributionRoles: true,
+          achievementFormConfig: true,
           evidenceRequired: true,
           stages: { select: { id: true } },
         },
       },
+      contributors: { include: achievementContributorInclude },
       targetAllocation: {
         select: { assignedToUnitId: true, assignedToUserId: true },
       },
@@ -1086,11 +1295,28 @@ export async function submitForVerification(
     }
   }
 
-  const cr = kpi.contributionRoles;
-  const hasContributionRoles = Array.isArray(cr) && cr.length > 0;
-  if (hasContributionRoles && !achievement.contributionRole) {
-    return { status: "error", message: "Please select your contribution role." };
+  const shouldBackfillLegacyContributors =
+    achievement.contributors.length === 0 &&
+    (achievement.contributionRole != null || achievement.creditPercent != null);
+  if (!shouldBackfillLegacyContributors && achievement.contributors.length === 0) {
+    return {
+      status: "error",
+      message: "Add at least one contributor before submitting.",
+      code: "CONTRIBUTORS_REQUIRED",
+    };
   }
+
+  const duplicateCheckResult = await runDuplicateDetection({
+    tenantId,
+    periodId: achievement.periodId,
+    kpiDefinitionId: achievement.kpiDefinitionId,
+    achievementId,
+    achievementTitle: achievement.title,
+    achievementFormData:
+      (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
+    formConfig:
+      (kpi.achievementFormConfig as AchievementFormConfig | null) ?? null,
+  });
 
   const actor = await prisma.user.findUnique({
     where: { id: actorUserId },
@@ -1128,15 +1354,73 @@ export async function submitForVerification(
       : (latest?.computedScore ?? 0);
   const scoreForTrail = baseScore;
 
-  let nextEffective = latest?.effectiveScore ?? null;
-  if (stageCount === 0) {
-    nextEffective = calculateEffectiveScore(
-      latest?.computedScore ?? null,
-      latest?.creditPercent ?? null,
-    );
-  }
+  const nextEffective =
+    stageCount === 0
+      ? calculateEffectiveScore(latest?.computedScore ?? null, latest?.creditPercent ?? null)
+      : latest?.effectiveScore ?? null;
 
-  await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
+    await ensureApplicableRolesBaseline(
+      achievement.kpiDefinitionId,
+      tenantId,
+      kpi.contributionRoles,
+      tx,
+    );
+
+    if (shouldBackfillLegacyContributors) {
+      const ensureResult = await ensureAchievementContributorRows({
+        achievementId,
+        tenantId,
+        kpiDefinitionId: achievement.kpiDefinitionId,
+        legacyContributionRoles: kpi.contributionRoles,
+        reportedByUserId: achievement.reportedByUserId,
+        oboReportedForUserId: achievement.oboReportedForUserId,
+        contributionRole: achievement.contributionRole,
+        tx,
+      });
+      const ensureError = contributorMutationToActionResult(ensureResult);
+      if (ensureError) {
+        return ensureError;
+      }
+    } else {
+      const contributorResult = await setAchievementContributors({
+        achievementId,
+        tenantId,
+        kpiDefinitionId: achievement.kpiDefinitionId,
+        legacyContributionRoles: kpi.contributionRoles,
+        reportedByUserId: achievement.reportedByUserId,
+        oboReportedForUserId: achievement.oboReportedForUserId,
+        contributors: achievement.contributors.map((contributor) => ({
+          type: contributor.type,
+          userId: contributor.userId ?? undefined,
+          externalName: contributor.externalName ?? undefined,
+          externalAffiliation: contributor.externalAffiliation ?? undefined,
+          externalScope: contributor.externalScope ?? undefined,
+          externalData:
+            (contributor.externalData as Record<string, unknown> | null) ?? undefined,
+          contributorRoleId: contributor.contributorRoleId,
+          isExcludedFromReward: contributor.isExcludedFromReward,
+          note: contributor.note ?? undefined,
+        })),
+        tx,
+      });
+      const contributorError = contributorMutationToActionResult(contributorResult);
+      if (contributorError) {
+        return contributorError;
+      }
+    }
+
+    const contributorCount = await tx.achievementContributor.count({
+      where: { achievementId },
+    });
+    if (contributorCount === 0) {
+      return {
+        status: "error",
+        message: "Add at least one contributor before submitting.",
+        code: "CONTRIBUTORS_REQUIRED",
+      } satisfies KraKpiActionResult;
+    }
+
     await tx.achievement.update({
       where: { id: achievementId },
       data: {
@@ -1144,6 +1428,7 @@ export async function submitForVerification(
         verificationLog: [...existingLog, newLogEntry] as unknown as object[],
         currentVerifierUnitId: reviewUnitId,
         currentVerifierUserId: firstHead,
+        duplicateCheckResult: duplicateCheckResult as unknown as object,
         ...(stageCount === 0
           ? { effectiveScore: nextEffective, stageCompletionScore: null }
           : {
@@ -1175,7 +1460,16 @@ export async function submitForVerification(
         newState: { state: "SUBMITTED" },
       },
     });
+
+    return {
+      status: "success",
+      message: "Achievement submitted for verification.",
+    } satisfies KraKpiActionResult;
   });
+
+  if (result.status !== "success") {
+    return result;
+  }
 
   try {
     const title = achievement.title ?? kpi.title;
@@ -1196,7 +1490,7 @@ export async function submitForVerification(
     console.warn("[achievement-service] submitForVerification notification failed:", err);
   }
 
-  return { status: "success", message: "Achievement submitted for verification." };
+  return result;
 }
 
 // ── Verify Achievement (admin path — still works for R1 admin verify) ────────
@@ -1325,10 +1619,7 @@ export async function verifyAchievement(
   }
   const finalEffectiveScore = approved
     ? (stageCount > 0
-        ? calculateEffectiveScore(
-            achievement.stageCompletionScore,
-            achievement.creditPercent,
-          )
+        ? calculateEffectiveScore(achievement.stageCompletionScore, achievement.creditPercent)
         : calculateEffectiveScore(finalScore, achievement.creditPercent))
     : achievement.effectiveScore;
 
@@ -1971,6 +2262,20 @@ export async function recordAdditionalAchievement(
   }
   const data = parsed.data;
   const reportingDate = data.reportingDate ?? new Date();
+  const oboValidation = await validateOboRequest({
+    tenantId,
+    actorUserId,
+    actorRole,
+    isOBO: data.isOBO,
+    oboReportedForUserId: data.oboReportedForUserId,
+  });
+  if (oboValidation) {
+    return oboValidation;
+  }
+  const creditedUserId = getCreditedUserId({
+    reportedByUserId: actorUserId,
+    oboReportedForUserId: data.isOBO ? (data.oboReportedForUserId ?? null) : null,
+  });
 
   // Verify period
   const period = await prisma.assessmentPeriod.findFirst({
@@ -1996,7 +2301,10 @@ export async function recordAdditionalAchievement(
         periodId: data.periodId,
       },
     },
-    include: { kraDefinition: { select: { state: true } } },
+    include: {
+      kraDefinition: { select: { state: true } },
+      _count: { select: { stages: true } },
+    },
   });
   if (!kpi) {
     return { status: "error", message: "KPI not found." };
@@ -2009,7 +2317,7 @@ export async function recordAdditionalAchievement(
   }
 
   // Block if user already has an allocated target for this KPI
-  const ctx = await getMyKpiContext(tenantId, actorUserId);
+  const ctx = await getMyKpiContext(tenantId, creditedUserId);
   const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
   const existingAllocation = await prisma.targetAllocation.findFirst({
     where: {
@@ -2017,7 +2325,7 @@ export async function recordAdditionalAchievement(
       periodId: data.periodId,
       kpiDefinitionId: data.kpiDefinitionId,
       OR: [
-        { assignedToUserId: actorUserId },
+        { assignedToUserId: creditedUserId },
         ...(headUnitIds.length > 0 ? [{ assignedToUnitId: { in: headUnitIds } }] : []),
       ],
     },
@@ -2033,7 +2341,7 @@ export async function recordAdditionalAchievement(
     tenantId,
     periodId: data.periodId,
     kpiDefinitionId: data.kpiDefinitionId,
-    reportedByUserId: actorUserId,
+    subjectUserId: creditedUserId,
     reportingDate,
     period,
   });
@@ -2078,8 +2386,14 @@ export async function recordAdditionalAchievement(
     );
   }
 
-  let createdAchievementId: string | undefined;
-  await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
+    await ensureApplicableRolesBaseline(
+      data.kpiDefinitionId,
+      tenantId,
+      kpi.contributionRoles,
+      tx,
+    );
+
     const achievement = await tx.achievement.create({
       data: {
         tenantId,
@@ -2087,6 +2401,9 @@ export async function recordAdditionalAchievement(
         kpiDefinitionId: data.kpiDefinitionId,
         targetAllocationId: null,
         reportedByUserId: actorUserId,
+        oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
+        isOBO: data.isOBO,
+        title: data.title,
         actualValue: data.actualValue,
         actualDate: data.actualDate,
         actualMilestone: data.actualMilestone,
@@ -2097,10 +2414,38 @@ export async function recordAdditionalAchievement(
         evidenceLinks: data.evidenceLinks,
         achievementFormData: data.achievementFormData as object | undefined,
         computedScore: computedScoreValue,
+        effectiveScore:
+          kpi._count.stages > 0
+            ? null
+            : calculateEffectiveScore(computedScoreValue, null),
         reportingDate,
       },
     });
-    createdAchievementId = achievement.id;
+
+    const contributorInputs =
+      data.contributors ??
+      (await buildStarterContributorInputs({
+        tenantId,
+        kpiDefinitionId: data.kpiDefinitionId,
+        legacyContributionRoles: kpi.contributionRoles,
+        userId: creditedUserId,
+        preferredRoleName: data.contributionRole ?? null,
+        tx,
+      }));
+    const contributorResult = await setAchievementContributors({
+      achievementId: achievement.id,
+      tenantId,
+      kpiDefinitionId: data.kpiDefinitionId,
+      legacyContributionRoles: kpi.contributionRoles,
+      reportedByUserId: actorUserId,
+      oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
+      contributors: contributorInputs,
+      tx,
+    });
+    const contributorError = contributorMutationToActionResult(contributorResult);
+    if (contributorError) {
+      return contributorError;
+    }
 
     await tx.auditLog.create({
       data: {
@@ -2115,14 +2460,17 @@ export async function recordAdditionalAchievement(
           actualValue: data.actualValue,
           computedScore: computedScoreValue,
           isAdditional: true,
+          isOBO: data.isOBO,
         },
       },
     });
+
+    return {
+      status: "success",
+      message: "Additional achievement recorded.",
+      id: achievement.id,
+    } satisfies KraKpiActionResult;
   });
 
-  return {
-    status: "success",
-    message: "Additional achievement recorded.",
-    id: createdAchievementId,
-  };
+  return result;
 }
