@@ -35,6 +35,7 @@ import {
 } from "./achievement-contributor-service";
 import { runDuplicateDetection } from "./duplicate-detection-service";
 import { ensureApplicableRolesBaseline } from "./contributor-role-service";
+import { syncContributorRewardsForAchievement } from "./reward-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -550,6 +551,7 @@ function mapAchievementView(
       externalScope: "NATIONAL" | "INTERNATIONAL" | null;
       externalData: Prisma.JsonValue;
       contributorRoleId: string;
+      selectorTags: string[];
       creditPercent: number;
       isExcludedFromReward: boolean;
       note: string | null;
@@ -593,6 +595,7 @@ function mapAchievementView(
             externalData: null,
             contributorRoleId: "legacy-inline",
             roleName: a.contributionRole,
+            selectorTags: [],
             creditPercent: a.creditPercent ?? 0,
             isExcludedFromReward: false,
             note: null,
@@ -1705,6 +1708,19 @@ export async function verifyAchievement(
     }
   } catch (err) {
     console.warn("[achievement-service] verifyAchievement notification failed:", err);
+  }
+
+  if (approved) {
+    try {
+      await syncContributorRewardsForAchievement(
+        achievementId,
+        tenantId,
+        actorUserId,
+        actorRole,
+      );
+    } catch (err) {
+      console.warn("[achievement-service] verifyAchievement reward sync failed:", err);
+    }
   }
 
   return {

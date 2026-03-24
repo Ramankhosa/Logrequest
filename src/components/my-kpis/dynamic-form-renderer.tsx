@@ -1,6 +1,10 @@
 "use client";
 
-import type { AchievementFieldConfig } from "@/lib/kra-kpi/shared";
+import {
+  getRenderableAchievementFields,
+  isAchievementFieldRequired,
+  type AchievementFieldConfig,
+} from "@/lib/kra-kpi/shared";
 
 type Props = {
   fields: AchievementFieldConfig[];
@@ -11,15 +15,18 @@ type Props = {
 };
 
 export function DynamicFormRenderer({ fields, values, onChange, errors, readOnly }: Props) {
-  const sorted = [...fields].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  const renderable = getRenderableAchievementFields(fields, values, {
+    readOnly,
+    showHiddenWithValue: true,
+  });
 
   return (
     <div className="space-y-4">
-      {sorted.map((field) => (
+      {renderable.map((field) => (
         <div key={field.key}>
           <label className="block text-sm font-medium text-gray-700 mb-1">
             {field.label}
-            {field.required && <span className="text-red-500 ml-0.5">*</span>}
+            {isAchievementFieldRequired(field, values) && <span className="text-red-500 ml-0.5">*</span>}
           </label>
 
           {field.helpText && (
@@ -55,6 +62,8 @@ function renderField(
           onChange={(e) => onChange(e.target.value)}
           placeholder={field.placeholder}
           pattern={field.pattern}
+          minLength={field.validation?.minLength}
+          maxLength={field.validation?.maxLength}
           disabled={readOnly}
         />
       );
@@ -67,6 +76,8 @@ function renderField(
           value={(value as string) ?? ""}
           onChange={(e) => onChange(e.target.value)}
           placeholder={field.placeholder}
+          minLength={field.validation?.minLength}
+          maxLength={field.validation?.maxLength}
           disabled={readOnly}
         />
       );
@@ -79,6 +90,8 @@ function renderField(
           value={value != null ? String(value) : ""}
           onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
           placeholder={field.placeholder}
+          min={field.validation?.min}
+          max={field.validation?.max}
           disabled={readOnly}
         />
       );

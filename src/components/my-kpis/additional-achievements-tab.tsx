@@ -12,7 +12,11 @@ import {
   Undo2,
   XCircle,
 } from "lucide-react";
-import type { AchievementFormConfig, AdditionalAchievementView } from "@/lib/kra-kpi/shared";
+import type {
+  AchievementFormConfig,
+  AchievementSubmissionConfig,
+  AdditionalAchievementView,
+} from "@/lib/kra-kpi/shared";
 import { ACHIEVEMENT_TEMPLATES } from "@/lib/kra-kpi/shared";
 import {
   MyAchievementForm,
@@ -36,6 +40,7 @@ type AvailableKpiView = {
   startingUnitId: string;
   startingUnitName: string;
   defaultTarget: number | null;
+  submissionConfig: AchievementSubmissionConfig;
 };
 
 type CategoryOption = {
@@ -133,6 +138,7 @@ function toFormContextFromKpi(kpi: AvailableKpiView): AdditionalAchievementFormC
     startingUnitName: kpi.startingUnitName,
     achievementTemplateKey: kpi.achievementTemplateKey,
     achievementFormConfig: kpi.achievementFormConfig,
+    submissionConfig: kpi.submissionConfig,
     achievement: null,
   };
 }
@@ -152,6 +158,7 @@ function toFormContextFromAchievement(
     startingUnitName: achievement.startingUnitName,
     achievementTemplateKey: achievement.achievementTemplateKey,
     achievementFormConfig: achievement.achievementFormConfig,
+    submissionConfig: achievement.submissionConfig,
     achievement,
   };
 }

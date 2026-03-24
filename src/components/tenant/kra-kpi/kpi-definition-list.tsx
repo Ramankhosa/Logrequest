@@ -12,15 +12,13 @@ import {
   ChevronRight,
   Zap,
   Undo2,
-  ListChecks,
 } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
 import {
   getMeasurementCapValue,
   type MeasurementConfig,
 } from "@/lib/kra-kpi/shared";
-import { KpiDefinitionForm } from "./kpi-definition-form";
-import { KpiStageManager } from "./kpi-stage-manager";
+import { KpiBuilderForm } from "./kpi-builder-form";
 
 type KpiView = {
   id: string;
@@ -80,7 +78,6 @@ export function KpiDefinitionList({
   } | null>(null);
   const [addingNew, setAddingNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [stagesKpiId, setStagesKpiId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -270,7 +267,7 @@ export function KpiDefinitionList({
       )}
 
       {addingNew && !noUnitsAvailable && (
-        <KpiDefinitionForm
+        <KpiBuilderForm
           mode="create"
           kraDefinitionId={kraDefinitionId}
           units={units}
@@ -294,7 +291,7 @@ export function KpiDefinitionList({
         <div className="space-y-2">
           {kpis.map((kpi) =>
             editingId === kpi.id ? (
-              <KpiDefinitionForm
+              <KpiBuilderForm
                 key={kpi.id}
                 mode="edit"
                 kraDefinitionId={kraDefinitionId}
@@ -398,18 +395,6 @@ export function KpiDefinitionList({
                   )}
                   <button
                     type="button"
-                    onClick={() => setStagesKpiId(stagesKpiId === kpi.id ? null : kpi.id)}
-                    className={`flex h-7 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium transition ${
-                      stagesKpiId === kpi.id
-                        ? "border-brand/30 bg-brand/10 text-brand"
-                        : "border-slate-200 bg-white text-slate-500 hover:border-brand/30 hover:text-brand"
-                    }`}
-                    title="Manage Stages"
-                  >
-                    <ListChecks className="h-3.5 w-3.5" /> Stages
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setEditingId(kpi.id)}
                     className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-blue-200 hover:text-blue-600"
                     title="Edit"
@@ -431,15 +416,6 @@ export function KpiDefinitionList({
                   </button>
                 </div>
               </div>
-              {stagesKpiId === kpi.id && (
-                <div className="mt-1 rounded-xl border border-slate-200/80 bg-white px-5 py-4">
-                  <KpiStageManager
-                    kpiId={kpi.id}
-                    allowPartialCompletion={kpi.allowPartialCompletion ?? true}
-                    onUpdate={() => void fetchData()}
-                  />
-                </div>
-              )}
               </div>
             ),
           )}

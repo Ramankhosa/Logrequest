@@ -45,15 +45,16 @@ const DEFAULT_BENEFIT_TYPES: Array<{
   sortOrder: number;
 }> = [
   { code: "MONETARY", name: "Monetary Incentive", unit: "INR", sortOrder: 0 },
-  { code: "RESEARCH_POINTS", name: "Research Points", unit: "Points", sortOrder: 1 },
-  { code: "CREDIT_HOURS", name: "Credit Hours", unit: "Hours", sortOrder: 2 },
-  { code: "AWARD_POINTS", name: "Award Points", unit: "Points", sortOrder: 3 },
-  { code: "REVENUE_SHARE", name: "Revenue Share", unit: "INR", sortOrder: 4 },
+  { code: "LEAVE_POINTS", name: "Leave Points", unit: "Points", sortOrder: 1 },
+  { code: "RESEARCH_POINTS", name: "Research Points", unit: "Points", sortOrder: 2 },
+  { code: "CREDIT_HOURS", name: "Credit Hours", unit: "Hours", sortOrder: 3 },
+  { code: "AWARD_POINTS", name: "Award Points", unit: "Points", sortOrder: 4 },
+  { code: "REVENUE_SHARE", name: "Revenue Share", unit: "INR", sortOrder: 5 },
   {
     code: "CERTIFICATE",
     name: "Certificate / Recognition",
     unit: "Certificate",
-    sortOrder: 5,
+    sortOrder: 6,
   },
 ];
 

@@ -71,6 +71,10 @@ const kraKpiErrorStatusMap: Record<string, number> = {
   EXTERNAL_TEMPLATE_LAST_DEFAULT: 409,
   EXTERNAL_TEMPLATE_WRONG_TENANT: 400,
   EXTERNAL_TEMPLATE_ARCHIVED: 400,
+  KPI_TEMPLATE_NOT_FOUND: 404,
+  KPI_TEMPLATE_WRONG_TENANT: 400,
+  KPI_COPY_SOURCE_NOT_FOUND: 404,
+  REWARD_CONFIG_INVALID: 400,
 };
 
 export function getKraKpiActionHttpStatus(
@@ -427,6 +431,26 @@ export type TargetAllocationView = {
   updatedAt: Date;
 };
 
+export type AchievementSubmissionRoleView = {
+  id: string;
+  code: string;
+  name: string;
+  defaultCreditPercent: number;
+  isDefault: boolean;
+};
+
+export type AchievementSubmissionConfig = {
+  participantMode: "SINGLE_OWNER" | "OPTIONAL_TEAM" | "REQUIRED_TEAM";
+  evidenceRequired: boolean;
+  evidenceTypes: string[];
+  evidenceInstructions: string | null;
+  applicableRoles: AchievementSubmissionRoleView[];
+  allowExternalContributors: boolean;
+  creditSumMode: "MUST_EQUAL_100" | "MAX_100" | "UNCAPPED";
+  externalContributorFields: AchievementFieldConfig[] | null;
+  contributorSelectorTags: string[];
+};
+
 export type AchievementView = {
   id: string;
   tenantId: string;
@@ -482,6 +506,7 @@ export type AchievementContributorView = {
   roleName: string;
   creditPercent: number;
   isExcludedFromReward: boolean;
+  selectorTags: string[];
   note: string | null;
 };
 
@@ -520,6 +545,7 @@ export type AdditionalAchievementView = AchievementView & {
   stagesTotal: number;
   allowPartialCompletion: boolean;
   stagesDefinedCount: number;
+  submissionConfig: AchievementSubmissionConfig;
 };
 
 export type AdditionalAchievementSummaryItem = {
@@ -637,9 +663,47 @@ export const achievementFieldMarkerSchema = z.enum([
   "UNIT_FIELD",
   "SCORE_FIELD",
   "UNIQUE_CHECK",
+  "POLICY_DATE_FIELD",
+  "TEAM_SIZE",
 ]);
 
 export type AchievementFieldMarker = z.infer<typeof achievementFieldMarkerSchema>;
+
+export const fieldConditionOperatorSchema = z.enum([
+  "eq",
+  "neq",
+  "gt",
+  "gte",
+  "lt",
+  "lte",
+  "contains",
+  "in",
+  "has_any",
+  "has_all",
+  "not_in",
+  "not_contains",
+]);
+
+export type FieldConditionOperator = z.infer<typeof fieldConditionOperatorSchema>;
+
+export const fieldConditionSchema = z.object({
+  fieldKey: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*$/).optional(),
+  systemMetricKey: z.string().trim().min(1).optional(),
+  operator: fieldConditionOperatorSchema,
+  value: z.unknown(),
+});
+
+export type FieldCondition = z.infer<typeof fieldConditionSchema>;
+
+export const achievementFieldValidationSchema = z.object({
+  min: z.number().optional(),
+  max: z.number().optional(),
+  minLength: z.number().int().min(0).optional(),
+  maxLength: z.number().int().min(0).optional(),
+  patternMessage: z.string().max(200).optional(),
+});
+
+export type AchievementFieldValidation = z.infer<typeof achievementFieldValidationSchema>;
 
 export const achievementFieldSchema = z.object({
   key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*$/),
@@ -655,6 +719,11 @@ export const achievementFieldSchema = z.object({
   helpText: z.string().optional(),
   sortOrder: z.number().int().default(0),
   marker: achievementFieldMarkerSchema.optional(),
+  binding: achievementFieldMarkerSchema.optional(),
+  defaultValue: z.unknown().optional(),
+  validation: achievementFieldValidationSchema.optional(),
+  visibilityRules: z.array(fieldConditionSchema).max(20).optional(),
+  requiredRules: z.array(fieldConditionSchema).max(20).optional(),
 });
 
 export type AchievementFieldConfig = z.infer<typeof achievementFieldSchema>;
@@ -678,10 +747,27 @@ export function buildFormDataValidator(
   for (const f of fields) {
     let fieldSchema: z.ZodTypeAny;
     const pattern = f.pattern ? new RegExp(f.pattern) : null;
+    const validation = f.validation;
 
     switch (f.type) {
       case "NUMBER":
         fieldSchema = f.required ? z.number() : z.number().optional().nullable();
+        if (validation?.min != null) {
+          fieldSchema = fieldSchema.refine(
+            (value) =>
+              value == null ||
+              (typeof value === "number" && value >= validation.min!),
+            `${f.label} must be at least ${validation.min}`,
+          );
+        }
+        if (validation?.max != null) {
+          fieldSchema = fieldSchema.refine(
+            (value) =>
+              value == null ||
+              (typeof value === "number" && value <= validation.max!),
+            `${f.label} must be at most ${validation.max}`,
+          );
+        }
         break;
       case "BOOLEAN":
         fieldSchema = f.required ? z.boolean() : z.boolean().optional().nullable();
@@ -754,15 +840,181 @@ export function buildFormDataValidator(
               message: `${f.label} has an invalid format`,
             });
           }
+          if (
+            value != null &&
+            value !== "" &&
+            validation?.minLength != null &&
+            value.length < validation.minLength
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${f.label} must be at least ${validation.minLength} characters`,
+            });
+          }
+          if (
+            value != null &&
+            value !== "" &&
+            validation?.maxLength != null &&
+            value.length > validation.maxLength
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${f.label} must be at most ${validation.maxLength} characters`,
+            });
+          }
         });
         break;
     }
     shape[f.key] = fieldSchema;
   }
   const objectSchema = z.object(shape);
-  return options?.unknownKeys === "strip"
-    ? objectSchema.strip()
-    : objectSchema.passthrough();
+  const baseSchema =
+    options?.unknownKeys === "strip"
+      ? objectSchema.strip()
+      : objectSchema.passthrough();
+
+  return baseSchema.superRefine((data, ctx) => {
+    for (const field of fields) {
+      const requiredByRule =
+        field.requiredRules && field.requiredRules.length > 0
+          ? evaluateFieldConditions(field.requiredRules, data)
+          : false;
+      if (!requiredByRule) continue;
+
+      const value = data[field.key];
+      if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${field.label} is required`,
+          path: [field.key],
+        });
+      }
+    }
+  });
+}
+
+function includesAny(haystack: unknown[], needles: unknown[]): boolean {
+  return needles.some((needle) => haystack.includes(needle));
+}
+
+function includesAll(haystack: unknown[], needles: unknown[]): boolean {
+  return needles.every((needle) => haystack.includes(needle));
+}
+
+export function evaluateFieldCondition(
+  condition: FieldCondition,
+  values: Record<string, unknown>,
+  systemMetrics?: Record<string, unknown>,
+): boolean {
+  const left =
+    condition.systemMetricKey != null
+      ? systemMetrics?.[condition.systemMetricKey]
+      : values[condition.fieldKey ?? ""];
+  const right = condition.value;
+
+  switch (condition.operator) {
+    case "eq":
+      return left === right;
+    case "neq":
+      return left !== right;
+    case "gt":
+      return Number(left) > Number(right);
+    case "gte":
+      return Number(left) >= Number(right);
+    case "lt":
+      return Number(left) < Number(right);
+    case "lte":
+      return Number(left) <= Number(right);
+    case "contains":
+      return typeof left === "string" && String(left).includes(String(right));
+    case "in":
+      return Array.isArray(right) && right.includes(left);
+    case "has_any":
+      return Array.isArray(left) && Array.isArray(right) && includesAny(left, right);
+    case "has_all":
+      return Array.isArray(left) && Array.isArray(right) && includesAll(left, right);
+    case "not_in":
+      return Array.isArray(right) && !right.includes(left);
+    case "not_contains":
+      return typeof left === "string" && !String(left).includes(String(right));
+    default:
+      return false;
+  }
+}
+
+export function evaluateFieldConditions(
+  conditions: FieldCondition[],
+  values: Record<string, unknown>,
+  systemMetrics?: Record<string, unknown>,
+): boolean {
+  return conditions.every((condition) =>
+    evaluateFieldCondition(condition, values, systemMetrics),
+  );
+}
+
+function hasRenderableFieldValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+export function applyAchievementFieldDefaults(
+  fields: AchievementFieldConfig[],
+  values: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(values ?? {}) };
+  for (const field of fields) {
+    if (next[field.key] === undefined && field.defaultValue !== undefined) {
+      next[field.key] = field.defaultValue;
+    }
+  }
+  return next;
+}
+
+export function isAchievementFieldVisible(
+  field: AchievementFieldConfig,
+  values: Record<string, unknown>,
+  systemMetrics?: Record<string, unknown>,
+  options?: { readOnly?: boolean; showHiddenWithValue?: boolean },
+): boolean {
+  const visibleByRule =
+    !field.visibilityRules ||
+    field.visibilityRules.length === 0 ||
+    evaluateFieldConditions(field.visibilityRules, values, systemMetrics);
+
+  if (visibleByRule) return true;
+
+  if (options?.readOnly && options.showHiddenWithValue !== false) {
+    return hasRenderableFieldValue(values[field.key]);
+  }
+
+  return false;
+}
+
+export function isAchievementFieldRequired(
+  field: AchievementFieldConfig,
+  values: Record<string, unknown>,
+  systemMetrics?: Record<string, unknown>,
+): boolean {
+  if (field.required) return true;
+  if (!field.requiredRules || field.requiredRules.length === 0) return false;
+  return evaluateFieldConditions(field.requiredRules, values, systemMetrics);
+}
+
+export function getRenderableAchievementFields(
+  fields: AchievementFieldConfig[],
+  values: Record<string, unknown>,
+  options?: { readOnly?: boolean; showHiddenWithValue?: boolean; systemMetrics?: Record<string, unknown> },
+): AchievementFieldConfig[] {
+  return [...fields]
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+    .filter((field) =>
+      isAchievementFieldVisible(field, values, options?.systemMetrics, {
+        readOnly: options?.readOnly,
+        showHiddenWithValue: options?.showHiddenWithValue,
+      }),
+    );
 }
 
 // ── Predefined Achievement Templates ─────────────────────────────────────────
@@ -928,6 +1180,7 @@ export type MyAllocationView = TargetAllocationView & {
   parentTargetValue: number | null;
   section: "department" | "individual";
   childAllocations: ChildAllocationSummary[];
+  submissionConfig: AchievementSubmissionConfig;
 };
 
 export type ChildAllocationSummary = {

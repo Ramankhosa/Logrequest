@@ -5,11 +5,14 @@ import {
   computeReviewCycles,
   isDateWithinInclusiveUtcRange,
 } from "./period-service";
+import { seedDefaultTemplates } from "./external-contrib-template-service";
 import {
   achievementContributorInclude,
   mapAchievementContributors,
 } from "./achievement-contributor-service";
 import type {
+  AchievementFieldConfig,
+  AchievementSubmissionConfig,
   MyKpiContext,
   MyAllocationView,
   AchievementView,
@@ -211,6 +214,7 @@ function mapAchievementView(
       externalScope: "NATIONAL" | "INTERNATIONAL" | null;
       externalData: Prisma.JsonValue;
       contributorRoleId: string;
+      selectorTags: string[];
       creditPercent: number;
       isExcludedFromReward: boolean;
       note: string | null;
@@ -251,6 +255,7 @@ function mapAchievementView(
             externalData: null,
             contributorRoleId: "legacy-inline",
             roleName: achievement.contributionRole,
+            selectorTags: [],
             creditPercent: achievement.creditPercent ?? 0,
             isExcludedFromReward: false,
             note: null,
@@ -302,13 +307,86 @@ function mapAchievementView(
 
 // ── Get My Allocations ───────────────────────────────────────────────────────
 
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
+}
+
+function parseExternalContributorFields(
+  fields: Prisma.JsonValue | null | undefined,
+): AchievementFieldConfig[] | null {
+  return Array.isArray(fields) ? (fields as AchievementFieldConfig[]) : null;
+}
+
+function buildSubmissionConfig(
+  kpi: {
+    participantMode: "SINGLE_OWNER" | "OPTIONAL_TEAM" | "REQUIRED_TEAM";
+    evidenceRequired: boolean;
+    evidenceTypes: string[];
+    evidenceInstructions: string | null;
+    applicableRoles: Array<{
+      isDefault: boolean;
+      contributorRole: {
+        id: string;
+        code: string;
+        name: string;
+        defaultCreditPercent: number;
+      };
+    }>;
+    contributorConfig: {
+      allowExternalContributors: boolean;
+      creditSumMode: string;
+      externalContribTemplate: { fields: Prisma.JsonValue } | null;
+    } | null;
+    rewardComponents: Array<{
+      distributions: Array<{ selectorTag: string | null }>;
+    }>;
+  },
+  defaultExternalContributorFields: AchievementFieldConfig[] | null,
+): AchievementSubmissionConfig {
+  return {
+    participantMode: kpi.participantMode,
+    evidenceRequired: kpi.evidenceRequired,
+    evidenceTypes: kpi.evidenceTypes,
+    evidenceInstructions: kpi.evidenceInstructions,
+    applicableRoles: kpi.applicableRoles.map((role) => ({
+      id: role.contributorRole.id,
+      code: role.contributorRole.code,
+      name: role.contributorRole.name,
+      defaultCreditPercent: role.contributorRole.defaultCreditPercent,
+      isDefault: role.isDefault,
+    })),
+    allowExternalContributors: kpi.contributorConfig?.allowExternalContributors ?? true,
+    creditSumMode:
+      kpi.contributorConfig?.creditSumMode === "MAX_100" ||
+      kpi.contributorConfig?.creditSumMode === "UNCAPPED"
+        ? kpi.contributorConfig.creditSumMode
+        : "MUST_EQUAL_100",
+    externalContributorFields:
+      parseExternalContributorFields(kpi.contributorConfig?.externalContribTemplate?.fields) ??
+      defaultExternalContributorFields,
+    contributorSelectorTags: uniqueStrings(
+      kpi.rewardComponents.flatMap((component) =>
+        component.distributions.map((distribution) => distribution.selectorTag),
+      ),
+    ),
+  };
+}
+
 export async function getMyAllocations(
   tenantId: string,
   userId: string,
   periodId: string,
 ): Promise<MyAllocationView[]> {
+  await seedDefaultTemplates(tenantId);
   const ctx = await getMyKpiContext(tenantId, userId);
   const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
+  const defaultExternalTemplate = await prisma.externalContributorTemplate.findFirst({
+    where: { tenantId, isDefault: true, isActive: true },
+    select: { fields: true },
+  });
+  const defaultExternalContributorFields = parseExternalContributorFields(
+    defaultExternalTemplate?.fields,
+  );
   const allocations = await prisma.targetAllocation.findMany({
     where: {
       tenantId,
@@ -332,6 +410,40 @@ export async function getMyAllocations(
             },
           },
           startingUnit: { select: { id: true, name: true } },
+          applicableRoles: {
+            include: {
+              contributorRole: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  defaultCreditPercent: true,
+                },
+              },
+            },
+            orderBy: [{ sortOrder: "asc" }, { contributorRoleId: "asc" }],
+          },
+          contributorConfig: {
+            select: {
+              allowExternalContributors: true,
+              creditSumMode: true,
+              externalContribTemplate: {
+                select: {
+                  fields: true,
+                },
+              },
+            },
+          },
+          rewardComponents: {
+            where: { isActive: true },
+            select: {
+              distributions: {
+                select: {
+                  selectorTag: true,
+                },
+              },
+            },
+          },
           _count: { select: { stages: true } },
         },
       },
@@ -486,6 +598,7 @@ export async function getMyAllocations(
       parentTargetValue: a.parentAllocation?.targetValue ?? null,
       section,
       childAllocations: childSummaries,
+      submissionConfig: buildSubmissionConfig(kpi, defaultExternalContributorFields),
     };
   });
 }
@@ -1076,6 +1189,7 @@ export type AvailableKpiView = {
   defaultTarget: number | null;
   isAllocated: boolean;
   hasExistingAdditional: boolean;
+  submissionConfig: AchievementSubmissionConfig;
 };
 
 export async function getAvailableKpis(
@@ -1085,12 +1199,20 @@ export async function getAvailableKpis(
   search?: string,
   categoryKey?: string,
 ): Promise<AvailableKpiView[]> {
+  await seedDefaultTemplates(tenantId);
   // Validate period
   const period = await prisma.assessmentPeriod.findFirst({
     where: { id: periodId, tenantId },
     select: { state: true, startDate: true, endDate: true, reviewFrequency: true },
   });
   if (!period) return [];
+  const defaultExternalTemplate = await prisma.externalContributorTemplate.findFirst({
+    where: { tenantId, isDefault: true, isActive: true },
+    select: { fields: true },
+  });
+  const defaultExternalContributorFields = parseExternalContributorFields(
+    defaultExternalTemplate?.fields,
+  );
 
   // Get user's existing allocations for this period
   const ctx = await getMyKpiContext(tenantId, userId);
@@ -1157,6 +1279,40 @@ export async function getAvailableKpis(
         },
       },
       startingUnit: { select: { id: true, name: true } },
+      applicableRoles: {
+        include: {
+          contributorRole: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              defaultCreditPercent: true,
+            },
+          },
+        },
+        orderBy: [{ sortOrder: "asc" }, { contributorRoleId: "asc" }],
+      },
+      contributorConfig: {
+        select: {
+          allowExternalContributors: true,
+          creditSumMode: true,
+          externalContribTemplate: {
+            select: {
+              fields: true,
+            },
+          },
+        },
+      },
+      rewardComponents: {
+        where: { isActive: true },
+        select: {
+          distributions: {
+            select: {
+              selectorTag: true,
+            },
+          },
+        },
+      },
     },
     orderBy: [
       { kraDefinition: { sortOrder: "asc" } },
@@ -1188,6 +1344,7 @@ export async function getAvailableKpis(
     defaultTarget: kpi.defaultTarget,
     isAllocated: false,
     hasExistingAdditional: false,
+    submissionConfig: buildSubmissionConfig(kpi, defaultExternalContributorFields),
   }));
 }
 
@@ -1282,6 +1439,14 @@ export async function listAdditionalAchievements(
   userId: string,
   periodId: string,
 ): Promise<AdditionalAchievementView[]> {
+  await seedDefaultTemplates(tenantId);
+  const defaultExternalTemplate = await prisma.externalContributorTemplate.findFirst({
+    where: { tenantId, isDefault: true, isActive: true },
+    select: { fields: true },
+  });
+  const defaultExternalContributorFields = parseExternalContributorFields(
+    defaultExternalTemplate?.fields,
+  );
   const achievements = await prisma.achievement.findMany({
     where: {
       tenantId,
@@ -1298,9 +1463,47 @@ export async function listAdditionalAchievements(
           defaultTarget: true,
           achievementTemplateKey: true,
           achievementFormConfig: true,
+          participantMode: true,
+          evidenceRequired: true,
+          evidenceTypes: true,
+          evidenceInstructions: true,
           allowPartialCompletion: true,
           startingUnitId: true,
           startingUnit: { select: { name: true } },
+          applicableRoles: {
+            include: {
+              contributorRole: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  defaultCreditPercent: true,
+                },
+              },
+            },
+            orderBy: [{ sortOrder: "asc" }, { contributorRoleId: "asc" }],
+          },
+          contributorConfig: {
+            select: {
+              allowExternalContributors: true,
+              creditSumMode: true,
+              externalContribTemplate: {
+                select: {
+                  fields: true,
+                },
+              },
+            },
+          },
+          rewardComponents: {
+            where: { isActive: true },
+            select: {
+              distributions: {
+                select: {
+                  selectorTag: true,
+                },
+              },
+            },
+          },
           _count: { select: { stages: true } },
           kraDefinition: {
             select: {
@@ -1344,6 +1547,10 @@ export async function listAdditionalAchievements(
       stagesTotal,
       allowPartialCompletion: achievement.kpiDefinition.allowPartialCompletion,
       stagesDefinedCount: achievement.kpiDefinition._count.stages,
+      submissionConfig: buildSubmissionConfig(
+        achievement.kpiDefinition,
+        defaultExternalContributorFields,
+      ),
     };
   });
 }

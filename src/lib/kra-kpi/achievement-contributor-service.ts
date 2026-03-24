@@ -14,6 +14,7 @@ export const achievementContributorInputSchema = z.object({
   externalScope: z.enum(["NATIONAL", "INTERNATIONAL"]).optional(),
   externalData: z.record(z.string(), z.unknown()).optional(),
   contributorRoleId: z.string().trim().min(1),
+  selectorTags: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
   isExcludedFromReward: z.boolean().default(false),
   note: z.string().trim().max(1000).optional(),
 });
@@ -42,6 +43,7 @@ type PreparedContributor = {
   externalScope: ExternalContributorScope | null;
   externalData: Record<string, unknown> | null;
   contributorRoleId: string;
+  selectorTags: string[];
   creditPercent: number;
   isExcludedFromReward: boolean;
   note: string | null;
@@ -345,6 +347,7 @@ async function prepareContributors(input: {
         externalScope: null,
         externalData: null,
         contributorRoleId: contributor.contributorRoleId,
+        selectorTags: contributor.selectorTags ?? [],
         isExcludedFromReward: contributor.isExcludedFromReward,
         note: contributor.note ?? null,
         roleName: applicableRole.contributorRole.name,
@@ -399,6 +402,7 @@ async function prepareContributors(input: {
       externalScope: normalizeExternalScope(contributor.externalScope),
       externalData: (contributor.externalData as Record<string, unknown> | undefined) ?? null,
       contributorRoleId: contributor.contributorRoleId,
+      selectorTags: contributor.selectorTags ?? [],
       isExcludedFromReward: contributor.isExcludedFromReward,
       note: contributor.note ?? null,
       roleName: applicableRole.contributorRole.name,
@@ -424,6 +428,7 @@ async function prepareContributors(input: {
     externalScope: row.externalScope,
     externalData: row.externalData,
     contributorRoleId: row.contributorRoleId,
+    selectorTags: row.selectorTags,
     creditPercent: credits[index] ?? 0,
     isExcludedFromReward: row.isExcludedFromReward,
     note: row.note,
@@ -486,6 +491,7 @@ export async function setAchievementContributors(input: {
         externalScope: row.externalScope,
         externalData: row.externalData as Prisma.InputJsonValue | undefined,
         contributorRoleId: row.contributorRoleId,
+        selectorTags: row.selectorTags,
         creditPercent: row.creditPercent,
         isExcludedFromReward: row.isExcludedFromReward,
         note: row.note,
@@ -546,6 +552,7 @@ export async function ensureAchievementContributorRows(input: {
         externalScope: row.externalScope,
         externalData: (row.externalData as Record<string, unknown> | null) ?? null,
         contributorRoleId: row.contributorRoleId,
+        selectorTags: row.selectorTags,
         creditPercent: row.creditPercent,
         isExcludedFromReward: row.isExcludedFromReward,
         note: row.note,
@@ -608,6 +615,7 @@ export function mapAchievementContributors(
     externalScope: ExternalContributorScope | null;
     externalData: Prisma.JsonValue;
     contributorRoleId: string;
+    selectorTags: string[];
     creditPercent: number;
     isExcludedFromReward: boolean;
     note: string | null;
@@ -628,6 +636,7 @@ export function mapAchievementContributors(
     externalData: (row.externalData as Record<string, unknown> | null) ?? null,
     contributorRoleId: row.contributorRoleId,
     roleName: row.contributorRole?.name ?? "Unknown",
+    selectorTags: row.selectorTags ?? [],
     creditPercent: row.creditPercent,
     isExcludedFromReward: row.isExcludedFromReward,
     note: row.note,

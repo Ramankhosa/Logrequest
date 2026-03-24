@@ -329,7 +329,29 @@ export async function copyKrasFromPeriod(
       kpiDefinitions: {
         where: { state: { not: "ARCHIVED" } },
         include: {
+          applicableRoles: {
+            orderBy: [{ sortOrder: "asc" }, { contributorRoleId: "asc" }],
+          },
           contributorConfig: true,
+          stages: {
+            orderBy: [{ stageOrder: "asc" }, { title: "asc" }],
+          },
+          rewardTiers: {
+            include: {
+              rules: {
+                orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+              },
+            },
+            orderBy: [{ priority: "asc" }, { code: "asc" }],
+          },
+          rewardComponents: {
+            include: {
+              distributions: {
+                orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+              },
+            },
+            orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
+          },
           targetUnits: {
             orderBy: { createdAt: "asc" },
           },
@@ -397,6 +419,9 @@ export async function copyKrasFromPeriod(
             evidenceInstructions: sourceKpi.evidenceInstructions,
             isTeamKpi: sourceKpi.isTeamKpi,
             teamCreditMethod: sourceKpi.teamCreditMethod,
+            participantMode: sourceKpi.participantMode,
+            rewardRecurrencePolicy: sourceKpi.rewardRecurrencePolicy,
+            policyDateFieldKey: sourceKpi.policyDateFieldKey,
             state: sourceKpi.state,
             sortOrder: sourceKpi.sortOrder,
             guidanceNotes: sourceKpi.guidanceNotes,
@@ -416,6 +441,132 @@ export async function copyKrasFromPeriod(
               creditSumMode: sourceKpi.contributorConfig.creditSumMode,
             },
           });
+        }
+
+        if (sourceKpi.applicableRoles.length > 0) {
+          await tx.kpiApplicableRole.createMany({
+            data: sourceKpi.applicableRoles.map((role) => ({
+              kpiDefinitionId: copiedKpi.id,
+              contributorRoleId: role.contributorRoleId,
+              isDefault: role.isDefault,
+              sortOrder: role.sortOrder,
+            })),
+          });
+        }
+
+        const stageIdMap = new Map<string, string>();
+        for (const sourceStage of sourceKpi.stages) {
+          const copiedStage = await tx.kpiStageDefinition.create({
+            data: {
+              kpiDefinitionId: copiedKpi.id,
+              stageOrder: sourceStage.stageOrder,
+              title: sourceStage.title,
+              description: sourceStage.description,
+              isMandatory: sourceStage.isMandatory,
+              weight: sourceStage.weight,
+              evidenceRequired: sourceStage.evidenceRequired,
+              evidenceTypes: sourceStage.evidenceTypes,
+              evidenceInstructions: sourceStage.evidenceInstructions,
+              deadline: sourceStage.deadline,
+            },
+          });
+          stageIdMap.set(sourceStage.id, copiedStage.id);
+        }
+
+        const rewardTierIdMap = new Map<string, string>();
+        for (const sourceTier of sourceKpi.rewardTiers) {
+          const copiedTier = await tx.kpiRewardTier.create({
+            data: {
+              kpiDefinitionId: copiedKpi.id,
+              tierSetKey: sourceTier.tierSetKey,
+              code: sourceTier.code,
+              name: sourceTier.name,
+              description: sourceTier.description,
+              priority: sourceTier.priority,
+              matchMode: sourceTier.matchMode,
+              effectiveFrom: sourceTier.effectiveFrom,
+              effectiveTo: sourceTier.effectiveTo,
+              isActive: sourceTier.isActive,
+              metadata: toOptionalJsonInput(sourceTier.metadata),
+            },
+          });
+          rewardTierIdMap.set(sourceTier.id, copiedTier.id);
+
+          if (sourceTier.rules.length > 0) {
+            await tx.kpiRewardRule.createMany({
+              data: sourceTier.rules.map((rule) => ({
+                rewardTierId: copiedTier.id,
+                source: rule.source,
+                operator: rule.operator,
+                fieldKey: rule.fieldKey,
+                systemMetricKey: rule.systemMetricKey,
+                value: toOptionalJsonInput(rule.value),
+                sortOrder: rule.sortOrder,
+                metadata: toOptionalJsonInput(rule.metadata),
+              })),
+            });
+          }
+        }
+
+        const rewardComponentIdMap = new Map<string, string>();
+        for (const sourceComponent of sourceKpi.rewardComponents) {
+          const copiedComponent = await tx.kpiRewardComponent.create({
+            data: {
+              kpiDefinitionId: copiedKpi.id,
+              rewardTierId: sourceComponent.rewardTierId
+                ? (rewardTierIdMap.get(sourceComponent.rewardTierId) ?? null)
+                : null,
+              stageDefinitionId: sourceComponent.stageDefinitionId
+                ? (stageIdMap.get(sourceComponent.stageDefinitionId) ?? null)
+                : null,
+              benefitTypeId: sourceComponent.benefitTypeId,
+              code: sourceComponent.code,
+              name: sourceComponent.name,
+              description: sourceComponent.description,
+              trigger: sourceComponent.trigger,
+              amountMode: sourceComponent.amountMode,
+              amountValue: sourceComponent.amountValue,
+              amountFieldKey: sourceComponent.amountFieldKey,
+              distributionMode: sourceComponent.distributionMode,
+              singleEligibleHandling: sourceComponent.singleEligibleHandling,
+              emptyShareHandling: sourceComponent.emptyShareHandling,
+              isActive: sourceComponent.isActive,
+              sortOrder: sourceComponent.sortOrder,
+              metadata: toOptionalJsonInput(sourceComponent.metadata),
+            },
+          });
+          rewardComponentIdMap.set(sourceComponent.id, copiedComponent.id);
+        }
+
+        for (const sourceComponent of sourceKpi.rewardComponents) {
+          const copiedComponentId = rewardComponentIdMap.get(sourceComponent.id);
+          if (!copiedComponentId) continue;
+
+          if (sourceComponent.parentComponentId) {
+            await tx.kpiRewardComponent.update({
+              where: { id: copiedComponentId },
+              data: {
+                parentComponentId:
+                  rewardComponentIdMap.get(sourceComponent.parentComponentId) ?? null,
+              },
+            });
+          }
+
+          if (sourceComponent.distributions.length > 0) {
+            await tx.kpiRewardDistribution.createMany({
+              data: sourceComponent.distributions.map((distribution) => ({
+                rewardComponentId: copiedComponentId,
+                contributorRoleId: distribution.contributorRoleId,
+                selectorType: distribution.selectorType,
+                selectorTag: distribution.selectorTag,
+                sharePercent: distribution.sharePercent,
+                fixedAmount: distribution.fixedAmount,
+                splitMode: distribution.splitMode,
+                sortOrder: distribution.sortOrder,
+                metadata: toOptionalJsonInput(distribution.metadata),
+              })),
+            });
+          }
         }
 
         for (const sourceTargetUnit of sourceKpi.targetUnits) {

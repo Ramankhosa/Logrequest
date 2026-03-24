@@ -283,6 +283,65 @@ enum TeamCreditMethod {
   PRIMARY_ONLY       // only primary contributor gets credit
 }
 
+enum KpiParticipantMode {
+  SINGLE_OWNER
+  OPTIONAL_TEAM
+  REQUIRED_TEAM
+}
+
+enum KpiRewardRecurrencePolicy {
+  RECURRING
+  ONCE_PER_PERIOD
+  ONCE_PER_KPI_LIFETIME
+  ONCE_PER_UNIQUE_KEY
+}
+
+enum KpiRewardTierMatchMode {
+  HIGHEST_MATCH
+  MANUAL_SELECT
+}
+
+enum KpiRewardTrigger {
+  FINAL_VERIFY
+  MANUAL
+  STAGE_COMPLETE
+}
+
+enum KpiRewardAmountMode {
+  FIXED_VALUE
+  FIXED_POOL
+  FIXED_PER_PERSON
+  PERCENT_OF_FIELD
+  PER_UNIT
+  PERCENT_OF_SCORE
+}
+
+enum KpiRewardDistributionMode {
+  DIRECT_OWNER
+  ROLE_PERCENT_SPLIT
+  FIXED_PER_PERSON
+  EQUAL_SPLIT
+  CREDIT_PERCENT_SPLIT
+  LEAD_ONLY
+}
+
+enum KpiRewardSingleEligibleHandling {
+  FULL_TO_SINGLE
+  KEEP_CONFIGURED_SPLIT
+  ERROR
+}
+
+enum KpiRewardEmptyShareHandling {
+  ROLLOVER_TO_MATCHED
+  DROP_UNALLOCATED
+  ERROR
+}
+
+enum ContributorRewardState {
+  CALCULATED
+  CANCELLED
+}
+
 enum PersonnelStatus {
   ONBOARDING
   ACTIVE
@@ -378,6 +437,8 @@ model Tenant {
   benefitTypes          BenefitType[]
   contributorRoles      ContributorRole[]
   externalContribTemplates ExternalContributorTemplate[]
+  kpiTemplates          KpiTemplate[]
+  contributorRewards    ContributorReward[]
 
   @@index([lifecycleState, entitlementState])
 }
@@ -416,6 +477,7 @@ model User {
   lockedUntil         DateTime?
   memberships         Membership[]
   achievementContributions AchievementContributor[] @relation("AchievementContributorUser")
+  contributorRewards  ContributorReward[]  @relation("ContributorRewardUser")
   invitations         Invitation[]
   socialAccounts      SocialAccount[]
   passwordResetTokens PasswordResetToken[]
@@ -850,6 +912,9 @@ model KpiDefinition {
   // ── R2.2: Stages & submission ──
   allowPartialCompletion Boolean           @default(true)
   contributionRoles      Json?
+  participantMode        KpiParticipantMode        @default(SINGLE_OWNER)
+  rewardRecurrencePolicy KpiRewardRecurrencePolicy @default(RECURRING)
+  policyDateFieldKey     String?
   // ── State ──
   state             KpiDefinitionState @default(DRAFT)
   sortOrder         Int                @default(0)
@@ -867,6 +932,9 @@ model KpiDefinition {
   stages            KpiStageDefinition[]
   applicableRoles   KpiApplicableRole[]
   contributorConfig KpiContributorConfig?
+  rewardTiers       KpiRewardTier[]
+  rewardComponents  KpiRewardComponent[]
+  contributorRewards ContributorReward[]
 
   @@index([kraDefinitionId])
   @@index([startingUnitId])
@@ -881,11 +949,15 @@ model BenefitType {
   name        String
   description String?
   unit        String
+  precision   Int      @default(2)
+  roundingMode String  @default("HALF_UP")
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rewardComponents KpiRewardComponent[]
+  contributorRewards ContributorReward[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -905,6 +977,7 @@ model ContributorRole {
   tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   applicableKpis       KpiApplicableRole[]
   achievementContributors AchievementContributor[]
+  rewardDistributions  KpiRewardDistribution[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -953,6 +1026,25 @@ model KpiContributorConfig {
   externalContribTemplate   ExternalContributorTemplate? @relation(fields: [externalContribTemplateId], references: [id])
 
   @@index([externalContribTemplateId])
+}
+
+model KpiTemplate {
+  id            String   @id @default(cuid())
+  tenantId      String?
+  code          String   @unique
+  name          String
+  description   String?
+  category      String?
+  isSystem      Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  sortOrder     Int      @default(0)
+  builderPayload Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  tenant        Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, isActive])
+  @@index([isSystem, isActive])
 }
 
 model TargetAllocation {
@@ -1058,6 +1150,7 @@ model Achievement {
   contributors          AchievementContributor[]
   stageProgress         KpiStageProgress[]
   submissionTrail       SubmissionTrail[]
+  contributorRewards    ContributorReward[]
 
   @@index([tenantId, periodId])
   @@index([targetAllocationId])
@@ -1078,12 +1171,14 @@ model AchievementContributor {
   contributorRoleId   String
   creditPercent       Float
   isExcludedFromReward Boolean                 @default(false)
+  selectorTags        String[]                 @default([])
   note                String?
   createdAt           DateTime                 @default(now())
   updatedAt           DateTime                 @updatedAt
   achievement         Achievement              @relation(fields: [achievementId], references: [id], onDelete: Cascade)
   user                User?                    @relation("AchievementContributorUser", fields: [userId], references: [id], onDelete: SetNull)
   contributorRole     ContributorRole          @relation(fields: [contributorRoleId], references: [id], onDelete: Restrict)
+  contributorRewards  ContributorReward[]
 
   @@unique([achievementId, userId])
   @@index([achievementId])
@@ -1121,6 +1216,7 @@ model KpiStageDefinition {
   updatedAt            DateTime       @updatedAt
   kpiDefinition        KpiDefinition  @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
   stageProgress        KpiStageProgress[]
+  rewardComponents     KpiRewardComponent[]
 
   @@unique([kpiDefinitionId, stageOrder])
   @@index([kpiDefinitionId])
@@ -1163,6 +1259,140 @@ model SubmissionTrail {
   achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
 
   @@index([achievementId, createdAt])
+}
+
+model KpiRewardTier {
+  id                String                 @id @default(cuid())
+  kpiDefinitionId   String
+  tierSetKey        String                 @default("PRIMARY")
+  code              String
+  name              String
+  description       String?
+  priority          Int                    @default(0)
+  matchMode         KpiRewardTierMatchMode @default(HIGHEST_MATCH)
+  effectiveFrom     DateTime?
+  effectiveTo       DateTime?
+  isActive          Boolean                @default(true)
+  metadata          Json?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  kpiDefinition     KpiDefinition          @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  rules             KpiRewardRule[]
+  rewardComponents  KpiRewardComponent[]
+  contributorRewards ContributorReward[]
+
+  @@unique([kpiDefinitionId, tierSetKey, code, effectiveFrom])
+  @@index([kpiDefinitionId, tierSetKey, isActive])
+  @@index([effectiveFrom, effectiveTo])
+}
+
+model KpiRewardRule {
+  id              String        @id @default(cuid())
+  rewardTierId    String
+  source          String
+  operator        String
+  fieldKey        String?
+  systemMetricKey String?
+  value           Json?
+  sortOrder       Int           @default(0)
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  rewardTier      KpiRewardTier @relation(fields: [rewardTierId], references: [id], onDelete: Cascade)
+
+  @@index([rewardTierId, sortOrder])
+}
+
+model KpiRewardComponent {
+  id                     String                           @id @default(cuid())
+  kpiDefinitionId        String
+  rewardTierId           String?
+  stageDefinitionId      String?
+  parentComponentId      String?
+  benefitTypeId          String
+  code                   String
+  name                   String
+  description            String?
+  trigger                KpiRewardTrigger                @default(FINAL_VERIFY)
+  amountMode             KpiRewardAmountMode
+  amountValue            Float?
+  amountFieldKey         String?
+  distributionMode       KpiRewardDistributionMode       @default(DIRECT_OWNER)
+  singleEligibleHandling KpiRewardSingleEligibleHandling @default(FULL_TO_SINGLE)
+  emptyShareHandling     KpiRewardEmptyShareHandling     @default(ROLLOVER_TO_MATCHED)
+  isActive               Boolean                         @default(true)
+  sortOrder              Int                             @default(0)
+  metadata               Json?
+  createdAt              DateTime                        @default(now())
+  updatedAt              DateTime                        @updatedAt
+  kpiDefinition          KpiDefinition                   @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  rewardTier             KpiRewardTier?                  @relation(fields: [rewardTierId], references: [id], onDelete: SetNull)
+  stageDefinition        KpiStageDefinition?             @relation(fields: [stageDefinitionId], references: [id], onDelete: SetNull)
+  parentComponent        KpiRewardComponent?             @relation("KpiRewardComponentParent", fields: [parentComponentId], references: [id], onDelete: SetNull)
+  childComponents        KpiRewardComponent[]            @relation("KpiRewardComponentParent")
+  benefitType            BenefitType                     @relation(fields: [benefitTypeId], references: [id], onDelete: Restrict)
+  distributions          KpiRewardDistribution[]
+  contributorRewards     ContributorReward[]
+
+  @@unique([kpiDefinitionId, code])
+  @@index([kpiDefinitionId, rewardTierId, isActive])
+  @@index([stageDefinitionId])
+}
+
+model KpiRewardDistribution {
+  id                String             @id @default(cuid())
+  rewardComponentId String
+  contributorRoleId String?
+  selectorType      String
+  selectorTag       String?
+  sharePercent      Float?
+  fixedAmount       Float?
+  splitMode         String?
+  sortOrder         Int                @default(0)
+  metadata          Json?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  rewardComponent   KpiRewardComponent @relation(fields: [rewardComponentId], references: [id], onDelete: Cascade)
+  contributorRole   ContributorRole?   @relation(fields: [contributorRoleId], references: [id], onDelete: SetNull)
+
+  @@index([rewardComponentId, sortOrder])
+  @@index([contributorRoleId])
+}
+
+model ContributorReward {
+  id                      String                  @id @default(cuid())
+  tenantId                String
+  periodId                String
+  kpiDefinitionId         String
+  achievementId           String
+  achievementContributorId String?
+  contributorUserId       String?
+  benefitTypeId           String
+  rewardTierId            String?
+  rewardComponentId       String
+  recurrenceKey           String?
+  state                   ContributorRewardState @default(CALCULATED)
+  baseAmount              Float
+  finalAmount             Float
+  roundingAdjustment      Float                  @default(0)
+  explanation             Json?
+  idempotencyKey          String                 @unique
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+  tenant                  Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kpiDefinition           KpiDefinition          @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  achievement             Achievement            @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  achievementContributor  AchievementContributor? @relation(fields: [achievementContributorId], references: [id], onDelete: SetNull)
+  contributorUser         User?                  @relation("ContributorRewardUser", fields: [contributorUserId], references: [id], onDelete: SetNull)
+  benefitType             BenefitType            @relation(fields: [benefitTypeId], references: [id], onDelete: Restrict)
+  rewardTier              KpiRewardTier?         @relation(fields: [rewardTierId], references: [id], onDelete: SetNull)
+  rewardComponent         KpiRewardComponent     @relation(fields: [rewardComponentId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, periodId, kpiDefinitionId])
+  @@index([achievementId])
+  @@index([achievementContributorId])
+  @@index([contributorUserId])
+  @@index([rewardComponentId])
 }
 
 model ReviewCycle {
