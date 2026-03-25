@@ -7,6 +7,7 @@ import type { Role } from "@prisma/client";
 
 type BulkSubmitBody = {
   achievementIds: string[];
+  note?: string;
 };
 
 type FailedItem = {
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
       continue;
     }
 
-    const result = await submitForVerification(id, tenantId, userId, role);
+    const result = await submitForVerification(id, tenantId, userId, role, body.note ?? null);
     if (result.status === "success") {
       submitted++;
     } else {

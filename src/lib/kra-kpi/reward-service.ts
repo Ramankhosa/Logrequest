@@ -151,6 +151,48 @@ type PersistableRewardRow = {
   explanation: Prisma.InputJsonValue;
 };
 
+type UnitSnapshot = {
+  unitId: string | null;
+  unitName: string | null;
+  unitPath: string | null;
+  unitTypeKey: string | null;
+};
+
+type LoadedAchievementRewardContext = {
+  achievement: {
+    id: string;
+    tenantId: string;
+    periodId: string;
+    kpiDefinitionId: string;
+    reportedByUserId: string;
+    actualValue: number | null;
+    actualDate: Date | null;
+    computedScore: number | null;
+    effectiveScore: number | null;
+    reportingDate: Date;
+    achievementFormData: Record<string, unknown>;
+    contributors: Array<{
+      id: string;
+      userId: string | null;
+      contributorRoleId: string | null;
+      creditPercent: number;
+      isExcludedFromReward: boolean;
+      selectorTags: string[];
+    }>;
+  };
+  config: RewardConfig;
+  resolution: RewardResolution;
+  rows: PersistableRewardRow[];
+  userSnapshots: Map<string, UnitSnapshot>;
+};
+
+const ACTIVE_REWARD_STATES: Array<"DRAFT" | "PENDING" | "RELEASED"> = [
+  "DRAFT",
+  "PENDING",
+  "RELEASED",
+];
+const REWARD_REVISION_DELIMITER = "::r";
+
 export type RewardPreviewResult = {
   policyDate: string | null;
   recurrencePolicy: RewardConfig["rewardRecurrencePolicy"];
@@ -190,6 +232,194 @@ export type RewardPreviewResult = {
     totalAmount: number;
   }>;
 };
+
+function extractBaseRewardKey(idempotencyKey: string): string {
+  const markerIndex = idempotencyKey.indexOf(REWARD_REVISION_DELIMITER);
+  return markerIndex >= 0 ? idempotencyKey.slice(0, markerIndex) : idempotencyKey;
+}
+
+function nextRewardRevisionKey(baseKey: string, existingKeys: string[]): string {
+  const revisions = existingKeys
+    .filter((value) => extractBaseRewardKey(value) === baseKey)
+    .map((value) => {
+      const markerIndex = value.indexOf(REWARD_REVISION_DELIMITER);
+      if (markerIndex < 0) return 1;
+      const raw = value.slice(markerIndex + REWARD_REVISION_DELIMITER.length);
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+    });
+  const nextRevision = revisions.length > 0 ? Math.max(...revisions) + 1 : 2;
+  return `${baseKey}${REWARD_REVISION_DELIMITER}${nextRevision}`;
+}
+
+function rewardRowsEquivalent(
+  reward: {
+    achievementContributorId: string | null;
+    contributorUserId: string | null;
+    benefitTypeId: string;
+    rewardTierId: string | null;
+    rewardComponentId: string;
+    baseAmount: number;
+    finalAmount: number;
+    roundingAdjustment: number;
+    recurrenceKey: string | null;
+  },
+  row: PersistableRewardRow,
+): boolean {
+  return (
+    reward.achievementContributorId === row.achievementContributorId &&
+    reward.contributorUserId === row.contributorUserId &&
+    reward.benefitTypeId === row.benefitTypeId &&
+    reward.rewardTierId === row.rewardTierId &&
+    reward.rewardComponentId === row.rewardComponentId &&
+    reward.baseAmount === row.baseAmount &&
+    reward.finalAmount === row.finalAmount &&
+    reward.roundingAdjustment === row.roundingAdjustment &&
+    reward.recurrenceKey === row.recurrenceKey
+  );
+}
+
+async function loadPublishedVersionId(tenantId: string): Promise<string | null> {
+  const version = await prisma.orgStructureVersion.findFirst({
+    where: {
+      tenantId,
+      state: { in: ["PUBLISHED", "VALIDATED"] },
+    },
+    orderBy: [{ versionNumber: "desc" }, { createdAt: "desc" }],
+    select: { id: true },
+  });
+  return version?.id ?? null;
+}
+
+async function loadUserUnitSnapshots(
+  tenantId: string,
+  userIds: string[],
+): Promise<Map<string, UnitSnapshot>> {
+  const distinctUserIds = [...new Set(userIds.filter((value) => value.trim().length > 0))];
+  if (distinctUserIds.length === 0) return new Map();
+
+  const versionId = await loadPublishedVersionId(tenantId);
+  if (!versionId) return new Map();
+
+  const assignments = await prisma.userOrgAssignment.findMany({
+    where: {
+      versionId,
+      userId: { in: distinctUserIds },
+    },
+    orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }],
+    select: {
+      userId: true,
+      unit: {
+        select: {
+          id: true,
+          name: true,
+          path: true,
+          type: {
+            select: {
+              typeKey: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const snapshots = new Map<string, UnitSnapshot>();
+  for (const assignment of assignments) {
+    if (snapshots.has(assignment.userId)) continue;
+    snapshots.set(assignment.userId, {
+      unitId: assignment.unit.id,
+      unitName: assignment.unit.name,
+      unitPath: assignment.unit.path ?? null,
+      unitTypeKey: assignment.unit.type.typeKey,
+    });
+  }
+
+  return snapshots;
+}
+
+async function appendContributorRewardEvent(
+  tx: Prisma.TransactionClient,
+  input: {
+    rewardId: string;
+    tenantId: string;
+    actorUserId?: string | null;
+    actorRole?: Role | null;
+    action: string;
+    fromState?: "DRAFT" | "PENDING" | "RELEASED" | "REVOKED" | null;
+    toState?: "DRAFT" | "PENDING" | "RELEASED" | "REVOKED" | null;
+    note?: string | null;
+    metadata?: Prisma.InputJsonValue;
+  },
+) {
+  await tx.contributorRewardEvent.create({
+    data: {
+      rewardId: input.rewardId,
+      tenantId: input.tenantId,
+      actorUserId: input.actorUserId ?? null,
+      actorRole: input.actorRole ?? null,
+      action: input.action,
+      fromState: input.fromState ?? null,
+      toState: input.toState ?? null,
+      note: input.note ?? null,
+      metadata: input.metadata,
+    },
+  });
+}
+
+function buildRewardCreateData(
+  tenantId: string,
+  achievement: LoadedAchievementRewardContext["achievement"],
+  row: PersistableRewardRow,
+  snapshots: {
+    reporter: UnitSnapshot | null;
+    owner: UnitSnapshot | null;
+  },
+  idempotencyKey: string,
+  options?: {
+    supersedesRewardId?: string | null;
+  },
+) {
+  return {
+    tenantId,
+    periodId: achievement.periodId,
+    kpiDefinitionId: achievement.kpiDefinitionId,
+    achievementId: achievement.id,
+    achievementContributorId: row.achievementContributorId,
+    contributorUserId: row.contributorUserId,
+    benefitTypeId: row.benefitTypeId,
+    rewardTierId: row.rewardTierId,
+    rewardComponentId: row.rewardComponentId,
+    recurrenceKey: row.recurrenceKey,
+    state: "DRAFT" as const,
+    baseAmount: row.baseAmount,
+    finalAmount: row.finalAmount,
+    roundingAdjustment: row.roundingAdjustment,
+    idempotencyKey,
+    explanation: row.explanation,
+    rewardOwnerUnitId: snapshots.owner?.unitId ?? null,
+    rewardOwnerUnitName: snapshots.owner?.unitName ?? null,
+    rewardOwnerUnitPath: snapshots.owner?.unitPath ?? null,
+    rewardOwnerUnitTypeKey: snapshots.owner?.unitTypeKey ?? null,
+    reporterUnitId: snapshots.reporter?.unitId ?? null,
+    reporterUnitName: snapshots.reporter?.unitName ?? null,
+    reporterUnitPath: snapshots.reporter?.unitPath ?? null,
+    reporterUnitTypeKey: snapshots.reporter?.unitTypeKey ?? null,
+    supersedesRewardId: options?.supersedesRewardId ?? null,
+  };
+}
+
+function buildRewardReplacementMatchKey(input: {
+  achievementContributorId: string | null;
+  contributorUserId: string | null;
+  benefitTypeId: string;
+}): string {
+  return [
+    input.benefitTypeId,
+    input.achievementContributorId ?? "no-contributor-row",
+    input.contributorUserId ?? "no-user",
+  ].join(":");
+}
 
 function parseInput(input: RewardPreviewInput): RewardPreviewInput {
   const parsed = rewardPreviewInputSchema.safeParse(input);
@@ -563,7 +793,7 @@ async function evaluateRecurrence(
       where: {
         kpiDefinitionId: config.kpiDefinitionId,
         recurrenceKey,
-        state: "CALCULATED",
+        state: { in: ACTIVE_REWARD_STATES },
         ...(achievementId ? { achievementId: { not: achievementId } } : {}),
       },
     });
@@ -589,7 +819,7 @@ async function evaluateRecurrence(
     where: {
       kpiDefinitionId: config.kpiDefinitionId,
       contributorUserId: { in: userIds },
-      state: "CALCULATED",
+      state: { in: ACTIVE_REWARD_STATES },
       ...(config.rewardRecurrencePolicy === "ONCE_PER_PERIOD"
         ? { periodId: config.periodId }
         : {}),
@@ -1118,25 +1348,10 @@ function withSyntheticOwner(
   };
 }
 
-export async function previewKpiRewards(
-  kpiDefinitionId: string,
-  tenantId: string,
-  input: RewardPreviewInput,
-): Promise<RewardPreviewResult | null> {
-  const config = await loadRewardConfig(kpiDefinitionId, tenantId);
-  if (!config) return null;
-
-  const parsedInput = parseInput(input);
-  const resolution = await resolveRewards(config, parsedInput);
-  return buildPreviewResult(config, resolution);
-}
-
-export async function syncContributorRewardsForAchievement(
+async function loadAchievementRewardContext(
   achievementId: string,
   tenantId: string,
-  actorUserId?: string,
-  actorRole?: Role,
-): Promise<{ createdCount: number }> {
+): Promise<LoadedAchievementRewardContext | null> {
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId, state: "VERIFIED" },
     select: {
@@ -1164,11 +1379,11 @@ export async function syncContributorRewardsForAchievement(
       },
     },
   });
-  if (!achievement) return { createdCount: 0 };
+  if (!achievement) return null;
 
   const config = await loadRewardConfig(achievement.kpiDefinitionId, tenantId);
   if (!config || config.rewardComponents.length === 0) {
-    return { createdCount: 0 };
+    return null;
   }
 
   const input = withSyntheticOwner(
@@ -1195,31 +1410,95 @@ export async function syncContributorRewardsForAchievement(
 
   const resolution = await resolveRewards(config, input);
   const rows = buildPersistableRows(achievement.id, config, resolution);
+
+  const snapshotUserIds = [
+    achievement.reportedByUserId,
+    ...rows
+      .map((row) => row.contributorUserId)
+      .filter((value): value is string => value != null),
+  ];
+  const userSnapshots = await loadUserUnitSnapshots(tenantId, snapshotUserIds);
+
+  return {
+    achievement: {
+      ...achievement,
+      achievementFormData: (achievement.achievementFormData as Record<string, unknown> | null) ?? {},
+    },
+    config,
+    resolution,
+    rows,
+    userSnapshots,
+  };
+}
+
+export async function previewKpiRewards(
+  kpiDefinitionId: string,
+  tenantId: string,
+  input: RewardPreviewInput,
+): Promise<RewardPreviewResult | null> {
+  const config = await loadRewardConfig(kpiDefinitionId, tenantId);
+  if (!config) return null;
+
+  const parsedInput = parseInput(input);
+  const resolution = await resolveRewards(config, parsedInput);
+  return buildPreviewResult(config, resolution);
+}
+
+export async function syncContributorRewardsForAchievement(
+  achievementId: string,
+  tenantId: string,
+  actorUserId?: string,
+  actorRole?: Role,
+): Promise<{ createdCount: number }> {
+  const context = await loadAchievementRewardContext(achievementId, tenantId);
+  if (!context) return { createdCount: 0 };
+
+  const { achievement, config, resolution, rows, userSnapshots } = context;
   if (rows.length === 0) {
     return { createdCount: 0 };
   }
 
   const result = await prisma.$transaction(async (tx) => {
+    const reporterSnapshot = userSnapshots.get(achievement.reportedByUserId) ?? null;
     const created = await tx.contributorReward.createMany({
       data: rows.map((row) => ({
-        tenantId,
-        periodId: achievement.periodId,
-        kpiDefinitionId: achievement.kpiDefinitionId,
-        achievementId: achievement.id,
-        achievementContributorId: row.achievementContributorId,
-        contributorUserId: row.contributorUserId,
-        benefitTypeId: row.benefitTypeId,
-        rewardTierId: row.rewardTierId,
-        rewardComponentId: row.rewardComponentId,
-        recurrenceKey: row.recurrenceKey,
-        baseAmount: row.baseAmount,
-        finalAmount: row.finalAmount,
-        roundingAdjustment: row.roundingAdjustment,
-        idempotencyKey: row.idempotencyKey,
-        explanation: row.explanation,
+        ...buildRewardCreateData(
+          tenantId,
+          achievement,
+          row,
+          {
+            reporter: reporterSnapshot,
+            owner: row.contributorUserId ? (userSnapshots.get(row.contributorUserId) ?? null) : null,
+          },
+          row.idempotencyKey,
+        ),
       })),
       skipDuplicates: true,
     });
+
+    if (created.count > 0) {
+      const insertedRows = await tx.contributorReward.findMany({
+        where: {
+          achievementId: achievement.id,
+          idempotencyKey: { in: rows.map((row) => row.idempotencyKey) },
+        },
+        select: { id: true, idempotencyKey: true },
+      });
+
+      for (const rewardRow of insertedRows) {
+        await appendContributorRewardEvent(tx, {
+          rewardId: rewardRow.id,
+          tenantId,
+          actorUserId,
+          actorRole,
+          action: "CALCULATED",
+          fromState: null,
+          toState: "DRAFT",
+          note: "Reward created after final verification.",
+          metadata: { idempotencyKey: rewardRow.idempotencyKey } satisfies Prisma.InputJsonValue,
+        });
+      }
+    }
 
     await tx.auditLog.create({
       data: {
@@ -1242,4 +1521,258 @@ export async function syncContributorRewardsForAchievement(
   });
 
   return { createdCount: result };
+}
+
+export async function recalculateContributorRewardsForAchievement(
+  achievementId: string,
+  tenantId: string,
+  actorUserId?: string,
+  actorRole?: Role,
+  reason?: string | null,
+): Promise<{ createdCount: number; updatedCount: number; revokedCount: number }> {
+  const context = await loadAchievementRewardContext(achievementId, tenantId);
+  if (!context) {
+    return { createdCount: 0, updatedCount: 0, revokedCount: 0 };
+  }
+
+  const { achievement, rows, userSnapshots } = context;
+  const reporterSnapshot = userSnapshots.get(achievement.reportedByUserId) ?? null;
+  const desiredByBase = new Map(rows.map((row) => [extractBaseRewardKey(row.idempotencyKey), row]));
+
+  const existingRewards = await prisma.contributorReward.findMany({
+    where: {
+      tenantId,
+      achievementId,
+      state: { in: ACTIVE_REWARD_STATES },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+
+  const existingKeys = existingRewards.map((reward) => reward.idempotencyKey);
+  const note = reason?.trim() || "Reward recalculated after verified achievement correction.";
+
+  return prisma.$transaction(async (tx) => {
+    let createdCount = 0;
+    let updatedCount = 0;
+    let revokedCount = 0;
+    const supersededRewardIdsByBaseKey = new Map<string, string>();
+    const releasedReplacementCandidatesByMatchKey = new Map<string, string[]>();
+
+    for (const reward of existingRewards) {
+      const baseKey = extractBaseRewardKey(reward.idempotencyKey);
+      const desiredRow = desiredByBase.get(baseKey) ?? null;
+
+      if (!desiredRow) {
+        await tx.contributorReward.update({
+          where: { id: reward.id },
+          data: {
+            state: "REVOKED",
+            statusRemark: note,
+            revokedAt: new Date(),
+            revokedById: actorUserId ?? null,
+            revocationReason: note,
+          },
+        });
+        await appendContributorRewardEvent(tx, {
+          rewardId: reward.id,
+          tenantId,
+          actorUserId,
+          actorRole,
+          action: "REVOKED",
+          fromState: reward.state,
+          toState: "REVOKED",
+          note,
+          metadata: { trigger: "ACHIEVEMENT_CORRECTION" } satisfies Prisma.InputJsonValue,
+        });
+        if (reward.state === "RELEASED") {
+          const replacementMatchKey = buildRewardReplacementMatchKey({
+            achievementContributorId: reward.achievementContributorId,
+            contributorUserId: reward.contributorUserId,
+            benefitTypeId: reward.benefitTypeId,
+          });
+          const existingCandidateIds =
+            releasedReplacementCandidatesByMatchKey.get(replacementMatchKey) ?? [];
+          existingCandidateIds.push(reward.id);
+          releasedReplacementCandidatesByMatchKey.set(
+            replacementMatchKey,
+            existingCandidateIds,
+          );
+        }
+        revokedCount += 1;
+        continue;
+      }
+
+      if (rewardRowsEquivalent(reward, desiredRow)) {
+        desiredByBase.delete(baseKey);
+        continue;
+      }
+
+      if (reward.state === "RELEASED") {
+        await tx.contributorReward.update({
+          where: { id: reward.id },
+          data: {
+            state: "REVOKED",
+            statusRemark: note,
+            revokedAt: new Date(),
+            revokedById: actorUserId ?? null,
+            revocationReason: note,
+          },
+        });
+        await appendContributorRewardEvent(tx, {
+          rewardId: reward.id,
+          tenantId,
+          actorUserId,
+          actorRole,
+          action: "REVOKED",
+          fromState: reward.state,
+          toState: "REVOKED",
+          note,
+          metadata: { trigger: "ACHIEVEMENT_CORRECTION" } satisfies Prisma.InputJsonValue,
+        });
+        supersededRewardIdsByBaseKey.set(baseKey, reward.id);
+        const replacementMatchKey = buildRewardReplacementMatchKey({
+          achievementContributorId: reward.achievementContributorId,
+          contributorUserId: reward.contributorUserId,
+          benefitTypeId: reward.benefitTypeId,
+        });
+        const existingCandidateIds =
+          releasedReplacementCandidatesByMatchKey.get(replacementMatchKey) ?? [];
+        existingCandidateIds.push(reward.id);
+        releasedReplacementCandidatesByMatchKey.set(
+          replacementMatchKey,
+          existingCandidateIds,
+        );
+        revokedCount += 1;
+        continue;
+      }
+
+      await tx.contributorReward.update({
+        where: { id: reward.id },
+        data: {
+          achievementContributorId: desiredRow.achievementContributorId,
+          contributorUserId: desiredRow.contributorUserId,
+          benefitTypeId: desiredRow.benefitTypeId,
+          rewardTierId: desiredRow.rewardTierId,
+          rewardComponentId: desiredRow.rewardComponentId,
+          recurrenceKey: desiredRow.recurrenceKey,
+          state: "DRAFT",
+          statusRemark: note,
+          baseAmount: desiredRow.baseAmount,
+          finalAmount: desiredRow.finalAmount,
+          roundingAdjustment: desiredRow.roundingAdjustment,
+          explanation: desiredRow.explanation,
+          rewardOwnerUnitId:
+            desiredRow.contributorUserId != null
+              ? (userSnapshots.get(desiredRow.contributorUserId)?.unitId ?? null)
+              : null,
+          rewardOwnerUnitName:
+            desiredRow.contributorUserId != null
+              ? (userSnapshots.get(desiredRow.contributorUserId)?.unitName ?? null)
+              : null,
+          rewardOwnerUnitPath:
+            desiredRow.contributorUserId != null
+              ? (userSnapshots.get(desiredRow.contributorUserId)?.unitPath ?? null)
+              : null,
+          rewardOwnerUnitTypeKey:
+            desiredRow.contributorUserId != null
+              ? (userSnapshots.get(desiredRow.contributorUserId)?.unitTypeKey ?? null)
+              : null,
+          reporterUnitId: reporterSnapshot?.unitId ?? null,
+          reporterUnitName: reporterSnapshot?.unitName ?? null,
+          reporterUnitPath: reporterSnapshot?.unitPath ?? null,
+          reporterUnitTypeKey: reporterSnapshot?.unitTypeKey ?? null,
+        },
+      });
+      await appendContributorRewardEvent(tx, {
+        rewardId: reward.id,
+        tenantId,
+        actorUserId,
+        actorRole,
+        action: "RECALCULATED",
+        fromState: reward.state,
+        toState: "DRAFT",
+        note,
+        metadata: { trigger: "ACHIEVEMENT_CORRECTION" } satisfies Prisma.InputJsonValue,
+      });
+      updatedCount += 1;
+      desiredByBase.delete(baseKey);
+    }
+
+    const createdKeys = [...existingKeys];
+    for (const [baseKey, desiredRow] of desiredByBase) {
+      const idempotencyKey = createdKeys.includes(baseKey)
+        ? nextRewardRevisionKey(baseKey, createdKeys)
+        : baseKey;
+      createdKeys.push(idempotencyKey);
+      const replacementMatchKey = buildRewardReplacementMatchKey({
+        achievementContributorId: desiredRow.achievementContributorId,
+        contributorUserId: desiredRow.contributorUserId,
+        benefitTypeId: desiredRow.benefitTypeId,
+      });
+      const supersededRewardId =
+        supersededRewardIdsByBaseKey.get(baseKey)
+        ?? releasedReplacementCandidatesByMatchKey.get(replacementMatchKey)?.shift()
+        ?? null;
+
+      const created = await tx.contributorReward.create({
+        data: buildRewardCreateData(
+          tenantId,
+          achievement,
+          desiredRow,
+          {
+            reporter: reporterSnapshot,
+            owner:
+              desiredRow.contributorUserId != null
+                ? (userSnapshots.get(desiredRow.contributorUserId) ?? null)
+                : null,
+          },
+          idempotencyKey,
+          {
+            supersedesRewardId: supersededRewardId,
+          },
+        ),
+      });
+      if (supersededRewardId) {
+        await tx.contributorReward.update({
+          where: { id: supersededRewardId },
+          data: {
+            replacedByRewardId: created.id,
+          },
+        });
+      }
+      await appendContributorRewardEvent(tx, {
+        rewardId: created.id,
+        tenantId,
+        actorUserId,
+        actorRole,
+        action: "CALCULATED",
+        fromState: null,
+        toState: "DRAFT",
+        note,
+        metadata: {
+          trigger: "ACHIEVEMENT_CORRECTION",
+          supersedesBaseKey: baseKey,
+        } satisfies Prisma.InputJsonValue,
+      });
+      createdCount += 1;
+    }
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId: actorUserId ?? null,
+        actorRole: actorRole ?? null,
+        targetType: "AchievementReward",
+        targetId: achievementId,
+        action: "RECALCULATE",
+        newState: {
+          createdCount,
+          updatedCount,
+          revokedCount,
+        } satisfies Prisma.InputJsonValue,
+      },
+    });
+
+    return { createdCount, updatedCount, revokedCount };
+  });
 }

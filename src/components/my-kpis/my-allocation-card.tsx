@@ -257,8 +257,8 @@ export function MyAllocationCard({
             )}
 
             {/* Achievement trail */}
-            {ach && ach.verificationLog.length > 0 && (
-              <MyAchievementTrail log={ach.verificationLog} />
+            {ach && (ach.submissionTrail.length > 0 || ach.verificationLog.length > 0) && (
+              <MyAchievementTrail trail={ach.submissionTrail} log={ach.verificationLog} />
             )}
 
             {/* Rejection reason */}
@@ -364,7 +364,8 @@ function getPeriodMessage(state: string): string | null {
 function TargetUpdateWarning({ allocation }: { allocation: MyAllocationView }) {
   const ach = allocation.achievement;
   if (!ach) return null;
-  const latestSubmitAt = getLatestSubmitTimestamp(ach.verificationLog) ?? ach.createdAt;
+  const latestSubmitAt =
+    getLatestSubmitTimestamp(ach.submissionTrail, ach.verificationLog) ?? ach.createdAt;
   if (new Date(allocation.updatedAt) > new Date(latestSubmitAt)) {
     return (
       <div className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1">
@@ -418,8 +419,18 @@ function hasConfiguredTarget(allocation: MyAllocationView) {
 }
 
 function getLatestSubmitTimestamp(
+  trail: NonNullable<MyAllocationView["achievement"]>["submissionTrail"] | undefined,
   log: NonNullable<MyAllocationView["achievement"]>["verificationLog"] | undefined,
 ) {
+  if (trail && trail.length > 0) {
+    const submitEntries = trail.filter(
+      (entry) => entry.action === "SUBMITTED" || entry.action === "RESUBMITTED",
+    );
+    if (submitEntries.length > 0) {
+      return submitEntries[submitEntries.length - 1]?.createdAt ?? null;
+    }
+  }
+
   if (!log) return null;
 
   const submitEntries = log.filter((entry) => entry.level === "SUBMIT");

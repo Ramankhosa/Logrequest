@@ -185,6 +185,7 @@ export async function markStageComplete(
       tenantId,
       ach.reportedByUserId,
       "STAGE_DEADLINE_OVERDUE",
+      undefined,
       "Stage completed after deadline",
       `You completed "${stage.title}" after its deadline.`,
       "KpiStageProgress",

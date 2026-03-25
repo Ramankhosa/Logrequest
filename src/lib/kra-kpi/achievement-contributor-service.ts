@@ -29,6 +29,7 @@ type ApplicableRoleRecord = {
   contributorRole: {
     id: string;
     tenantId: string;
+    code: string;
     name: string;
     defaultCreditPercent: number;
     isActive: boolean;
@@ -98,6 +99,14 @@ function normalizeExternalScope(scope: string | null | undefined): ExternalContr
     return scope;
   }
   return null;
+}
+
+function normalizeRoleToken(value: string): string {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function scopeLabel(scope: ExternalContributorScope | null): string | undefined {
@@ -186,6 +195,7 @@ async function getApplicableRoleMap(
         select: {
           id: true,
           tenantId: true,
+          code: true,
           name: true,
           defaultCreditPercent: true,
           isActive: true,
@@ -238,7 +248,15 @@ export async function buildStarterContributorInputs(input: {
       ? [...applicableRoles.values()].find(
           (row) =>
             row.contributorRole.isActive &&
-            row.contributorRole.name === input.preferredRoleName,
+            (
+              row.contributorRole.name.localeCompare(input.preferredRoleName!, undefined, {
+                sensitivity: "accent",
+              }) === 0
+              || normalizeRoleToken(row.contributorRole.name)
+                === normalizeRoleToken(input.preferredRoleName!)
+              || normalizeRoleToken(row.contributorRole.code)
+                === normalizeRoleToken(input.preferredRoleName!)
+            ),
         )
       : null;
   const fallbackRole =

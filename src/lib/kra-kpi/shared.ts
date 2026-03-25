@@ -404,6 +404,86 @@ export type SubmissionTrailView = {
   createdAt: Date;
 };
 
+export type ContributorRewardStateView = "DRAFT" | "PENDING" | "RELEASED" | "REVOKED";
+
+export type ContributorRewardEventView = {
+  id: string;
+  rewardId: string;
+  action: string;
+  actorUserId: string | null;
+  actorName: string | null;
+  actorRole: string | null;
+  fromState: ContributorRewardStateView | null;
+  toState: ContributorRewardStateView | null;
+  note: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+};
+
+export type ContributorRewardView = {
+  id: string;
+  achievementId: string;
+  kpiDefinitionId: string;
+  kpiTitle: string;
+  reportedByUserId: string;
+  reportedByUserName: string;
+  contributorUserId: string | null;
+  contributorUserName: string | null;
+  contributorDisplayName: string;
+  benefitTypeId: string;
+  benefitTypeCode: string;
+  benefitTypeName: string;
+  benefitUnit: string;
+  rewardTierCode: string | null;
+  rewardTierName: string | null;
+  rewardComponentCode: string;
+  rewardComponentName: string;
+  state: ContributorRewardStateView;
+  baseAmount: number;
+  finalAmount: number;
+  roundingAdjustment: number;
+  statusRemark: string | null;
+  releaseReference: string | null;
+  releasedAt: Date | null;
+  releasedByUserId: string | null;
+  releasedByUserName: string | null;
+  revokedAt: Date | null;
+  revokedByUserId: string | null;
+  revokedByUserName: string | null;
+  revocationReason: string | null;
+  rewardOwnerUnitId: string | null;
+  rewardOwnerUnitName: string | null;
+  reporterUnitId: string | null;
+  reporterUnitName: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  supersedesRewardId: string | null;
+  replacedByRewardId: string | null;
+  events: ContributorRewardEventView[];
+};
+
+export type RewardConsoleTotals = {
+  benefitTypeCode: string;
+  benefitTypeName: string;
+  unit: string;
+  totalCount: number;
+  draftCount: number;
+  pendingCount: number;
+  releasedCount: number;
+  revokedCount: number;
+  totalAmount: number;
+  draftAmount: number;
+  pendingAmount: number;
+  releasedAmount: number;
+  revokedAmount: number;
+};
+
+export type RewardConsoleListResult = {
+  rewards: ContributorRewardView[];
+  totals: RewardConsoleTotals[];
+  totalRows: number;
+};
+
 export type TargetAllocationView = {
   id: string;
   tenantId: string;

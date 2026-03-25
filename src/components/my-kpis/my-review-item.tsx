@@ -132,8 +132,8 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
             )}
 
             {/* Trail */}
-            {item.verificationLog.length > 0 && (
-              <MyAchievementTrail log={item.verificationLog} />
+            {(item.submissionTrail.length > 0 || item.verificationLog.length > 0) && (
+              <MyAchievementTrail trail={item.submissionTrail} log={item.verificationLog} />
             )}
           </div>
         )}

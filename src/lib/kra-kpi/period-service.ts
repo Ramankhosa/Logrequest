@@ -150,8 +150,8 @@ export async function createPeriod(
     return { status: "error", message: `Period code "${data.code}" already exists.` };
   }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.assessmentPeriod.create({
+  const created = await prisma.$transaction(async (tx) => {
+    const period = await tx.assessmentPeriod.create({
       data: {
         tenantId,
         name: data.name,
@@ -174,14 +174,21 @@ export async function createPeriod(
         actorUserId,
         actorRole,
         targetType: "AssessmentPeriod",
-        targetId: data.code,
+        targetId: period.id,
         action: "CREATE",
         newState: { name: data.name, code: data.code, periodType: data.periodType },
       },
     });
+
+    return period;
   });
 
-  return { status: "success", message: `Assessment period "${data.name}" created.` };
+  return {
+    status: "success",
+    message: `Assessment period "${data.name}" created.`,
+    id: created.id,
+    code: created.code,
+  };
 }
 
 // ── Update Period ────────────────────────────────────────────────────────────
@@ -348,6 +355,7 @@ export async function transitionPeriodState(
         tenantId,
         [...recipientIds],
         "PERIOD_STATE_CHANGED",
+        undefined,
         "Assessment period state changed",
         `Assessment period '${period.name}' is now ${newState}.`,
         "AssessmentPeriod",

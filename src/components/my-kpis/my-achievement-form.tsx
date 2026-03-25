@@ -342,6 +342,7 @@ export function MyAchievementForm({
       ? ach.contributors.map((contributor) => mapAchievementContributorToDraft(subject, contributor))
       : [],
   );
+  const [submissionNote, setSubmissionNote] = useState("");
   const [loadingUsers, setLoadingUsers] = useState(showContributorSection);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -530,7 +531,11 @@ export function MyAchievementForm({
 
         const submitResponse = await fetch(
           `/api/tenant/kra-kpi/achievements/${achievementId}/submit`,
-          { method: "POST" },
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ note: submissionNote.trim() || undefined }),
+          },
         );
         const submitData = await submitResponse.json();
         if (submitData.status === "error") {
@@ -1009,6 +1014,19 @@ export function MyAchievementForm({
               + Add link
             </button>
           )}
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">
+            Submission remark
+          </label>
+          <textarea
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+            rows={2}
+            value={submissionNote}
+            onChange={(event) => setSubmissionNote(event.target.value)}
+            placeholder="Optional note for the recommending/verifying authority"
+          />
         </div>
       </div>
 

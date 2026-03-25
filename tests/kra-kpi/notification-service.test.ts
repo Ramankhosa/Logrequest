@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/prisma";
-import { markRead } from "@/lib/notifications/notification-service";
+import {
+  createNotification,
+  markRead,
+} from "@/lib/notifications/notification-service";
 import {
   cleanupTrackedData,
   createTestMembership,
@@ -19,6 +22,49 @@ async function withIsolatedDb(run: (tracker: DbTracker) => Promise<void>) {
 }
 
 describe("notification service", () => {
+  test("createNotification de-dupes repeated event keys for the same tenant user", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const user = await createTestUser(tracker, {
+        firstName: "Nina",
+        lastName: "Notifier",
+      });
+      const tenant = await createTestTenant(tracker, { code: `NT3_${Date.now()}` });
+
+      await createTestMembership({
+        tenantId: tenant.id,
+        userId: user.id,
+        role: "TENANT_USER",
+        createdByUserId: user.id,
+      });
+
+      await createNotification(
+        tenant.id,
+        user.id,
+        "ACHIEVEMENT_SUBMITTED",
+        "achievement:dup-test",
+        "Duplicate test",
+        "Should only be stored once.",
+      );
+      await createNotification(
+        tenant.id,
+        user.id,
+        "ACHIEVEMENT_SUBMITTED",
+        "achievement:dup-test",
+        "Duplicate test",
+        "Should only be stored once.",
+      );
+
+      const notifications = await prisma.notification.findMany({
+        where: {
+          tenantId: tenant.id,
+          userId: user.id,
+          eventKey: "achievement:dup-test",
+        },
+      });
+      expect(notifications).toHaveLength(1);
+    });
+  });
+
   test("markRead only updates notifications within the caller's tenant", async () => {
     await withIsolatedDb(async (tracker) => {
       const user = await createTestUser(tracker, {

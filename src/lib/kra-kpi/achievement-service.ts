@@ -24,6 +24,7 @@ import {
   resolveUnitHeadUserIds,
 } from "@/lib/notifications/notification-service";
 import { initializeStageProgress, calculateStageScore } from "./stage-progress-service";
+import { parseContributionRoles } from "./kpi-service";
 import {
   achievementContributorInclude,
   achievementContributorInputSchema,
@@ -36,6 +37,7 @@ import {
 import { runDuplicateDetection } from "./duplicate-detection-service";
 import { ensureApplicableRolesBaseline } from "./contributor-role-service";
 import { syncContributorRewardsForAchievement } from "./reward-service";
+import { correctAchievementAndRefreshRewards } from "./reward-ops-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -110,6 +112,121 @@ function roleToTrailLabel(role: Role): string {
   }
 }
 
+function normalizeRemark(note: string | null | undefined): string | null {
+  const trimmed = note?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeContributionRoleToken(value: string): string {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function validateLegacyContributionRoleSelection(
+  contributionRoles: unknown,
+  selectedRoleName: string | null | undefined,
+): string | null {
+  if (!selectedRoleName) {
+    return null;
+  }
+
+  const roles = parseContributionRoles(contributionRoles);
+  if (!roles || roles.length === 0) {
+    return null;
+  }
+
+  const selectedToken = normalizeContributionRoleToken(selectedRoleName);
+  const matched = roles.some((role) => {
+    const roleName = role.role.trim();
+    return (
+      roleName.localeCompare(selectedRoleName.trim(), undefined, { sensitivity: "accent" }) === 0
+      || normalizeContributionRoleToken(roleName) === selectedToken
+    );
+  });
+
+  return matched ? null : `Contribution role "${selectedRoleName}" is not configured for this KPI.`;
+}
+
+function mergeAchievementFormPatch(
+  existing: Record<string, unknown> | null | undefined,
+  patch: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (patch === undefined) {
+    return existing ?? undefined;
+  }
+
+  return {
+    ...(existing ?? {}),
+    ...patch,
+  };
+}
+
+function buildChangedFieldSummary(
+  previous: Record<string, unknown>,
+  next: Record<string, unknown>,
+): { changedFieldKeys: string[]; beforeAfterSummary: Record<string, { before: unknown; after: unknown }> } {
+  const changedFieldKeys: string[] = [];
+  const beforeAfterSummary: Record<string, { before: unknown; after: unknown }> = {};
+
+  const keys = [...new Set([...Object.keys(previous), ...Object.keys(next)])];
+  for (const key of keys) {
+    const before = previous[key];
+    const after = next[key];
+    if (JSON.stringify(before) === JSON.stringify(after)) continue;
+    changedFieldKeys.push(key);
+    beforeAfterSummary[key] = { before, after };
+  }
+
+  return { changedFieldKeys, beforeAfterSummary };
+}
+
+const rewardAffectingCorrectionFields = new Set([
+  "actualValue",
+  "actualDate",
+  "actualMilestone",
+  "actualGrade",
+  "actualBoolean",
+  "actualRating",
+  "achievementFormData",
+  "contributors",
+  "contributionRole",
+]);
+
+function normalizeContributorComparisonValue(
+  contributor: {
+    type?: "INTERNAL" | "EXTERNAL";
+    userId?: string | null;
+    externalName?: string | null;
+    externalAffiliation?: string | null;
+    externalScope?: "NATIONAL" | "INTERNATIONAL" | null;
+    externalData?: Record<string, unknown> | null;
+    contributorRoleId?: string | null;
+    selectorTags?: string[] | null;
+    isExcludedFromReward?: boolean | null;
+    note?: string | null;
+  },
+) {
+  return {
+    type: contributor.type ?? "INTERNAL",
+    userId: contributor.userId ?? null,
+    externalName: contributor.externalName ?? null,
+    externalAffiliation: contributor.externalAffiliation ?? null,
+    externalScope: contributor.externalScope ?? null,
+    externalData: contributor.externalData ?? null,
+    contributorRoleId: contributor.contributorRoleId ?? null,
+    selectorTags: [...new Set((contributor.selectorTags ?? []).filter(Boolean))].sort(),
+    isExcludedFromReward: contributor.isExcludedFromReward ?? false,
+    note: contributor.note ?? null,
+  };
+}
+
+function shouldRefreshRewardsAfterCorrection(changedFieldKeys: string[]): boolean {
+  return changedFieldKeys.some((key) => rewardAffectingCorrectionFields.has(key));
+}
+
 async function getActorUnitName(
   tenantId: string,
   userId: string,
@@ -140,8 +257,8 @@ async function appendSubmissionTrailEntry(
     scoreAtAction?: number | null;
     metadata?: Record<string, unknown> | null;
   },
-): Promise<void> {
-  await tx.submissionTrail.create({
+): Promise<{ id: string }> {
+  return tx.submissionTrail.create({
     data: {
       achievementId: input.achievementId,
       action: input.action,
@@ -153,6 +270,7 @@ async function appendSubmissionTrailEntry(
       scoreAtAction: input.scoreAtAction ?? null,
       metadata: input.metadata as object | undefined,
     },
+    select: { id: true },
   });
 }
 
@@ -880,6 +998,14 @@ export async function recordAchievement(
     };
   }
 
+  const contributionRoleError = validateLegacyContributionRoleSelection(
+    kpi.contributionRoles,
+    data.contributionRole,
+  );
+  if (contributionRoleError) {
+    return { status: "error", message: contributionRoleError };
+  }
+
   // Compute score if we have target data
   let computedScoreValue: number | null = null;
   if (allocation) {
@@ -1012,6 +1138,420 @@ export async function recordAchievement(
   return result;
 }
 
+export async function correctVerifiedAchievement(
+  achievementId: string,
+  tenantId: string,
+  input: UpdateAchievementInput,
+  note: string | null,
+  actorUserId: string,
+  actorRole: Role,
+): Promise<KraKpiActionResult> {
+  const normalizedNote = normalizeRemark(note);
+  if (!normalizedNote) {
+    return { status: "error", message: "A correction remark is required." };
+  }
+
+  const parsed = updateAchievementSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid input." };
+  }
+  const data = parsed.data;
+
+  const achievement = await prisma.achievement.findFirst({
+    where: { id: achievementId, tenantId },
+    include: {
+      contributors: { include: achievementContributorInclude },
+      kpiDefinition: {
+        select: {
+          title: true,
+          startingUnitId: true,
+          keyUnitId: true,
+          finalUnitId: true,
+          measurementType: true,
+          scoringMethod: true,
+          scoringDirection: true,
+          scoringConfig: true,
+          measurementConfig: true,
+          achievementFormConfig: true,
+          contributionRoles: true,
+          _count: { select: { stages: true } },
+        },
+      },
+    },
+  });
+  if (!achievement) {
+    return { status: "error", message: "Achievement not found." };
+  }
+
+  if (achievement.state !== "VERIFIED") {
+    return {
+      status: "error",
+      message: `Only verified achievements can be corrected from "${achievement.state}".`,
+    };
+  }
+
+  const period = await prisma.assessmentPeriod.findFirst({
+    where: { id: achievement.periodId, tenantId },
+    select: { state: true },
+  });
+  if (!period) {
+    return { status: "error", message: "Assessment period not found." };
+  }
+
+  const canCorrectAsAdmin = isAdminOrOwner(actorRole);
+  if (!canCorrectAsAdmin) {
+    if (period.state === "CLOSED" || period.state === "ARCHIVED") {
+      return {
+        status: "error",
+        message: "Only tenant admins can correct verified achievements after the period is closed.",
+      };
+    }
+
+    const canCorrect = await canActorReviewUnit(
+      tenantId,
+      actorUserId,
+      finalReviewUnitIdForKpi(achievement.kpiDefinition),
+    );
+    if (!canCorrect) {
+      return {
+        status: "error",
+        message: "Only the final approving authority or tenant admin can correct this achievement.",
+      };
+    }
+  }
+
+  const mergedFormData = mergeAchievementFormPatch(
+    (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
+    data.achievementFormData,
+  );
+  const formValidationError = validateAchievementFormData(
+    (achievement.kpiDefinition.achievementFormConfig as AchievementFormConfig | null) ?? null,
+    mergedFormData,
+  );
+  if (formValidationError) {
+    return { status: "error", message: formValidationError };
+  }
+
+  const contributionRoleError = validateLegacyContributionRoleSelection(
+    achievement.kpiDefinition.contributionRoles,
+    data.contributionRole,
+  );
+  if (contributionRoleError) {
+    return { status: "error", message: contributionRoleError };
+  }
+
+  let newScore = achievement.computedScore;
+  if (achievement.targetAllocationId) {
+    const allocation = await prisma.targetAllocation.findFirst({
+      where: { id: achievement.targetAllocationId, tenantId },
+    });
+    if (allocation) {
+      newScore = computeScore(
+        achievement.kpiDefinition.measurementType,
+        achievement.kpiDefinition.scoringMethod,
+        achievement.kpiDefinition.scoringDirection,
+        achievement.kpiDefinition.scoringConfig as ScoringConfig | null,
+        achievement.kpiDefinition.measurementConfig as MeasurementConfig | null,
+        {
+          targetValue: allocation.targetValue,
+          targetDate: allocation.targetDate,
+          targetMilestone: allocation.targetMilestone,
+          targetGrade: allocation.targetGrade,
+          targetBoolean: allocation.targetBoolean,
+          targetRating: allocation.targetRating,
+          actualValue: data.actualValue ?? achievement.actualValue,
+          actualDate: data.actualDate ?? achievement.actualDate,
+          actualMilestone: data.actualMilestone ?? achievement.actualMilestone,
+          actualGrade: data.actualGrade ?? achievement.actualGrade,
+          actualBoolean: data.actualBoolean ?? achievement.actualBoolean,
+          actualRating: data.actualRating ?? achievement.actualRating,
+        },
+      );
+    }
+  }
+
+  const effectiveScore =
+    achievement.kpiDefinition._count.stages > 0
+      ? calculateEffectiveScore(achievement.stageCompletionScore, achievement.creditPercent)
+      : calculateEffectiveScore(newScore, achievement.creditPercent);
+
+  const previousContributors = achievement.contributors.map((contributor) =>
+    normalizeContributorComparisonValue({
+      type: contributor.type,
+      userId: contributor.userId,
+      externalName: contributor.externalName,
+      externalAffiliation: contributor.externalAffiliation,
+      externalScope: contributor.externalScope,
+      externalData: (contributor.externalData as Record<string, unknown> | null) ?? null,
+      contributorRoleId: contributor.contributorRoleId,
+      selectorTags: contributor.selectorTags,
+      isExcludedFromReward: contributor.isExcludedFromReward,
+      note: contributor.note,
+    }),
+  );
+  const nextContributors =
+    data.contributors !== undefined
+      ? data.contributors.map((contributor) =>
+          normalizeContributorComparisonValue({
+            type: contributor.type,
+            userId: contributor.userId,
+            externalName: contributor.externalName,
+            externalAffiliation: contributor.externalAffiliation,
+            externalScope: contributor.externalScope,
+            externalData: (contributor.externalData as Record<string, unknown> | null) ?? null,
+            contributorRoleId: contributor.contributorRoleId,
+            selectorTags: contributor.selectorTags,
+            isExcludedFromReward: contributor.isExcludedFromReward,
+            note: contributor.note,
+          }),
+        )
+      : previousContributors;
+
+  const previousSummary = {
+    actualValue: achievement.actualValue,
+    actualDate: achievement.actualDate?.toISOString() ?? null,
+    actualMilestone: achievement.actualMilestone,
+    actualGrade: achievement.actualGrade,
+    actualBoolean: achievement.actualBoolean,
+    actualRating: achievement.actualRating,
+    evidenceDescription: achievement.evidenceDescription,
+    evidenceLinks: achievement.evidenceLinks,
+    achievementFormData:
+      (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
+    title: achievement.title,
+    contributionRole: achievement.contributionRole,
+    contributors: previousContributors,
+  } satisfies Record<string, unknown>;
+
+  const nextSummary = {
+    actualValue: data.actualValue ?? achievement.actualValue,
+    actualDate: (data.actualDate ?? achievement.actualDate)?.toISOString() ?? null,
+    actualMilestone: data.actualMilestone ?? achievement.actualMilestone,
+    actualGrade: data.actualGrade ?? achievement.actualGrade,
+    actualBoolean: data.actualBoolean ?? achievement.actualBoolean,
+    actualRating: data.actualRating ?? achievement.actualRating,
+    evidenceDescription:
+      data.evidenceDescription !== undefined
+        ? data.evidenceDescription
+        : achievement.evidenceDescription,
+    evidenceLinks: data.evidenceLinks ?? achievement.evidenceLinks,
+    achievementFormData: mergedFormData ?? null,
+    title: data.title !== undefined ? data.title : achievement.title,
+    contributionRole:
+      data.contributionRole !== undefined ? data.contributionRole : achievement.contributionRole,
+    contributors: nextContributors,
+  } satisfies Record<string, unknown>;
+
+  const changeSummary = buildChangedFieldSummary(previousSummary, nextSummary);
+  if (changeSummary.changedFieldKeys.length === 0) {
+    return { status: "error", message: "No changes detected to correct." };
+  }
+
+  const duplicateCheckResult = await runDuplicateDetection({
+    tenantId,
+    periodId: achievement.periodId,
+    kpiDefinitionId: achievement.kpiDefinitionId,
+    achievementId,
+    achievementTitle: (nextSummary.title as string | null) ?? null,
+    achievementFormData:
+      (nextSummary.achievementFormData as Record<string, unknown> | null) ?? null,
+    formConfig:
+      (achievement.kpiDefinition.achievementFormConfig as AchievementFormConfig | null) ?? null,
+  });
+
+  const actor = await prisma.user.findUnique({
+    where: { id: actorUserId },
+    select: { firstName: true, lastName: true },
+  });
+  const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
+  const actorUnitName = await getActorUnitName(tenantId, actorUserId);
+  let correctionTrailId: string | null = null;
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.achievement.update({
+      where: { id: achievementId },
+      data: {
+        ...(data.actualValue !== undefined && { actualValue: data.actualValue }),
+        ...(data.actualDate !== undefined && { actualDate: data.actualDate }),
+        ...(data.actualMilestone !== undefined && { actualMilestone: data.actualMilestone }),
+        ...(data.actualGrade !== undefined && { actualGrade: data.actualGrade }),
+        ...(data.actualBoolean !== undefined && { actualBoolean: data.actualBoolean }),
+        ...(data.actualRating !== undefined && { actualRating: data.actualRating }),
+        ...(data.evidenceDescription !== undefined && {
+          evidenceDescription: data.evidenceDescription,
+        }),
+        ...(data.evidenceLinks !== undefined && { evidenceLinks: data.evidenceLinks }),
+        ...(data.achievementFormData !== undefined && {
+          achievementFormData: mergedFormData as object,
+        }),
+        ...(data.title !== undefined && { title: data.title }),
+        duplicateCheckResult: duplicateCheckResult as Prisma.InputJsonValue,
+        effectiveScore,
+        computedScore: newScore,
+      },
+    });
+
+    await ensureApplicableRolesBaseline(
+      achievement.kpiDefinitionId,
+      tenantId,
+      achievement.kpiDefinition.contributionRoles ?? null,
+      tx,
+    );
+
+    if (data.contributors !== undefined) {
+      const contributorResult = await setAchievementContributors({
+        achievementId,
+        tenantId,
+        kpiDefinitionId: achievement.kpiDefinitionId,
+        legacyContributionRoles: achievement.kpiDefinition.contributionRoles ?? null,
+        reportedByUserId: achievement.reportedByUserId,
+        oboReportedForUserId: achievement.oboReportedForUserId,
+        contributors: data.contributors,
+        tx,
+      });
+      const contributorError = contributorMutationToActionResult(contributorResult);
+      if (contributorError) {
+        return contributorError;
+      }
+    } else if (achievement.contributors.length === 0 && data.contributionRole !== undefined) {
+      const starter = await buildStarterContributorInputs({
+        tenantId,
+        kpiDefinitionId: achievement.kpiDefinitionId,
+        legacyContributionRoles: achievement.kpiDefinition.contributionRoles ?? null,
+        userId: getCreditedUserId({
+          reportedByUserId: achievement.reportedByUserId,
+          oboReportedForUserId: achievement.oboReportedForUserId,
+        }),
+        preferredRoleName: data.contributionRole,
+        tx,
+      });
+      const contributorResult = await setAchievementContributors({
+        achievementId,
+        tenantId,
+        kpiDefinitionId: achievement.kpiDefinitionId,
+        legacyContributionRoles: achievement.kpiDefinition.contributionRoles ?? null,
+        reportedByUserId: achievement.reportedByUserId,
+        oboReportedForUserId: achievement.oboReportedForUserId,
+        contributors: starter,
+        tx,
+      });
+      const contributorError = contributorMutationToActionResult(contributorResult);
+      if (contributorError) {
+        return contributorError;
+      }
+    }
+
+    const trailEntry = await appendSubmissionTrailEntry(tx, {
+      achievementId,
+      action: "CORRECTED",
+      actorUserId,
+      actorName,
+      actorRole: roleToTrailLabel(actorRole),
+      actorUnitName,
+      note: normalizedNote,
+      scoreAtAction: effectiveScore,
+      metadata: {
+        changedFieldKeys: changeSummary.changedFieldKeys,
+        beforeAfterSummary: changeSummary.beforeAfterSummary,
+        correctionReason: normalizedNote,
+        oldState: achievement.state,
+        newState: achievement.state,
+      },
+    });
+    correctionTrailId = trailEntry.id;
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId,
+        actorRole,
+        targetType: "Achievement",
+        targetId: achievementId,
+        action: "CORRECT",
+        previousState: {
+          state: achievement.state,
+          changedFieldKeys: changeSummary.changedFieldKeys,
+        } satisfies Prisma.InputJsonValue,
+        newState: {
+          state: achievement.state,
+          note: normalizedNote,
+          changedFieldKeys: changeSummary.changedFieldKeys,
+        } satisfies Prisma.InputJsonValue,
+      },
+    });
+
+    return {
+      status: "success",
+      message: "Verified achievement corrected.",
+    } satisfies KraKpiActionResult;
+  });
+
+  if (result.status !== "success") {
+    return result;
+  }
+
+  let rewardRefreshMessage = "";
+  if (shouldRefreshRewardsAfterCorrection(changeSummary.changedFieldKeys)) {
+    const rewardRefresh = await correctAchievementAndRefreshRewards({
+      achievementId,
+      tenantId,
+      actorUserId,
+      actorRole,
+      note: normalizedNote,
+    });
+    rewardRefreshMessage = ` Rewards updated: ${rewardRefresh.createdCount} created, ${rewardRefresh.updatedCount} updated, ${rewardRefresh.revokedCount} revoked.`;
+
+    if (
+      rewardRefresh.createdCount > 0
+      || rewardRefresh.updatedCount > 0
+      || rewardRefresh.revokedCount > 0
+    ) {
+      await prisma.$transaction(async (tx) => {
+        await appendSubmissionTrailEntry(tx, {
+          achievementId,
+          action: "REWARD_RECALCULATED",
+          actorUserId,
+          actorName,
+          actorRole: roleToTrailLabel(actorRole),
+          actorUnitName,
+          note: normalizedNote,
+          metadata: {
+            createdCount: rewardRefresh.createdCount,
+            updatedCount: rewardRefresh.updatedCount,
+            revokedCount: rewardRefresh.revokedCount,
+          },
+        });
+      });
+    }
+  }
+
+  try {
+    const reporterId = achievement.reportedByUserId;
+    if (reporterId !== actorUserId) {
+      await createNotification(
+        tenantId,
+        reporterId,
+        "ACHIEVEMENT_CORRECTED",
+        correctionTrailId
+          ? `achievement:${achievementId}:corrected:${correctionTrailId}`
+          : undefined,
+        "Verified achievement corrected",
+        `Your verified '${achievement.kpiDefinition.title}' achievement was corrected.${rewardRefreshMessage}`,
+        "Achievement",
+        achievementId,
+        "/my-kpis",
+      );
+    }
+  } catch (err) {
+    console.warn("[achievement-service] correctVerifiedAchievement notification failed:", err);
+  }
+
+  return {
+    status: "success",
+    message: `Verified achievement corrected.${rewardRefreshMessage}`,
+  };
+}
+
 // ── Update Achievement ───────────────────────────────────────────────────────
 
 export async function updateAchievement(
@@ -1065,10 +1605,10 @@ export async function updateAchievement(
       _count: { select: { stages: true } },
     },
   });
-  const mergedFormData =
-    data.achievementFormData !== undefined
-      ? data.achievementFormData
-      : ((achievement.achievementFormData as Record<string, unknown> | null) ?? undefined);
+  const mergedFormData = mergeAchievementFormPatch(
+    (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
+    data.achievementFormData,
+  );
   const formValidationError = validateAchievementFormData(
     (kpi?.achievementFormConfig as AchievementFormConfig | null) ?? null,
     mergedFormData,
@@ -1078,6 +1618,14 @@ export async function updateAchievement(
       status: "error",
       message: formValidationError,
     };
+  }
+
+  const contributionRoleError = validateLegacyContributionRoleSelection(
+    kpi?.contributionRoles ?? null,
+    data.contributionRole,
+  );
+  if (contributionRoleError) {
+    return { status: "error", message: contributionRoleError };
   }
 
   // Recompute score if actuals changed and we have a target allocation
@@ -1133,7 +1681,7 @@ export async function updateAchievement(
         }),
         ...(data.evidenceLinks !== undefined && { evidenceLinks: data.evidenceLinks }),
         ...(data.achievementFormData !== undefined && {
-          achievementFormData: data.achievementFormData as object,
+          achievementFormData: mergedFormData as object,
         }),
         ...(data.title !== undefined && { title: data.title }),
         effectiveScore,
@@ -1222,8 +1770,10 @@ export async function submitForVerification(
   achievementId: string,
   tenantId: string,
   actorUserId: string,
-  actorRole: Role
+  actorRole: Role,
+  note?: string | null,
 ): Promise<KraKpiActionResult> {
+  const submitNote = normalizeRemark(note);
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
     include: {
@@ -1334,6 +1884,7 @@ export async function submitForVerification(
     userId: actorUserId,
     userName: actorName,
     action: "submitted",
+    note: submitNote ?? undefined,
     at: new Date().toISOString(),
   };
 
@@ -1402,6 +1953,7 @@ export async function submitForVerification(
           externalData:
             (contributor.externalData as Record<string, unknown> | null) ?? undefined,
           contributorRoleId: contributor.contributorRoleId,
+          selectorTags: contributor.selectorTags ?? [],
           isExcludedFromReward: contributor.isExcludedFromReward,
           note: contributor.note ?? undefined,
         })),
@@ -1448,6 +2000,7 @@ export async function submitForVerification(
       actorName,
       actorRole: roleToTrailLabel(actorRole),
       actorUnitName,
+      note: submitNote,
       scoreAtAction: scoreForTrail,
     });
 
@@ -1460,7 +2013,7 @@ export async function submitForVerification(
         targetId: achievementId,
         action: "SUBMIT_FOR_VERIFICATION",
         previousState: { state: "DRAFT" },
-        newState: { state: "SUBMITTED" },
+        newState: { state: "SUBMITTED", note: submitNote },
       },
     });
 
@@ -1482,6 +2035,7 @@ export async function submitForVerification(
         tenantId,
         notifyIds,
         "ACHIEVEMENT_SUBMITTED",
+        `achievement:${achievementId}:submitted`,
         "Achievement submitted for review",
         `${actorName} submitted "${title}" for review`,
         "Achievement",
@@ -1506,6 +2060,13 @@ export async function verifyAchievement(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
+  const normalizedNote = normalizeRemark(note);
+  if (!approved && !normalizedNote) {
+    return {
+      status: "error",
+      message: "A remark is required when rejecting an achievement.",
+    };
+  }
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
     include: {
@@ -1587,7 +2148,7 @@ export async function verifyAchievement(
     userId: actorUserId,
     userName: actorName,
     action: approved ? "verified" : "not approved",
-    note: note ?? undefined,
+    note: normalizedNote ?? undefined,
     at: new Date().toISOString(),
   };
 
@@ -1635,8 +2196,8 @@ export async function verifyAchievement(
         state: newState,
         verifiedByUserId: approved ? actorUserId : null,
         verifiedAt: approved ? new Date() : null,
-        verificationNote: approved ? note : null,
-        rejectionReason: !approved ? (note ?? "No reason provided") : null,
+        verificationNote: approved ? normalizedNote : null,
+        rejectionReason: !approved ? normalizedNote : null,
         computedScore: approved ? finalScore : achievement.computedScore,
         effectiveScore: approved ? finalEffectiveScore : achievement.effectiveScore,
         verificationLog: [...existingLog, logEntry] as unknown as object[],
@@ -1647,12 +2208,12 @@ export async function verifyAchievement(
 
     await appendSubmissionTrailEntry(tx, {
       achievementId,
-      action: approved ? "APPROVED" : "REJECTED",
+      action: approved ? "VERIFIED" : "REJECTED",
       actorUserId,
       actorName,
       actorRole: roleToTrailLabel(actorRole),
       actorUnitName: actorUnitNameV,
-      note,
+      note: normalizedNote,
       scoreAtAction: approved
         ? (finalEffectiveScore ?? finalScore)
         : (achievement.effectiveScore
@@ -1669,7 +2230,7 @@ export async function verifyAchievement(
         targetId: achievementId,
         action: approved ? "VERIFY" : "REJECT",
         previousState: { state: achievement.state },
-        newState: { state: newState, note },
+        newState: { state: newState, note: normalizedNote },
       },
     });
   });
@@ -1687,6 +2248,7 @@ export async function verifyAchievement(
           tenantId,
           reporterId,
           "ACHIEVEMENT_APPROVED",
+          `achievement:${achievementId}:verified:${reporterId}`,
           "Achievement approved",
           `'${kpiTitle}' achievement has been approved!${scoreText}`,
           "Achievement",
@@ -1698,8 +2260,9 @@ export async function verifyAchievement(
           tenantId,
           reporterId,
           "ACHIEVEMENT_REJECTED",
+          `achievement:${achievementId}:rejected:${reporterId}`,
           "Achievement rejected",
-          `'${kpiTitle}' was rejected.${note ? ` Reason: ${note}` : ""}`,
+          `'${kpiTitle}' was rejected.${normalizedNote ? ` Reason: ${normalizedNote}` : ""}`,
           "Achievement",
           achievementId,
           "/my-kpis",
@@ -1741,6 +2304,7 @@ export async function recommendAchievement(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
+  const normalizedNote = normalizeRemark(note);
   const achievement = await prisma.achievement.findFirst({
     where: { id: achievementId, tenantId },
     include: {
@@ -1805,7 +2369,7 @@ export async function recommendAchievement(
       userId: actorUserId,
       userName: actorName,
       action: "recommended",
-      note: note ?? undefined,
+      note: normalizedNote ?? undefined,
       at: new Date().toISOString(),
     };
 
@@ -1822,7 +2386,7 @@ export async function recommendAchievement(
           state: "RECOMMENDED",
           recommendedByUserId: actorUserId,
           recommendedAt: new Date(),
-          recommendationNote: note,
+          recommendationNote: normalizedNote,
           verificationLog: [...existingLog, logEntry] as unknown as object[],
           currentVerifierUnitId: finalUnitId,
           currentVerifierUserId: nextVerifier,
@@ -1836,7 +2400,7 @@ export async function recommendAchievement(
         actorName,
         actorRole: roleToTrailLabel(actorRole),
         actorUnitName: actorUnitNameR,
-        note: note ?? "Recommended",
+        note: normalizedNote ?? "Recommended",
       });
 
       await tx.auditLog.create({
@@ -1848,7 +2412,7 @@ export async function recommendAchievement(
           targetId: achievementId,
           action: "RECOMMEND",
           previousState: { state: "SUBMITTED" },
-          newState: { state: "RECOMMENDED", note },
+          newState: { state: "RECOMMENDED", note: normalizedNote },
         },
       });
     });
@@ -1860,6 +2424,7 @@ export async function recommendAchievement(
           tenantId,
           notifyIds,
           "ACHIEVEMENT_RECOMMENDED",
+          `achievement:${achievementId}:recommended`,
           "Achievement recommended for verification",
           `${actorName} recommended '${achievement.kpiDefinition?.title ?? ""}' — ready for verification`,
           "Achievement",
@@ -1874,12 +2439,19 @@ export async function recommendAchievement(
     return { status: "success", message: "Achievement recommended for final verification." };
   }
 
+  if (!normalizedNote) {
+    return {
+      status: "error",
+      message: "A rejection remark is required.",
+    };
+  }
+
   const logEntry: VerificationLogEntry = {
     level: "REJECT",
     userId: actorUserId,
     userName: actorName,
     action: "rejected",
-    note: note ?? undefined,
+    note: normalizedNote,
     at: new Date().toISOString(),
   };
 
@@ -1890,7 +2462,7 @@ export async function recommendAchievement(
       where: { id: achievementId },
       data: {
         state: "REJECTED",
-        rejectionReason: note ?? "Rejected during recommendation",
+        rejectionReason: normalizedNote,
         verificationLog: [...existingLog, logEntry] as unknown as object[],
         currentVerifierUnitId: null,
         currentVerifierUserId: null,
@@ -1904,7 +2476,7 @@ export async function recommendAchievement(
       actorName,
       actorRole: roleToTrailLabel(actorRole),
       actorUnitName: actorUnitNameR,
-      note,
+      note: normalizedNote,
       scoreAtAction:
         achievement.effectiveScore
         ?? achievement.stageCompletionScore
@@ -1920,7 +2492,7 @@ export async function recommendAchievement(
         targetId: achievementId,
         action: "REJECT",
         previousState: { state: "SUBMITTED" },
-        newState: { state: "REJECTED", note },
+        newState: { state: "REJECTED", note: normalizedNote },
       },
     });
   });
@@ -1934,8 +2506,9 @@ export async function recommendAchievement(
         tenantId,
         reporterId,
         "ACHIEVEMENT_REJECTED",
+        `achievement:${achievementId}:recommendation-rejected:${reporterId}`,
         "Achievement rejected",
-        `Your '${kpiTitle}' submission was rejected. ${note ? `Reason: ${note}` : "Please revise and resubmit."}`,
+        `Your '${kpiTitle}' submission was rejected. Reason: ${normalizedNote}`,
         "Achievement",
         achievementId,
         "/my-kpis",
@@ -2046,6 +2619,7 @@ export async function withdrawAchievement(
         tenantId,
         notifyIds,
         "ACHIEVEMENT_WITHDRAWN",
+        `achievement:${achievementId}:withdrawn`,
         "Achievement withdrawn",
         `${actorName} withdrew a submission that was awaiting review.`,
         "Achievement",
@@ -2374,6 +2948,14 @@ export async function recordAdditionalAchievement(
   const formValidationError = validateAchievementFormData(formConfig, data.achievementFormData);
   if (formValidationError) {
     return { status: "error", message: formValidationError };
+  }
+
+  const contributionRoleError = validateLegacyContributionRoleSelection(
+    kpi.contributionRoles,
+    data.contributionRole,
+  );
+  if (contributionRoleError) {
+    return { status: "error", message: contributionRoleError };
   }
 
   // Compute score using defaultTarget if available (no allocation target)

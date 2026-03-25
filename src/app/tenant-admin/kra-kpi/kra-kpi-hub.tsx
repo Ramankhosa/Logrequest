@@ -12,6 +12,7 @@ import {
   Gift,
   Users,
   Handshake,
+  Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MeasurementConfig } from "@/lib/kra-kpi/shared";
@@ -26,6 +27,7 @@ import { PeriodDashboard } from "@/components/tenant/kra-kpi/period-dashboard";
 import { BenefitTypeManager } from "@/components/tenant/kra-kpi/benefit-type-manager";
 import { ContributorRoleManager } from "@/components/tenant/kra-kpi/contributor-role-manager";
 import { ExternalTemplateManager } from "@/components/tenant/kra-kpi/external-template-manager";
+import { RewardOpsConsole } from "@/components/tenant/kra-kpi/reward-ops-console";
 
 type Tab =
   | "periods"
@@ -37,6 +39,7 @@ type Tab =
   | "kpis"
   | "targets"
   | "achievements"
+  | "rewards"
   | "dashboard";
 
 const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
@@ -49,6 +52,7 @@ const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
   { key: "kpis", label: "KPIs", icon: BarChart3 },
   { key: "targets", label: "Targets", icon: Crosshair },
   { key: "achievements", label: "Achievements", icon: ClipboardCheck },
+  { key: "rewards", label: "Rewards", icon: Wallet },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
 ];
 
@@ -238,7 +242,7 @@ export function KraKpiHub() {
       </div>
 
       {/* Context selectors */}
-      {["kras", "kpis", "targets", "achievements", "dashboard"].includes(activeTab) && (
+      {["kras", "kpis", "targets", "achievements", "rewards", "dashboard"].includes(activeTab) && (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200/80 bg-white/60 px-4 py-3">
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Period</span>
@@ -252,7 +256,7 @@ export function KraKpiHub() {
             </select>
           </div>
 
-          {["kpis", "targets", "achievements"].includes(activeTab) && selectedPeriodId && (
+          {["kpis", "targets", "achievements", "rewards"].includes(activeTab) && selectedPeriodId && (
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">KRA</span>
               <select
@@ -266,7 +270,7 @@ export function KraKpiHub() {
             </div>
           )}
 
-          {["targets", "achievements"].includes(activeTab) && selectedKraId && (
+          {["targets", "achievements", "rewards"].includes(activeTab) && selectedKraId && (
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">KPI</span>
               <select
@@ -388,6 +392,19 @@ export function KraKpiHub() {
         {activeTab === "achievements" && !selectedPeriodId && (
           <div className="py-12 text-center text-sm text-slate-400">
             Select a period to view achievements
+          </div>
+        )}
+
+        {activeTab === "rewards" && selectedPeriodId && (
+          <RewardOpsConsole
+            periodId={selectedPeriodId}
+            kraDefinitionId={selectedKraId}
+            kpiDefinitionId={selectedKpiId}
+          />
+        )}
+        {activeTab === "rewards" && !selectedPeriodId && (
+          <div className="py-12 text-center text-sm text-slate-400">
+            Select a period to view reward operations
           </div>
         )}
 

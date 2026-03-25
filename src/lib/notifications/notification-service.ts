@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -7,6 +8,7 @@ export type NotificationView = {
   tenantId: string;
   userId: string;
   type: string;
+  eventKey: string | null;
   title: string;
   message: string;
   entityType: string | null;
@@ -89,6 +91,7 @@ export async function resolveAllocateeUserId(
 
 export type CreateNotificationInput = {
   type: string;
+  eventKey?: string;
   title: string;
   message: string;
   entityType?: string;
@@ -105,6 +108,7 @@ export async function createNotificationFromInput(
     tenantId,
     userId,
     data.type,
+    data.eventKey,
     data.title,
     data.message,
     data.entityType,
@@ -117,6 +121,7 @@ export async function createNotification(
   tenantId: string,
   userId: string,
   type: string,
+  eventKey: string | undefined,
   title: string,
   message: string,
   entityType?: string,
@@ -129,6 +134,7 @@ export async function createNotification(
         tenantId,
         userId,
         type,
+        eventKey: eventKey ?? null,
         title,
         message,
         entityType: entityType ?? null,
@@ -137,7 +143,13 @@ export async function createNotification(
       },
     });
   } catch (err) {
-    // Non-fatal — log warning, don't crash the main operation
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002" &&
+      eventKey
+    ) {
+      return;
+    }
     console.warn("[notification-service] Failed to create notification:", err);
   }
 }
@@ -148,6 +160,7 @@ export async function createBulkNotifications(
   tenantId: string,
   userIds: string[],
   type: string,
+  eventKey: string | undefined,
   title: string,
   message: string,
   entityType?: string,
@@ -162,12 +175,14 @@ export async function createBulkNotifications(
         tenantId,
         userId,
         type,
+        eventKey: eventKey ? `${eventKey}:${userId}` : null,
         title,
         message,
         entityType: entityType ?? null,
         entityId: entityId ?? null,
         linkUrl: linkUrl ?? null,
       })),
+      skipDuplicates: true,
     });
   } catch (err) {
     console.warn("[notification-service] Failed to create bulk notifications:", err);
@@ -212,6 +227,7 @@ export async function getNotifications(
       tenantId: n.tenantId,
       userId: n.userId,
       type: n.type,
+      eventKey: n.eventKey,
       title: n.title,
       message: n.message,
       entityType: n.entityType,

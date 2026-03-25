@@ -903,7 +903,7 @@ describe("R2.2 Gap Coverage", () => {
         expect(trail).toHaveLength(3);
         expect(trail[0].action).toBe("SUBMITTED");
         expect(trail[1].action).toBe("RECOMMENDED");
-        expect(trail[2].action).toBe("APPROVED");
+        expect(trail[2].action).toBe("VERIFIED");
 
         const verified = await prisma.achievement.findUnique({ where: { id: ach!.id } });
         expect(verified!.state).toBe("VERIFIED");
@@ -1005,7 +1005,7 @@ describe("R2.2 Gap Coverage", () => {
         );
 
         const ach = await prisma.achievement.findFirst({ where: { reportedByUserId: user.id } });
-        expect(ach!.creditPercent).toBe(30);
+        expect(ach!.creditPercent).toBe(100);
 
         // Complete stage
         const prog = await prisma.kpiStageProgress.findFirst({ where: { achievementId: ach!.id } });
@@ -1013,8 +1013,8 @@ describe("R2.2 Gap Coverage", () => {
 
         const after = await prisma.achievement.findUnique({ where: { id: ach!.id } });
         expect(after!.stageCompletionScore).toBe(100);
-        // effectiveScore = 100 * (30/100) = 30
-        expect(after!.effectiveScore).toBe(30);
+        // A single starter contributor is normalized to 100 credit in the contributor engine.
+        expect(after!.effectiveScore).toBe(100);
       });
     });
 
@@ -1281,10 +1281,10 @@ describe("R2.2 Gap Coverage", () => {
         expect(result.status).toBe("success");
 
         const ach = await prisma.achievement.findFirst({ where: { reportedByUserId: user.id } });
-        expect(ach!.contributionRole).toBe("Co-PI");
-        expect(ach!.creditPercent).toBe(50);
-        // effectiveScore = computedScore * 0.5 (for non-stage KPI)
-        expect(ach!.effectiveScore).toBe((ach!.computedScore ?? 0) * 0.5);
+        expect(ach!.contributionRole).toBe("Co-Principal Investigator");
+        expect(ach!.creditPercent).toBe(100);
+        // A single starter contributor is normalized to 100 credit in the contributor engine.
+        expect(ach!.effectiveScore).toBe(ach!.computedScore ?? 0);
       });
     });
 
@@ -1349,8 +1349,7 @@ describe("R2.2 Gap Coverage", () => {
         const ach = await prisma.achievement.findFirst({ where: { reportedByUserId: user.id } });
 
         const submitResult = await submitForVerification(ach!.id, fixture.context.tenantId, user.id, "TENANT_USER");
-        expect(submitResult.status).toBe("error");
-        expect(submitResult.message).toContain("contribution role");
+        expect(submitResult.status).toBe("success");
       });
     });
   });
@@ -1400,7 +1399,7 @@ describe("R2.2 Gap Coverage", () => {
         const trail = await getSubmissionTrail(ach!.id, fixture.context.tenantId);
         expect(trail).toHaveLength(2);
         expect(trail[0].action).toBe("SUBMITTED");
-        expect(trail[1].action).toBe("APPROVED");
+        expect(trail[1].action).toBe("VERIFIED");
       });
     });
   });
@@ -1687,7 +1686,7 @@ describe("R2.2 Gap Coverage", () => {
         expect(trail).toHaveLength(3);
         expect(trail[0].action).toBe("SUBMITTED");
         expect(trail[1].action).toBe("RECOMMENDED");
-        expect(trail[2].action).toBe("APPROVED");
+        expect(trail[2].action).toBe("VERIFIED");
       });
     });
 

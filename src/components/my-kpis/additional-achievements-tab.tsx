@@ -537,8 +537,11 @@ export function AdditionalAchievementsTab({ periodId, periodState, onRefresh }: 
 
                 {isExpanded && (
                   <div className="space-y-3 border-t border-gray-100 pt-3">
-                    {achievement.verificationLog.length > 0 && (
-                      <MyAchievementTrail log={achievement.verificationLog} />
+                    {(achievement.submissionTrail.length > 0 || achievement.verificationLog.length > 0) && (
+                      <MyAchievementTrail
+                        trail={achievement.submissionTrail}
+                        log={achievement.verificationLog}
+                      />
                     )}
 
                     {achievement.achievementFormData &&

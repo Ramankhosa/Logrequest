@@ -13,6 +13,8 @@ import {
   CheckCircle2,
   XCircle,
   Calendar,
+  Pencil,
+  Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -29,6 +31,11 @@ type NotificationType =
   | "ACHIEVEMENT_REJECTED"
   | "ACHIEVEMENT_WITHDRAWN"
   | "ACHIEVEMENT_RESUBMITTED"
+  | "ACHIEVEMENT_CORRECTED"
+  | "REWARD_DRAFT"
+  | "REWARD_PENDING"
+  | "REWARD_RELEASED"
+  | "REWARD_REVOKED"
   | "PERIOD_STATE_CHANGED";
 
 type NotificationItem = {
@@ -54,6 +61,11 @@ const NOTIFICATION_ICONS: Record<string, { icon: React.ElementType; color: strin
   ACHIEVEMENT_REJECTED: { icon: XCircle, color: "text-red-500" },
   ACHIEVEMENT_WITHDRAWN: { icon: Undo2, color: "text-amber-500" },
   ACHIEVEMENT_RESUBMITTED: { icon: RefreshCw, color: "text-blue-500" },
+  ACHIEVEMENT_CORRECTED: { icon: Pencil, color: "text-amber-500" },
+  REWARD_DRAFT: { icon: Wallet, color: "text-slate-500" },
+  REWARD_PENDING: { icon: Wallet, color: "text-amber-500" },
+  REWARD_RELEASED: { icon: Wallet, color: "text-green-500" },
+  REWARD_REVOKED: { icon: Wallet, color: "text-red-500" },
   PERIOD_STATE_CHANGED: { icon: Calendar, color: "text-purple-500" },
 };
 

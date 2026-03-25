@@ -1,50 +1,119 @@
 "use client";
 
-import type { VerificationLogEntry } from "@/lib/kra-kpi/shared";
+import type { SubmissionTrailView, VerificationLogEntry } from "@/lib/kra-kpi/shared";
 
 type Props = {
-  log: VerificationLogEntry[];
+  trail?: SubmissionTrailView[];
+  log?: VerificationLogEntry[];
 };
 
-const ACTION_ICONS: Record<string, string> = {
-  submitted: "📝",
-  recommended: "👍",
-  verified: "✅",
-  "not approved": "❌",
-  "sent back": "↩️",
-  withdrawn: "⏪",
+type TimelineEntry = {
+  id: string;
+  action: string;
+  note: string | null;
+  actorName: string;
+  actorRole: string | null;
+  at: Date;
+  metadata: Record<string, unknown> | null;
 };
 
-export function MyAchievementTrail({ log }: Props) {
-  if (log.length === 0) return null;
+const ACTION_MARKERS: Record<string, string> = {
+  SUBMITTED: "S",
+  RESUBMITTED: "R",
+  RECOMMENDED: "R",
+  VERIFIED: "V",
+  REJECTED: "X",
+  WITHDRAWN: "W",
+  CORRECTED: "C",
+  REWARD_RECALCULATED: "$",
+  REWARD_REVOKED: "!",
+  REWARD_RELEASED: "$",
+  REWARD_MARKED_PENDING: "P",
+  submitted: "S",
+  recommended: "R",
+  verified: "V",
+  "not approved": "X",
+  "sent back": "B",
+  withdrawn: "W",
+};
+
+function prettifyAction(action: string) {
+  return action
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function normalizeEntries(trail?: SubmissionTrailView[], log?: VerificationLogEntry[]): TimelineEntry[] {
+  if (trail && trail.length > 0) {
+    return trail.map((entry) => ({
+      id: entry.id,
+      action: entry.action,
+      note: entry.note,
+      actorName: entry.actorName,
+      actorRole: entry.actorRole,
+      at: entry.createdAt,
+      metadata: entry.metadata,
+    }));
+  }
+
+  return (log ?? []).map((entry, index) => ({
+    id: `${entry.userId}-${entry.at}-${index}`,
+    action: entry.action,
+    note: entry.note ?? null,
+    actorName: entry.userName,
+    actorRole: entry.level,
+    at: new Date(entry.at),
+    metadata: null,
+  }));
+}
+
+export function MyAchievementTrail({ trail, log }: Props) {
+  const entries = normalizeEntries(trail, log);
+  if (entries.length === 0) return null;
 
   return (
     <div className="space-y-2">
-      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-        Verification Trail
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+        Activity Timeline
       </h4>
-      <div className="relative border-l-2 border-gray-200 pl-4 space-y-3">
-        {log.map((entry, i) => {
-          const date = new Date(entry.at);
-          const icon = ACTION_ICONS[entry.action] ?? "•";
+      <div className="relative space-y-3 border-l-2 border-gray-200 pl-4">
+        {entries.map((entry) => {
+          const changedFields = Array.isArray(entry.metadata?.changedFieldKeys)
+            ? entry.metadata.changedFieldKeys.filter(
+                (value): value is string => typeof value === "string" && value.trim().length > 0,
+              )
+            : [];
+
           return (
-            <div key={i} className="relative">
-              <div className="absolute -left-[1.375rem] top-0.5 h-3 w-3 rounded-full bg-white border-2 border-gray-300" />
-              <div className="text-xs text-gray-600">
-                <span className="mr-1">{icon}</span>
-                <span className="font-medium">
-                  {date.toLocaleDateString("en-IN", {
-                    month: "short",
-                    day: "numeric",
-                  })}
-                </span>
-                {" — "}
-                <span>{entry.userName}</span>
-                {" "}
-                <span className="text-gray-500">{entry.action}</span>
-                {entry.note && (
-                  <span className="text-gray-500">: &ldquo;{entry.note}&rdquo;</span>
-                )}
+            <div key={entry.id} className="relative">
+              <div className="absolute -left-[1.375rem] top-0.5 flex h-3 w-3 items-center justify-center rounded-full border-2 border-gray-300 bg-white text-[8px] font-semibold text-gray-500" />
+              <div className="space-y-1 text-xs text-gray-600">
+                <div>
+                  <span className="mr-1 font-semibold text-gray-500">
+                    {ACTION_MARKERS[entry.action] ?? "•"}
+                  </span>
+                  <span className="font-medium">
+                    {entry.at.toLocaleDateString("en-IN", {
+                      month: "short",
+                      day: "numeric",
+                    })}
+                  </span>
+                  {" — "}
+                  <span>{entry.actorName}</span>
+                  {entry.actorRole ? (
+                    <span className="text-gray-400"> ({entry.actorRole})</span>
+                  ) : null}
+                  {" "}
+                  <span className="text-gray-500">{prettifyAction(entry.action)}</span>
+                  {entry.note ? (
+                    <span className="text-gray-500">: &ldquo;{entry.note}&rdquo;</span>
+                  ) : null}
+                </div>
+                {changedFields.length > 0 ? (
+                  <div className="text-[11px] text-gray-500">
+                    Changed: {changedFields.join(", ")}
+                  </div>
+                ) : null}
               </div>
             </div>
           );

@@ -210,7 +210,7 @@ export async function createKra(
     };
   }
 
-  await prisma.$transaction(async (tx) => {
+  const created = await prisma.$transaction(async (tx) => {
     const kra = await tx.kraDefinition.create({
       data: {
         tenantId,
@@ -235,9 +235,15 @@ export async function createKra(
         newState: { title: data.title, weightage: data.weightage },
       },
     });
+
+    return kra;
   });
 
-  return { status: "success", message: `KRA "${data.title}" created.` };
+  return {
+    status: "success",
+    message: `KRA "${data.title}" created.`,
+    id: created.id,
+  };
 }
 
 // ── Update KRA ───────────────────────────────────────────────────────────────

@@ -423,7 +423,7 @@ export async function createKpi(
     return { status: "error", message: rolesError };
   }
 
-  await prisma.$transaction(async (tx) => {
+  const created = await prisma.$transaction(async (tx) => {
     const kpi = await tx.kpiDefinition.create({
       data: {
         kraDefinitionId: data.kraDefinitionId,
@@ -482,9 +482,15 @@ export async function createKpi(
         },
       },
     });
+
+    return kpi;
   });
 
-  return { status: "success", message: `KPI "${data.title}" created.` };
+  return {
+    status: "success",
+    message: `KPI "${data.title}" created.`,
+    id: created.id,
+  };
 }
 
 // ── Update KPI ───────────────────────────────────────────────────────────────

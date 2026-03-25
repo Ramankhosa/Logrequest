@@ -338,8 +338,10 @@ enum KpiRewardEmptyShareHandling {
 }
 
 enum ContributorRewardState {
-  CALCULATED
-  CANCELLED
+  DRAFT
+  PENDING
+  RELEASED
+  REVOKED
 }
 
 enum PersonnelStatus {
@@ -427,6 +429,7 @@ model Tenant {
   policy                TenantPolicy?
   roleDefinitions       OrgRoleDefinition[]
   notifications         Notification[]
+  contributorRewardEvents ContributorRewardEvent[]
   personnelPolicy       TenantPersonnelPolicy?
   leaveTypeDefinitions  LeaveTypeDefinition[]
   leaveRecords          LeaveRecord[]
@@ -478,6 +481,7 @@ model User {
   memberships         Membership[]
   achievementContributions AchievementContributor[] @relation("AchievementContributorUser")
   contributorRewards  ContributorReward[]  @relation("ContributorRewardUser")
+  contributorRewardEvents ContributorRewardEvent[]
   invitations         Invitation[]
   socialAccounts      SocialAccount[]
   passwordResetTokens PasswordResetToken[]
@@ -1371,7 +1375,24 @@ model ContributorReward {
   rewardTierId            String?
   rewardComponentId       String
   recurrenceKey           String?
-  state                   ContributorRewardState @default(CALCULATED)
+  state                   ContributorRewardState @default(DRAFT)
+  statusRemark            String?
+  releasedAt              DateTime?
+  releasedById            String?
+  releaseReference        String?
+  revokedAt               DateTime?
+  revokedById             String?
+  revocationReason        String?
+  supersedesRewardId      String?
+  replacedByRewardId      String?
+  rewardOwnerUnitId       String?
+  rewardOwnerUnitName     String?
+  rewardOwnerUnitPath     String?
+  rewardOwnerUnitTypeKey  String?
+  reporterUnitId          String?
+  reporterUnitName        String?
+  reporterUnitPath        String?
+  reporterUnitTypeKey     String?
   baseAmount              Float
   finalAmount             Float
   roundingAdjustment      Float                  @default(0)
@@ -1387,12 +1408,38 @@ model ContributorReward {
   benefitType             BenefitType            @relation(fields: [benefitTypeId], references: [id], onDelete: Restrict)
   rewardTier              KpiRewardTier?         @relation(fields: [rewardTierId], references: [id], onDelete: SetNull)
   rewardComponent         KpiRewardComponent     @relation(fields: [rewardComponentId], references: [id], onDelete: Restrict)
+  events                  ContributorRewardEvent[]
 
   @@index([tenantId, periodId, kpiDefinitionId])
   @@index([achievementId])
   @@index([achievementContributorId])
   @@index([contributorUserId])
   @@index([rewardComponentId])
+  @@index([tenantId, state, periodId])
+  @@index([tenantId, rewardOwnerUnitId, periodId])
+  @@index([tenantId, reporterUnitId, periodId])
+  @@index([tenantId, releasedAt])
+}
+
+model ContributorRewardEvent {
+  id          String                  @id @default(cuid())
+  rewardId    String
+  tenantId    String
+  actorUserId String?
+  actorRole   Role?
+  action      String
+  fromState   ContributorRewardState?
+  toState     ContributorRewardState?
+  note        String?
+  metadata    Json?
+  createdAt   DateTime                @default(now())
+  reward      ContributorReward       @relation(fields: [rewardId], references: [id], onDelete: Cascade)
+  tenant      Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actorUser   User?                   @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([rewardId, createdAt])
+  @@index([tenantId, createdAt])
+  @@index([actorUserId])
 }
 
 model ReviewCycle {
@@ -1418,6 +1465,7 @@ model Notification {
   tenantId    String
   userId      String   // recipient
   type        String   // "KPI_ALLOCATED", "ACHIEVEMENT_VERIFIED", etc.
+  eventKey    String?
   title       String
   message     String
   entityType  String?  // "Achievement", "TargetAllocation"
@@ -1430,6 +1478,7 @@ model Notification {
 
   @@index([userId, isRead, createdAt])
   @@index([tenantId, userId])
+  @@unique([tenantId, userId, eventKey])
 }
 
 // ── Module 3: Personnel Lifecycle ────────────────────────────────────────────

@@ -1,8 +1,16 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { prisma } from "@/lib/prisma";
-import { recordAchievement, recommendAchievement, submitForVerification, verifyAchievement } from "@/lib/kra-kpi/achievement-service";
+import {
+  getSubmissionTrail,
+  recordAchievement,
+  recommendAchievement,
+  submitForVerification,
+  verifyAchievement,
+} from "@/lib/kra-kpi/achievement-service";
 import { getMyAllocations, getMyReviewQueue } from "@/lib/kra-kpi/my-kpi-service";
 import { transitionPeriodState } from "@/lib/kra-kpi/period-service";
+import { listContributorRewards } from "@/lib/kra-kpi/reward-ops-service";
 import { createAllocation } from "@/lib/kra-kpi/target-service";
 
 const TEST_PREFIX = "R11A_SEEDED_TEST";
@@ -10,14 +18,18 @@ const DEMO_DOMAIN = "demo-university.local.test";
 const TENANT_CODE = "DEMO_UNIV";
 const PERIOD_CODE = "AY2025_26";
 const KPI_TITLE = "Seed: Indexed Publications";
+const R43_KPI_TITLE = "Seed: Publication Incentive Workflow";
+const R43_ACHIEVEMENT_PREFIX = "Seed R4.3";
 const PARENT_ALLOCATION_NOTE = "seed-parent-cse-publications";
 
 type SeedFixture = {
   tenantId: string;
   periodId: string;
   kpiId: string;
+  r43KpiId: string;
   parentAllocationId: string;
   ownerId: string;
+  facultyOneId: string;
   demoEmployeeId: string;
   facultyTwoId: string;
   cseHeadId: string;
@@ -26,19 +38,18 @@ type SeedFixture = {
 
 let seed: SeedFixture;
 let currentPrefix = "";
+const execFileAsync = promisify(execFile);
 
 function seededEmail(localPart: string) {
   return `${localPart}@${DEMO_DOMAIN}`;
 }
 
-function runSeedScripts() {
-  execFileSync("node", ["prisma/seedscript.mjs"], {
+async function runSeedScripts() {
+  await execFileAsync("node", ["prisma/seedscript.mjs"], {
     cwd: process.cwd(),
-    stdio: "pipe",
   });
-  execFileSync("node", ["prisma/seed.mjs"], {
+  await execFileAsync("node", ["prisma/seed.mjs"], {
     cwd: process.cwd(),
-    stdio: "pipe",
   });
 }
 
@@ -71,6 +82,17 @@ async function loadSeedFixture(): Promise<SeedFixture> {
     select: { id: true },
   });
   expect(kpi).toBeTruthy();
+  const r43Kpi = await prisma.kpiDefinition.findFirst({
+    where: {
+      kraDefinition: {
+        tenantId: tenant!.id,
+        periodId: period!.id,
+      },
+      title: R43_KPI_TITLE,
+    },
+    select: { id: true },
+  });
+  expect(r43Kpi).toBeTruthy();
 
   const parentAllocation = await prisma.targetAllocation.findFirst({
     where: {
@@ -86,6 +108,7 @@ async function loadSeedFixture(): Promise<SeedFixture> {
       officialEmail: {
         in: [
           seededEmail("owner"),
+          seededEmail("faculty1"),
           seededEmail("employee"),
           seededEmail("faculty2"),
           seededEmail("cse.head"),
@@ -98,6 +121,7 @@ async function loadSeedFixture(): Promise<SeedFixture> {
   const userMap = new Map(users.map((user) => [user.officialEmail, user.id]));
 
   expect(userMap.get(seededEmail("owner"))).toBeTruthy();
+  expect(userMap.get(seededEmail("faculty1"))).toBeTruthy();
   expect(userMap.get(seededEmail("employee"))).toBeTruthy();
   expect(userMap.get(seededEmail("faculty2"))).toBeTruthy();
   expect(userMap.get(seededEmail("cse.head"))).toBeTruthy();
@@ -107,8 +131,10 @@ async function loadSeedFixture(): Promise<SeedFixture> {
     tenantId: tenant!.id,
     periodId: period!.id,
     kpiId: kpi!.id,
+    r43KpiId: r43Kpi!.id,
     parentAllocationId: parentAllocation!.id,
     ownerId: userMap.get(seededEmail("owner"))!,
+    facultyOneId: userMap.get(seededEmail("faculty1"))!,
     demoEmployeeId: userMap.get(seededEmail("employee"))!,
     facultyTwoId: userMap.get(seededEmail("faculty2"))!,
     cseHeadId: userMap.get(seededEmail("cse.head"))!,
@@ -233,7 +259,7 @@ async function recordAndSubmitSeededAchievement(options: {
 
 describe("R1.1a seeded integration", () => {
   beforeAll(async () => {
-    runSeedScripts();
+    await runSeedScripts();
     seed = await loadSeedFixture();
     await cleanupArtifacts(TEST_PREFIX);
   }, 120_000);
@@ -449,5 +475,211 @@ describe("R1.1a seeded integration", () => {
 
     expect(recordResult.status).toBe("error");
     expect(recordResult.message).toContain("Target not set yet");
+  });
+
+  test("seeds the R4.3 publication KPI with dynamic workflow and reward configuration", async () => {
+    const r43Kpi = await prisma.kpiDefinition.findUnique({
+      where: { id: seed.r43KpiId },
+      include: {
+        rewardTiers: {
+          include: { rules: true },
+          orderBy: [{ priority: "asc" }, { code: "asc" }],
+        },
+        rewardComponents: {
+          include: { benefitType: true, distributions: { orderBy: { sortOrder: "asc" } } },
+          orderBy: [{ sortOrder: "asc" }, { code: "asc" }],
+        },
+        applicableRoles: {
+          include: { contributorRole: true },
+          orderBy: { sortOrder: "asc" },
+        },
+        contributorConfig: true,
+      },
+    });
+
+    expect(r43Kpi).toBeTruthy();
+    expect(r43Kpi?.title).toBe(R43_KPI_TITLE);
+    expect(r43Kpi?.participantMode).toBe("OPTIONAL_TEAM");
+    expect(r43Kpi?.rewardRecurrencePolicy).toBe("ONCE_PER_UNIQUE_KEY");
+    expect(r43Kpi?.policyDateFieldKey).toBe("publicationDate");
+    expect(r43Kpi?.achievementTemplateKey).toBe("PUBLICATION");
+
+    const formConfig = (r43Kpi?.achievementFormConfig ?? {}) as {
+      fields?: Array<Record<string, unknown>>;
+    };
+    const fields = formConfig.fields ?? [];
+    const ugcReferenceField = fields.find((field) => field.key === "ugcCareReference");
+    expect(fields.some((field) => field.key === "doi")).toBe(true);
+    expect(fields.some((field) => field.key === "indexing")).toBe(true);
+    expect(fields.some((field) => field.key === "journalTier")).toBe(true);
+    expect(ugcReferenceField).toMatchObject({
+      key: "ugcCareReference",
+      visibilityRules: [{ fieldKey: "indexing", operator: "has_any", value: ["UGC CARE List"] }],
+      requiredRules: [{ fieldKey: "indexing", operator: "has_any", value: ["UGC CARE List"] }],
+    });
+
+    expect(r43Kpi?.contributorConfig).toMatchObject({
+      allowExternalContributors: true,
+      duplicateCheckFields: ["doi"],
+      creditSumMode: "MUST_EQUAL_100",
+    });
+    expect(r43Kpi?.applicableRoles.map((row) => row.contributorRole.code)).toEqual([
+      "LEAD_AUTHOR",
+      "CO_AUTHOR",
+      "CORRESPONDING",
+    ]);
+
+    expect(r43Kpi?.rewardTiers.map((row) => row.code)).toEqual(["Q1", "Q2", "UGC_CARE"]);
+    expect(r43Kpi?.rewardTiers.every((tier) => tier.rules.some((rule) => rule.fieldKey === "journalTier"))).toBe(true);
+    expect(r43Kpi?.rewardComponents).toHaveLength(6);
+    expect(
+      r43Kpi?.rewardComponents.every(
+        (component) =>
+          component.distributions.length === 2
+          && component.distributions[0]?.sharePercent === 70
+          && component.distributions[1]?.sharePercent === 30,
+      ),
+    ).toBe(true);
+  });
+
+  test("seeds workflow remarks, correction trail, and notifications for the new interfaces", async () => {
+    const achievements = await prisma.achievement.findMany({
+      where: {
+        tenantId: seed.tenantId,
+        kpiDefinitionId: seed.r43KpiId,
+        title: { startsWith: R43_ACHIEVEMENT_PREFIX },
+      },
+      select: {
+        id: true,
+        title: true,
+        state: true,
+        currentVerifierUserId: true,
+        rejectionReason: true,
+        recommendationNote: true,
+      },
+      orderBy: { title: "asc" },
+    });
+
+    expect(achievements).toHaveLength(7);
+    expect(achievements.map((row) => row.state)).toEqual(
+      expect.arrayContaining(["SUBMITTED", "RECOMMENDED", "REJECTED", "VERIFIED"]),
+    );
+
+    const pendingRecommendation = achievements.find(
+      (row) => row.title === "Seed R4.3 Pending Recommendation",
+    );
+    const pendingVerification = achievements.find(
+      (row) => row.title === "Seed R4.3 Pending Verification",
+    );
+    const rejectedPublication = achievements.find(
+      (row) => row.title === "Seed R4.3 Rejected Publication",
+    );
+    const correctedPublication = achievements.find(
+      (row) => row.title === "Seed R4.3 Corrected Publication",
+    );
+
+    expect(pendingRecommendation?.currentVerifierUserId).toBe(seed.eceHeadId);
+    expect(pendingVerification?.currentVerifierUserId).toBe(seed.cseHeadId);
+    expect(rejectedPublication?.rejectionReason).toContain("publisher confirmation letter");
+    expect(pendingVerification?.recommendationNote).toContain("Ready for final verification");
+
+    const pendingTrail = await getSubmissionTrail(pendingRecommendation!.id, seed.tenantId);
+    expect(pendingTrail.map((row) => row.action)).toEqual([
+      "SUBMITTED",
+      "REJECTED",
+      "RESUBMITTED",
+      "SUBMITTED",
+    ]);
+    expect(pendingTrail[1]?.note).toContain("revised indexing proof");
+
+    const correctedTrail = await getSubmissionTrail(correctedPublication!.id, seed.tenantId);
+    expect(correctedTrail.map((row) => row.action)).toEqual([
+      "SUBMITTED",
+      "RECOMMENDED",
+      "VERIFIED",
+      "CORRECTED",
+      "REWARD_REVOKED",
+      "REWARD_RECALCULATED",
+    ]);
+    expect(correctedTrail[3]?.metadata).toMatchObject({
+      changedFieldKeys: ["journalTier", "evidenceDescription"],
+    });
+
+    const notifications = await prisma.notification.findMany({
+      where: {
+        tenantId: seed.tenantId,
+        eventKey: { startsWith: "seed:r43:" },
+      },
+      select: {
+        type: true,
+        userId: true,
+        eventKey: true,
+        entityId: true,
+      },
+    });
+
+    expect(notifications.length).toBeGreaterThanOrEqual(7);
+    expect(notifications.map((row) => row.type)).toEqual(
+      expect.arrayContaining([
+        "ACHIEVEMENT_SUBMITTED",
+        "ACHIEVEMENT_RECOMMENDED",
+        "ACHIEVEMENT_REJECTED",
+        "ACHIEVEMENT_CORRECTED",
+        "REWARD_PENDING",
+        "REWARD_RELEASED",
+        "REWARD_REVOKED",
+      ]),
+    );
+    expect(notifications.some((row) => row.userId === seed.eceHeadId)).toBe(true);
+    expect(notifications.some((row) => row.userId === seed.cseHeadId)).toBe(true);
+    expect(notifications.some((row) => row.userId === seed.facultyOneId)).toBe(true);
+  });
+
+  test("seeds reward console scenarios across draft, pending, released, and revoked states", async () => {
+    const rewardConsole = await listContributorRewards(seed.tenantId, {
+      kpiDefinitionId: seed.r43KpiId,
+      limit: 100,
+    });
+
+    expect(rewardConsole.totalRows).toBeGreaterThanOrEqual(12);
+    expect(rewardConsole.rewards.map((row) => row.state)).toEqual(
+      expect.arrayContaining(["DRAFT", "PENDING", "RELEASED", "REVOKED"]),
+    );
+    expect(rewardConsole.totals.map((row) => row.benefitTypeCode).sort()).toEqual([
+      "LEAVE_POINTS",
+      "MONETARY",
+    ]);
+
+    const releasedSingleAuthorRewards = rewardConsole.rewards.filter(
+      (row) =>
+        row.state === "RELEASED"
+        && row.rewardTierCode === "UGC_CARE"
+        && row.reportedByUserId === seed.demoEmployeeId,
+    );
+    expect(releasedSingleAuthorRewards).toHaveLength(2);
+    expect(
+      releasedSingleAuthorRewards.find((row) => row.benefitTypeCode === "MONETARY")?.finalAmount,
+    ).toBe(5000);
+    expect(
+      releasedSingleAuthorRewards.find((row) => row.benefitTypeCode === "LEAVE_POINTS")?.finalAmount,
+    ).toBe(5);
+
+    const replacementRewards = rewardConsole.rewards.filter(
+      (row) =>
+        row.state === "DRAFT"
+        && row.rewardTierCode === "Q2"
+        && row.supersedesRewardId != null,
+    );
+    expect(replacementRewards.length).toBeGreaterThanOrEqual(2);
+    expect(replacementRewards.every((row) => row.events.some((event) => event.action === "GENERATED"))).toBe(true);
+
+    const revokedRewards = rewardConsole.rewards.filter(
+      (row) =>
+        row.state === "REVOKED"
+        && row.rewardTierCode === "Q1"
+        && row.replacedByRewardId != null,
+    );
+    expect(revokedRewards.length).toBeGreaterThanOrEqual(2);
+    expect(revokedRewards.every((row) => row.events.some((event) => event.action === "REVOKED"))).toBe(true);
   });
 });

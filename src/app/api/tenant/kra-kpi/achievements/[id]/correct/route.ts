@@ -2,9 +2,16 @@ import type { Role } from "@prisma/client";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { submitForVerification } from "@/lib/kra-kpi/achievement-service";
+import {
+  correctVerifiedAchievement,
+  type UpdateAchievementInput,
+} from "@/lib/kra-kpi/achievement-service";
 
-export async function POST(
+type CorrectAchievementBody = UpdateAchievementInput & {
+  note?: string;
+};
+
+export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -19,19 +26,24 @@ export async function POST(
 
   const { id } = await params;
 
-  let body: { note?: string } | null = null;
+  let body: CorrectAchievementBody;
   try {
-    body = (await request.json()) as { note?: string };
+    body = (await request.json()) as CorrectAchievementBody;
   } catch {
-    body = null;
+    return NextResponse.json(
+      { status: "error", message: "Invalid request body." },
+      { status: 400 },
+    );
   }
 
-  const result = await submitForVerification(
+  const { note, ...input } = body;
+  const result = await correctVerifiedAchievement(
     id,
     session.user.tenantId,
+    input,
+    note ?? null,
     session.user.id,
     session.user.role as Role,
-    body?.note ?? null,
   );
 
   return NextResponse.json(result, {
