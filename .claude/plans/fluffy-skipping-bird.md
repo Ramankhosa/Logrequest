@@ -265,7 +265,7 @@ The dashboard is a **single page** (`/dashboard`) with a tab bar. Tabs are shown
 | **Rewards** | `hasApprovalAuthority` OR tenant admin | Reward pipeline scoped to visible units |
 | **Notifications** | Always | Own notifications |
 
-### 1.2 New page: `src/app/dashboard/page.tsx`
+### 1.2 New page: `src/app/kpi-dashboard/page.tsx` (Finding 1 fix: `/kpi-dashboard` not `/dashboard`)
 
 Server component that:
 1. Gets session user
