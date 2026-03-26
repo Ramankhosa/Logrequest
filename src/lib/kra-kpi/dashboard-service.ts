@@ -16,7 +16,7 @@ function buildEffectiveUnitFilter(scopeUnitIds: string[] | "ALL" | undefined): P
           orgAssignments: {
             some: {
               unitId: { in: scopeUnitIds },
-              assignmentType: "PRIMARY",
+              isPrimary: true,
             },
           },
         },

@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
 import { getStageBottleneckAnalysis } from "@/lib/kra-kpi/dashboard-service";
+import { resolveUserDashboardScope } from "@/lib/org-structure/scope-resolver";
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -22,7 +23,8 @@ export async function GET(request: Request) {
     );
   }
 
-  const result = await getStageBottleneckAnalysis(session.user.tenantId, periodId, kpiId);
+  const scope = await resolveUserDashboardScope(session.user.tenantId, session.user.id);
+  const result = await getStageBottleneckAnalysis(session.user.tenantId, periodId, kpiId, scope.visibleUnitIds);
   if (!result) {
     return NextResponse.json(
       { status: "error", message: "KPI not found." },

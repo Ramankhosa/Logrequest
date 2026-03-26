@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
 import { getAttentionItems } from "@/lib/kra-kpi/dashboard-service";
+import { resolveUserDashboardScope } from "@/lib/org-structure/scope-resolver";
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -21,6 +22,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const items = await getAttentionItems(session.user.tenantId, periodId);
+  const scope = await resolveUserDashboardScope(session.user.tenantId, session.user.id);
+  const items = await getAttentionItems(session.user.tenantId, periodId, scope.visibleUnitIds);
   return NextResponse.json(items);
 }

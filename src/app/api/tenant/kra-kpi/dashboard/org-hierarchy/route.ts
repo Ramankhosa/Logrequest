@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
 import { getOrgHierarchyStats } from "@/lib/kra-kpi/dashboard-service";
+import { resolveUserDashboardScope } from "@/lib/org-structure/scope-resolver";
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -21,7 +22,8 @@ export async function GET(request: Request) {
     );
   }
 
+  const scope = await resolveUserDashboardScope(session.user.tenantId, session.user.id);
   const parentUnitId = searchParams.get("parentUnitId") ?? undefined;
-  const stats = await getOrgHierarchyStats(session.user.tenantId, periodId, parentUnitId);
+  const stats = await getOrgHierarchyStats(session.user.tenantId, periodId, parentUnitId, scope.visibleUnitIds);
   return NextResponse.json(stats);
 }
