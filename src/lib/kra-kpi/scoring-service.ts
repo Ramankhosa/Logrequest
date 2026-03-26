@@ -45,7 +45,7 @@ export function computeScore(
   data: TargetActual
 ): number | null {
   // Step 1: Get a raw achievement percentage based on measurement type
-  const rawPercent = computeRawPercent(measurementType, scoringDirection, data);
+  const rawPercent = computeRawPercent(measurementType, scoringDirection, data, measurementConfig);
   if (rawPercent === null) return null;
 
   // Step 2: Apply scoring method to convert raw percent to final score
@@ -59,7 +59,8 @@ export function computeScore(
 function computeRawPercent(
   type: KpiMeasurementType,
   direction: ScoringDirection,
-  data: TargetActual
+  data: TargetActual,
+  config?: MeasurementConfig | null,
 ): number | null {
   switch (type) {
     case "NUMERIC":
@@ -109,14 +110,19 @@ function computeRawPercent(
       if (target == null || actual == null) return null;
       const targetMs = target.getTime();
       const actualMs = actual.getTime();
-      if (actualMs <= targetMs) {
-        // Completed on or before deadline
-        return 100;
-      }
-      // Late: penalize proportionally (each day late = less score)
-      const daysLate = (actualMs - targetMs) / (1000 * 60 * 60 * 24);
-      // Lose 5% per day late, minimum 0%
-      return Math.max(0, 100 - daysLate * 5);
+
+      const dtConfig = config?.type === "DATE_TARGET" ? config : null;
+      const grace = dtConfig?.gracePeriodDays ?? 0;
+      const effectiveDeadlineMs = targetMs + grace * 86_400_000;
+
+      if (actualMs <= effectiveDeadlineMs) return 100;
+
+      const penaltyEnabled = dtConfig?.latePenaltyEnabled ?? false;
+      if (!penaltyEnabled) return 100;
+
+      const penaltyRate = dtConfig?.latePenaltyPercentPerDay ?? 5;
+      const daysLate = (actualMs - effectiveDeadlineMs) / 86_400_000;
+      return Math.max(0, 100 - daysLate * penaltyRate);
     }
 
     case "GRADE": {

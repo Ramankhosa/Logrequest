@@ -14,7 +14,7 @@ import { buildFormDataValidator, type AchievementFieldConfig } from "@/lib/kra-k
 
 const baseContext = {
   userId: "user-1",
-  headOfUnits: [{ unitId: "unit-1", unitName: "CSE", unitCode: "CSE" }],
+  headOfUnits: [{ unitId: "unit-1", unitName: "CSE", unitCode: "CSE", scope: "NODE" as const }],
   memberOfUnits: [{ unitId: "unit-1", unitName: "CSE", unitCode: "CSE" }],
 };
 

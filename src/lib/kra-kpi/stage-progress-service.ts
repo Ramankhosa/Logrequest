@@ -180,7 +180,11 @@ export async function markStageComplete(
     });
   });
 
-  if (stage.deadline && now > stage.deadline) {
+  const graceMs = (stage.gracePeriodDays ?? 0) * 86_400_000;
+  const effectiveDeadline = stage.deadline
+    ? new Date(stage.deadline.getTime() + graceMs)
+    : null;
+  if (effectiveDeadline && now > effectiveDeadline) {
     await createNotification(
       tenantId,
       ach.reportedByUserId,
@@ -209,7 +213,16 @@ export async function calculateStageScore(
       kpiDefinition: {
         select: {
           id: true,
-          stages: { select: { id: true, weight: true } },
+          stages: {
+            select: {
+              id: true,
+              weight: true,
+              deadline: true,
+              gracePeriodDays: true,
+              latePenaltyEnabled: true,
+              latePenaltyPercentPerDay: true,
+            },
+          },
         },
       },
     },
@@ -219,8 +232,9 @@ export async function calculateStageScore(
     return { stageCompletionScore: 0, effectiveScore: null };
   }
 
-  const stageIds = achievement.kpiDefinition.stages.map((s) => s.id);
-  const weightByStage = new Map(achievement.kpiDefinition.stages.map((s) => [s.id, s.weight]));
+  const stages = achievement.kpiDefinition.stages;
+  const stageIds = stages.map((s) => s.id);
+  const stageDefMap = new Map(stages.map((s) => [s.id, s]));
 
   if (stageIds.length === 0) {
     return { stageCompletionScore: 0, effectiveScore: null };
@@ -232,12 +246,25 @@ export async function calculateStageScore(
       isCompleted: true,
       stageDefinitionId: { in: stageIds },
     },
-    select: { stageDefinitionId: true },
+    select: { stageDefinitionId: true, completedAt: true },
   });
 
   let stageCompletionScore = 0;
   for (const row of completed) {
-    stageCompletionScore += weightByStage.get(row.stageDefinitionId) ?? 0;
+    const stageDef = stageDefMap.get(row.stageDefinitionId);
+    let weight = stageDef?.weight ?? 0;
+
+    if (stageDef?.latePenaltyEnabled && stageDef.deadline && row.completedAt) {
+      const graceMs = (stageDef.gracePeriodDays ?? 0) * 86_400_000;
+      const effectiveDeadline = stageDef.deadline.getTime() + graceMs;
+      if (row.completedAt.getTime() > effectiveDeadline) {
+        const daysLate = (row.completedAt.getTime() - effectiveDeadline) / 86_400_000;
+        const penaltyFraction = Math.min(1, (daysLate * stageDef.latePenaltyPercentPerDay) / 100);
+        weight = weight * (1 - penaltyFraction);
+      }
+    }
+
+    stageCompletionScore += weight;
   }
 
   const effectiveScore = stageCompletionScore;

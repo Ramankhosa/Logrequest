@@ -25,6 +25,9 @@ type KpiStageView = {
   evidenceTypes: string[];
   evidenceInstructions: string | null;
   deadline: string | null;
+  gracePeriodDays: number;
+  latePenaltyEnabled: boolean;
+  latePenaltyPercentPerDay: number;
   completedProgressCount: number;
 };
 
@@ -60,6 +63,9 @@ export function KpiStageManager({ kpiId, allowPartialCompletion, onUpdate }: Pro
   const [formEvidenceTypes, setFormEvidenceTypes] = useState<string[]>([]);
   const [formEvidenceInstructions, setFormEvidenceInstructions] = useState("");
   const [formDeadline, setFormDeadline] = useState("");
+  const [formGracePeriodDays, setFormGracePeriodDays] = useState(0);
+  const [formLatePenaltyEnabled, setFormLatePenaltyEnabled] = useState(false);
+  const [formLatePenaltyRate, setFormLatePenaltyRate] = useState(0);
   const [saving, setSaving] = useState(false);
 
   const fetchStages = useCallback(async () => {
@@ -91,6 +97,9 @@ export function KpiStageManager({ kpiId, allowPartialCompletion, onUpdate }: Pro
     setFormEvidenceTypes([]);
     setFormEvidenceInstructions("");
     setFormDeadline("");
+    setFormGracePeriodDays(0);
+    setFormLatePenaltyEnabled(false);
+    setFormLatePenaltyRate(0);
   }
 
   function loadStageIntoForm(stage: KpiStageView) {
@@ -102,6 +111,9 @@ export function KpiStageManager({ kpiId, allowPartialCompletion, onUpdate }: Pro
     setFormEvidenceTypes(stage.evidenceTypes);
     setFormEvidenceInstructions(stage.evidenceInstructions ?? "");
     setFormDeadline(stage.deadline ? stage.deadline.slice(0, 10) : "");
+    setFormGracePeriodDays(stage.gracePeriodDays ?? 0);
+    setFormLatePenaltyEnabled(stage.latePenaltyEnabled ?? false);
+    setFormLatePenaltyRate(stage.latePenaltyPercentPerDay ?? 0);
   }
 
   async function handleSave() {
@@ -124,6 +136,9 @@ export function KpiStageManager({ kpiId, allowPartialCompletion, onUpdate }: Pro
           evidenceTypes: formEvidenceRequired ? formEvidenceTypes : [],
           evidenceInstructions: formEvidenceInstructions || undefined,
           deadline: formDeadline || undefined,
+          gracePeriodDays: formGracePeriodDays,
+          latePenaltyEnabled: formLatePenaltyEnabled,
+          latePenaltyPercentPerDay: formLatePenaltyRate,
         }),
       });
       const data = await res.json();
@@ -405,6 +420,46 @@ export function KpiStageManager({ kpiId, allowPartialCompletion, onUpdate }: Pro
                 Evidence Required
               </label>
             </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className={labelCls}>Grace Period (days)</label>
+              <input
+                type="number"
+                min={0}
+                value={formGracePeriodDays}
+                onChange={(event) => setFormGracePeriodDays(Math.max(0, Number(event.target.value)))}
+                className={inputCls}
+              />
+              <p className="mt-0.5 text-[10px] text-slate-400">Extra days after deadline with no penalty</p>
+            </div>
+            <div className="flex items-center pt-5">
+              <label className="flex items-center gap-2 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={formLatePenaltyEnabled}
+                  onChange={(event) => setFormLatePenaltyEnabled(event.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                Enable late penalty
+              </label>
+            </div>
+            {formLatePenaltyEnabled && (
+              <div>
+                <label className={labelCls}>Penalty per day (%)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.5"
+                  value={formLatePenaltyRate}
+                  onChange={(event) => setFormLatePenaltyRate(Math.max(0, Math.min(100, Number(event.target.value))))}
+                  className={inputCls}
+                />
+                <p className="mt-0.5 text-[10px] text-slate-400">Weight deducted per day after grace period</p>
+              </div>
+            )}
           </div>
 
           {formEvidenceRequired && (

@@ -1322,6 +1322,9 @@ export async function updateOrgUnit(input: {
     newPath = parts.join("/");
   }
 
+  const oldPath = unit.path;
+  const pathChanged = newPath !== oldPath;
+
   await prisma.$transaction(async (tx) => {
     await tx.orgUnit.update({
       where: { id: input.unitId },
@@ -1334,6 +1337,30 @@ export async function updateOrgUnit(input: {
         path: newPath,
       },
     });
+
+    if (pathChanged && oldPath && newPath) {
+      const descendants = await tx.orgUnit.findMany({
+        where: {
+          versionId: activeDraft.id,
+          path: { startsWith: `${oldPath}/` },
+        },
+        select: { id: true, path: true, level: true },
+      });
+
+      const levelDelta = newLevel - unit.level;
+      for (const descendant of descendants) {
+        const updatedPath = descendant.path
+          ? `${newPath}${descendant.path.slice(oldPath.length)}`
+          : descendant.path;
+        await tx.orgUnit.update({
+          where: { id: descendant.id },
+          data: {
+            path: updatedPath,
+            level: descendant.level + levelDelta,
+          },
+        });
+      }
+    }
 
     // Reset draft validation
     await tx.orgStructureVersion.update({
@@ -1733,4 +1760,44 @@ function mapVersionWithCounts(version: {
     unitTypeCount: version._count.unitTypes,
     unitCount: version._count.units,
   } satisfies StructureVersionWithCounts;
+}
+
+// ── Path Backfill ─────────────────────────────────────────────────────────────
+
+/**
+ * Walk the org tree from roots and set `path` for every unit that has a null
+ * or stale path. Safe to call multiple times (idempotent).
+ */
+export async function backfillUnitPaths(
+  tenantId: string,
+  versionId: string,
+): Promise<{ updated: number }> {
+  const units = await prisma.orgUnit.findMany({
+    where: { tenantId, versionId },
+    select: { id: true, code: true, parentId: true, path: true },
+    orderBy: { level: "asc" },
+  });
+
+  const parentMap = new Map(units.map((u) => [u.id, u]));
+
+  function computePath(unitId: string): string {
+    const unit = parentMap.get(unitId);
+    if (!unit) return "";
+    if (!unit.parentId) return unit.code;
+    return `${computePath(unit.parentId)}/${unit.code}`;
+  }
+
+  let updated = 0;
+  for (const unit of units) {
+    const correctPath = computePath(unit.id);
+    if (unit.path !== correctPath) {
+      await prisma.orgUnit.update({
+        where: { id: unit.id },
+        data: { path: correctPath },
+      });
+      updated++;
+    }
+  }
+
+  return { updated };
 }

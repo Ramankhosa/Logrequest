@@ -36,7 +36,7 @@ export async function getMyKpiContext(
 
   const headOfUnits = assignments
     .filter((a) => a.isUnitHead)
-    .map((a) => ({ unitId: a.unitId, unitName: a.unitName, unitCode: a.unitCode }));
+    .map((a) => ({ unitId: a.unitId, unitName: a.unitName, unitCode: a.unitCode, scope: a.scope as "NODE" | "DESCENDANTS" }));
 
   const memberOfUnits = assignments.map((a) => ({
     unitId: a.unitId,

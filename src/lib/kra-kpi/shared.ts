@@ -136,8 +136,10 @@ export const milestoneMeasurementConfigSchema = z.object({
 
 export const dateTargetMeasurementConfigSchema = z.object({
   type: z.literal("DATE_TARGET"),
-  allowEarly: z.boolean().default(true), // completing before deadline = good
+  allowEarly: z.boolean().default(true),
   gracePeriodDays: z.number().int().min(0).default(0),
+  latePenaltyEnabled: z.boolean().default(false),
+  latePenaltyPercentPerDay: z.number().min(0).max(100).default(5),
 });
 
 export const gradeMeasurementConfigSchema = z.object({
@@ -363,6 +365,9 @@ export type KpiStageView = {
   evidenceTypes: string[];
   evidenceInstructions: string | null;
   deadline: Date | null;
+  gracePeriodDays: number;
+  latePenaltyEnabled: boolean;
+  latePenaltyPercentPerDay: number;
   completedProgressCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -1224,7 +1229,7 @@ export type VerificationLogEntry = {
 
 export type MyKpiContext = {
   userId: string;
-  headOfUnits: { unitId: string; unitName: string; unitCode: string }[];
+  headOfUnits: { unitId: string; unitName: string; unitCode: string; scope: "NODE" | "DESCENDANTS" }[];
   memberOfUnits: { unitId: string; unitName: string; unitCode: string }[];
 };
 

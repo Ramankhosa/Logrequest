@@ -1,4 +1,29 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+
+/**
+ * Builds a combined WHERE filter that captures both unit-assigned and
+ * user-assigned allocations whose primary unit is in scope (Finding 3).
+ */
+function buildEffectiveUnitFilter(scopeUnitIds: string[] | "ALL" | undefined): Prisma.TargetAllocationWhereInput {
+  if (!scopeUnitIds || scopeUnitIds === "ALL") return {};
+  return {
+    OR: [
+      { assignedToUnitId: { in: scopeUnitIds } },
+      {
+        assignedToUserId: { not: null },
+        assignedToUser: {
+          orgAssignments: {
+            some: {
+              unitId: { in: scopeUnitIds },
+              assignmentType: "PRIMARY",
+            },
+          },
+        },
+      },
+    ],
+  };
+}
 
 export type OverviewStats = {
   totalKpis: number;
@@ -202,16 +227,24 @@ function formatTargetValue(allocation: {
 export async function getOverviewStats(
   tenantId: string,
   periodId: string,
+  scopeUnitIds?: string[] | "ALL",
 ): Promise<OverviewStats> {
+  const scopeFilter = buildEffectiveUnitFilter(scopeUnitIds);
+  const allocationWhere: Prisma.TargetAllocationWhereInput = { tenantId, periodId, ...scopeFilter };
+
   const [kpiCount, allocationCount, achievements, period] = await Promise.all([
     prisma.kpiDefinition.count({
       where: { kraDefinition: { tenantId, periodId }, state: "ACTIVE" },
     }),
-    prisma.targetAllocation.count({
-      where: { tenantId, periodId },
-    }),
+    prisma.targetAllocation.count({ where: allocationWhere }),
     prisma.achievement.findMany({
-      where: { tenantId, periodId },
+      where: {
+        tenantId,
+        periodId,
+        ...(scopeFilter.OR
+          ? { targetAllocation: scopeFilter }
+          : {}),
+      },
       select: { state: true },
     }),
     prisma.assessmentPeriod.findFirst({
@@ -239,6 +272,9 @@ export async function getOverviewStats(
         periodId,
         state: "VERIFIED",
         targetAllocationId: { not: null },
+        ...(scopeFilter.OR
+          ? { targetAllocation: scopeFilter }
+          : {}),
       },
     });
     overdueCount = allocationCount - allocationsWithVerified.length;
@@ -259,6 +295,7 @@ export async function getOrgHierarchyStats(
   tenantId: string,
   periodId: string,
   parentUnitId?: string,
+  scopeUnitIds?: string[] | "ALL",
 ): Promise<{ units: OrgHierarchyUnit[] }> {
   const units = await getPublishedUnits(tenantId);
   if (units.length === 0) return { units: [] };
@@ -267,8 +304,9 @@ export async function getOrgHierarchyStats(
   const visibleUnits = childrenMap.get(parentUnitId ?? null) ?? [];
   if (visibleUnits.length === 0) return { units: [] };
 
+  const scopeFilter = buildEffectiveUnitFilter(scopeUnitIds);
   const allocations = await prisma.targetAllocation.findMany({
-    where: { tenantId, periodId },
+    where: { tenantId, periodId, ...scopeFilter },
     select: {
       assignedToUnitId: true,
       assignedToUserId: true,
@@ -336,6 +374,7 @@ export async function getKpiCrossComparison(
   tenantId: string,
   periodId: string,
   kpiId: string,
+  scopeUnitIds?: string[] | "ALL",
 ): Promise<KpiCrossComparison | null> {
   const kpi = await prisma.kpiDefinition.findFirst({
     where: { id: kpiId, kraDefinition: { tenantId, periodId } },
@@ -343,11 +382,13 @@ export async function getKpiCrossComparison(
   });
   if (!kpi) return null;
 
+  const scopeFilter = buildEffectiveUnitFilter(scopeUnitIds);
   const allocations = await prisma.targetAllocation.findMany({
     where: {
       tenantId,
       periodId,
       kpiDefinitionId: kpiId,
+      ...scopeFilter,
     },
     select: {
       targetValue: true,
@@ -421,6 +462,7 @@ export async function getKpiCrossComparison(
 export async function getAttentionItems(
   tenantId: string,
   periodId: string,
+  scopeUnitIds?: string[] | "ALL",
 ): Promise<AttentionItems> {
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -428,6 +470,8 @@ export async function getAttentionItems(
     where: { id: periodId, tenantId },
     select: { achievementDeadline: true, endDate: true },
   });
+
+  const scopeFilter = buildEffectiveUnitFilter(scopeUnitIds);
 
   let overdueAchievements = 0;
   const dueDate = period?.achievementDeadline ?? period?.endDate ?? null;
@@ -439,10 +483,11 @@ export async function getAttentionItems(
         periodId,
         state: "VERIFIED",
         targetAllocationId: { not: null },
+        ...(scopeFilter.OR ? { targetAllocation: scopeFilter } : {}),
       },
     });
     const allocationCount = await prisma.targetAllocation.count({
-      where: { tenantId, periodId },
+      where: { tenantId, periodId, ...scopeFilter },
     });
     overdueAchievements = Math.max(0, allocationCount - allocationsWithVerified.length);
   }
@@ -452,6 +497,7 @@ export async function getAttentionItems(
       tenantId,
       periodId,
       assignedToUserId: { not: null },
+      ...scopeFilter,
     },
     select: {
       assignedToUserId: true,
@@ -476,6 +522,7 @@ export async function getAttentionItems(
       periodId,
       state: { in: ["SUBMITTED", "RECOMMENDED"] },
       updatedAt: { lt: sevenDaysAgo },
+      ...(scopeFilter.OR ? { targetAllocation: scopeFilter } : {}),
     },
   });
 
@@ -485,6 +532,7 @@ export async function getAttentionItems(
       id: true,
       title: true,
       targetAllocations: {
+        where: scopeFilter,
         select: {
           achievements: { select: { state: true } },
         },
@@ -529,6 +577,7 @@ export async function getStageBottleneckAnalysis(
   tenantId: string,
   periodId: string,
   kpiId: string,
+  scopeUnitIds?: string[] | "ALL",
 ): Promise<StageBottleneck | null> {
   const kpi = await prisma.kpiDefinition.findFirst({
     where: { id: kpiId, kraDefinition: { tenantId, periodId } },
@@ -536,6 +585,7 @@ export async function getStageBottleneckAnalysis(
   });
   if (!kpi) return null;
 
+  const scopeFilter = buildEffectiveUnitFilter(scopeUnitIds);
   const stageDefinitions = await prisma.kpiStageDefinition.findMany({
     where: { kpiDefinitionId: kpiId },
     orderBy: { stageOrder: "asc" },
@@ -543,6 +593,9 @@ export async function getStageBottleneckAnalysis(
       stageOrder: true,
       title: true,
       stageProgress: {
+        where: scopeFilter.OR
+          ? { targetAllocation: scopeFilter }
+          : {},
         select: {
           isCompleted: true,
           completedAt: true,
@@ -585,6 +638,7 @@ export async function getPersonDetail(
   tenantId: string,
   periodId: string,
   userId: string,
+  scopeUnitIds?: string[] | "ALL",
 ): Promise<PersonDetail | null> {
   const [user, versionId] = await Promise.all([
     prisma.user.findUnique({
@@ -595,6 +649,17 @@ export async function getPersonDetail(
   ]);
   if (!user) return null;
 
+  // Access check: if scope is limited, verify user's primary unit is in scope
+  if (scopeUnitIds && scopeUnitIds !== "ALL" && versionId) {
+    const primaryUnit = await prisma.userOrgAssignment.findFirst({
+      where: { versionId, userId, isPrimary: true },
+      select: { unitId: true },
+    });
+    if (primaryUnit && !scopeUnitIds.includes(primaryUnit.unitId)) {
+      return null;
+    }
+  }
+
   const primaryAssignment = versionId
     ? await prisma.userOrgAssignment.findFirst({
         where: { versionId, userId, isPrimary: true },
@@ -602,11 +667,13 @@ export async function getPersonDetail(
       })
     : null;
 
+  const scopeFilter = buildEffectiveUnitFilter(scopeUnitIds);
   const allocations = await prisma.targetAllocation.findMany({
     where: {
       tenantId,
       periodId,
       assignedToUserId: userId,
+      ...scopeFilter,
     },
     select: {
       targetValue: true,

@@ -3,6 +3,11 @@ import type { Role, OrgRoleScope } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { OrgStructureActionResult } from "@/lib/org-structure/shared";
+import {
+  getActiveVersionId,
+  getPublishedVersionId,
+  getRuntimeVersionId,
+} from "@/lib/org-structure/hierarchy-utils";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -78,6 +83,7 @@ export type RoleAssignmentView = {
   roleDefinitionId: string | null;
   isUnitHead: boolean;
   scope: OrgRoleScope;
+  approvalAuthority: boolean;
   isActive: boolean;
 };
 
@@ -98,34 +104,8 @@ function canManageStructure(role: Role) {
   return role === tenantOwnerRole || role === tenantAdminRole;
 }
 
-async function getPublishedVersionId(tenantId: string): Promise<string | null> {
-  const v = await prisma.orgStructureVersion.findFirst({
-    where: { tenantId, state: "PUBLISHED" },
-    orderBy: { versionNumber: "desc" },
-    select: { id: true },
-  });
-  return v?.id ?? null;
-}
-
-async function getActiveVersionId(tenantId: string): Promise<string | null> {
-  const v = await prisma.orgStructureVersion.findFirst({
-    where: {
-      tenantId,
-      state: { in: ["DRAFT", "VALIDATED", "PUBLISHED"] },
-    },
-    orderBy: { versionNumber: "desc" },
-    select: { id: true },
-  });
-  return v?.id ?? null;
-}
-
-async function getRuntimeVersionId(tenantId: string): Promise<string | null> {
-  const publishedVersionId = await getPublishedVersionId(tenantId);
-  if (publishedVersionId) {
-    return publishedVersionId;
-  }
-  return getActiveVersionId(tenantId);
-}
+// Version helpers (getPublishedVersionId, getRuntimeVersionId) are imported
+// from hierarchy-utils.ts — shared across all org-structure modules.
 
 // ── Role Definition CRUD ──────────────────────────────────────────────────────
 
@@ -667,7 +647,7 @@ export async function getUnitMembers(
     include: {
       user: { select: { id: true, firstName: true, lastName: true, officialEmail: true } },
       unit: { select: { name: true, code: true } },
-      roleDefinition: { select: { roleKey: true, isUnitHead: true } },
+      roleDefinition: { select: { roleKey: true, isUnitHead: true, approvalAuthority: true } },
     },
     orderBy: [{ roleDefinition: { sortOrder: "asc" } }, { roleName: "asc" }],
   });
@@ -685,6 +665,7 @@ export async function getUnitMembers(
     roleDefinitionId: a.roleDefinitionId,
     isUnitHead: a.roleDefinition?.isUnitHead ?? false,
     scope: a.scope,
+    approvalAuthority: a.roleDefinition?.approvalAuthority ?? false,
     isActive: a.isActive,
   }));
 }
@@ -701,7 +682,7 @@ export async function getUserAssignments(
     include: {
       user: { select: { id: true, firstName: true, lastName: true, officialEmail: true } },
       unit: { select: { name: true, code: true } },
-      roleDefinition: { select: { roleKey: true, isUnitHead: true } },
+      roleDefinition: { select: { roleKey: true, isUnitHead: true, approvalAuthority: true } },
     },
     orderBy: [{ unit: { level: "asc" } }, { roleName: "asc" }],
   });
@@ -719,6 +700,7 @@ export async function getUserAssignments(
     roleDefinitionId: a.roleDefinitionId,
     isUnitHead: a.roleDefinition?.isUnitHead ?? false,
     scope: a.scope,
+    approvalAuthority: a.roleDefinition?.approvalAuthority ?? false,
     isActive: a.isActive,
   }));
 }

@@ -813,6 +813,71 @@ export function KpiBuilderForm({
               ))}
             </select>
           </div>
+
+          {payload.definition.measurementType === "DATE_TARGET" && (() => {
+            const mc = payload.definition.measurementConfig;
+            const dtCfg = mc?.type === "DATE_TARGET" ? mc : null;
+            const grace = dtCfg?.gracePeriodDays ?? 0;
+            const penEnabled = dtCfg?.latePenaltyEnabled ?? false;
+            const penRate = dtCfg?.latePenaltyPercentPerDay ?? 5;
+            const setDtConfig = (patch: Record<string, unknown>) => {
+              updateDefinition("measurementConfig", {
+                type: "DATE_TARGET" as const,
+                allowEarly: dtCfg?.allowEarly ?? true,
+                gracePeriodDays: grace,
+                latePenaltyEnabled: penEnabled,
+                latePenaltyPercentPerDay: penRate,
+                ...patch,
+              });
+            };
+            return (
+              <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-3 md:col-span-2 xl:col-span-4">
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  Late Submission Settings
+                </p>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className={labelCls}>Grace Period (days)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={grace}
+                      onChange={(e) => setDtConfig({ gracePeriodDays: Math.max(0, Number(e.target.value)) })}
+                      className={inputCls}
+                    />
+                    <p className="mt-0.5 text-[10px] text-slate-400">Extra days after deadline with no penalty</p>
+                  </div>
+                  <div className="flex items-center pt-5">
+                    <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={penEnabled}
+                        onChange={(e) => setDtConfig({ latePenaltyEnabled: e.target.checked })}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                      Enable late penalty
+                    </label>
+                  </div>
+                  {penEnabled && (
+                    <div>
+                      <label className={labelCls}>Penalty per day (%)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step="0.5"
+                        value={penRate}
+                        onChange={(e) => setDtConfig({ latePenaltyPercentPerDay: Math.max(0, Math.min(100, Number(e.target.value))) })}
+                        className={inputCls}
+                      />
+                      <p className="mt-0.5 text-[10px] text-slate-400">Score deducted per day after grace period</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           <div>
             <label className={labelCls}>Unit Label</label>
             <input

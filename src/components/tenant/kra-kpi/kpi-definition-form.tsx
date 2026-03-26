@@ -92,11 +92,18 @@ function supportsEditableMaxCap(measurementType: string): boolean {
     measurementType === "CURRENCY"
   );
 }
+type DateTargetOverrides = {
+  gracePeriodDays: number;
+  latePenaltyEnabled: boolean;
+  latePenaltyPercentPerDay: number;
+};
+
 function buildMeasurementConfig(
   measurementType: string,
   existingConfig: MeasurementConfig | null | undefined,
   enforceMaxCap: boolean,
   maxCap: string,
+  dateTargetOverrides?: DateTargetOverrides,
 ): MeasurementConfig | undefined {
   const capValue = maxCap.trim() ? Number(maxCap) : null;
 
@@ -126,6 +133,16 @@ function buildMeasurementConfig(
       if (enforceMaxCap && capValue != null) next.maxValue = capValue;
       else delete next.maxValue;
       return Object.keys(next).length > 1 ? next : undefined;
+    }
+    case "DATE_TARGET": {
+      const dt = dateTargetOverrides;
+      return {
+        type: "DATE_TARGET" as const,
+        allowEarly: true,
+        gracePeriodDays: dt?.gracePeriodDays ?? 0,
+        latePenaltyEnabled: dt?.latePenaltyEnabled ?? false,
+        latePenaltyPercentPerDay: dt?.latePenaltyPercentPerDay ?? 5,
+      };
     }
     default:
       return existingConfig?.type === measurementType ? existingConfig : undefined;
@@ -166,6 +183,11 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   const [showR2Sections, setShowR2Sections] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const initDateConfig = initial?.measurementConfig?.type === "DATE_TARGET" ? initial.measurementConfig : null;
+  const [dtGracePeriodDays, setDtGracePeriodDays] = useState(initDateConfig?.gracePeriodDays ?? 0);
+  const [dtLatePenaltyEnabled, setDtLatePenaltyEnabled] = useState(initDateConfig?.latePenaltyEnabled ?? false);
+  const [dtLatePenaltyRate, setDtLatePenaltyRate] = useState(initDateConfig?.latePenaltyPercentPerDay ?? 5);
 
   const handleTemplateSelect = (key: string) => {
     setTemplateKey(key);
@@ -260,6 +282,11 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         existingMeasurementConfig,
         enforceMaxCap,
         maxCap,
+        {
+          gracePeriodDays: dtGracePeriodDays,
+          latePenaltyEnabled: dtLatePenaltyEnabled,
+          latePenaltyPercentPerDay: dtLatePenaltyRate,
+        },
       );
 
       const body: Record<string, unknown> = {
@@ -400,6 +427,57 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
                 />
               </div>
             )}
+          </div>
+        )}
+
+        {measurementType === "DATE_TARGET" && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-3 sm:col-span-2 lg:col-span-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Late Submission Settings
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label className={labelCls}>Grace Period (days)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={dtGracePeriodDays}
+                  onChange={(e) => setDtGracePeriodDays(Math.max(0, Number(e.target.value)))}
+                  className={inputCls}
+                />
+                <p className="mt-0.5 text-[10px] text-slate-400">
+                  Extra days after deadline with no penalty
+                </p>
+              </div>
+              <div className="flex items-center pt-5">
+                <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={dtLatePenaltyEnabled}
+                    onChange={(e) => setDtLatePenaltyEnabled(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/30"
+                  />
+                  Enable late penalty
+                </label>
+              </div>
+              {dtLatePenaltyEnabled && (
+                <div>
+                  <label className={labelCls}>Penalty per day (%)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.5"
+                    value={dtLatePenaltyRate}
+                    onChange={(e) => setDtLatePenaltyRate(Math.max(0, Math.min(100, Number(e.target.value))))}
+                    className={inputCls}
+                  />
+                  <p className="mt-0.5 text-[10px] text-slate-400">
+                    Score deducted per day after grace period
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

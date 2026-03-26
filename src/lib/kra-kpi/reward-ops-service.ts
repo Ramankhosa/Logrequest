@@ -9,6 +9,7 @@ import type {
 } from "./shared";
 import { createNotification } from "@/lib/notifications/notification-service";
 import { recalculateContributorRewardsForAchievement } from "./reward-service";
+import { getUserAssignments } from "@/lib/org-structure/roles-service";
 
 type RewardListFilters = {
   periodId?: string;
@@ -383,47 +384,64 @@ export async function transitionContributorRewards(
     return { updatedCount: 0, failed: [] };
   }
 
-  const rewards = await prisma.contributorReward.findMany({
-    where: { tenantId, id: { in: uniqueIds } },
-    select: {
-      id: true,
-      state: true,
-      contributorUserId: true,
-    },
-  });
-  const rewardMap = new Map(rewards.map((reward) => [reward.id, reward]));
-
-  const failed: RewardTransitionResult["failed"] = [];
-  let updatedCount = 0;
-
-  for (const rewardId of uniqueIds) {
-    const reward = rewardMap.get(rewardId);
-    if (!reward) {
-      failed.push({ id: rewardId, message: "Reward not found." });
-      continue;
+  const isTenantAdmin = actorRole === "TENANT_OWNER" || actorRole === "TENANT_ADMIN";
+  if (!isTenantAdmin) {
+    const assignments = await getUserAssignments(tenantId, actorUserId);
+    const hasApprovalAuthority = assignments.some((a) => a.approvalAuthority);
+    if (!hasApprovalAuthority) {
+      return {
+        updatedCount: 0,
+        failed: uniqueIds.map((id) => ({
+          id,
+          message: "You do not have reward approval authority.",
+        })),
+      };
     }
+  }
 
-    const note = options?.note?.trim() || null;
-    const allowed =
-      (nextState === "DRAFT" && reward.state === "PENDING") ||
-      (nextState === "PENDING" && reward.state === "DRAFT") ||
-      (nextState === "RELEASED" && (reward.state === "DRAFT" || reward.state === "PENDING")) ||
-      (nextState === "REVOKED" && reward.state !== "REVOKED");
+  const note = options?.note?.trim() || null;
 
-    if (!allowed) {
-      failed.push({
-        id: rewardId,
-        message: `Cannot move reward from ${reward.state} to ${nextState}.`,
-      });
-      continue;
-    }
+  const { updatedCount, failed, successfulTransitions } = await prisma.$transaction(async (tx) => {
+    const rewards = await tx.contributorReward.findMany({
+      where: { tenantId, id: { in: uniqueIds } },
+      select: {
+        id: true,
+        state: true,
+        contributorUserId: true,
+      },
+    });
+    const rewardMap = new Map(rewards.map((reward) => [reward.id, reward]));
 
-    if (nextState === "REVOKED" && !note) {
-      failed.push({ id: rewardId, message: "Revocation requires a reason." });
-      continue;
-    }
+    const txFailed: RewardTransitionResult["failed"] = [];
+    let txUpdatedCount = 0;
+    const txSuccessful: Array<{ rewardId: string; fromState: string }> = [];
 
-    await prisma.$transaction(async (tx) => {
+    for (const rewardId of uniqueIds) {
+      const reward = rewardMap.get(rewardId);
+      if (!reward) {
+        txFailed.push({ id: rewardId, message: "Reward not found." });
+        continue;
+      }
+
+      const allowed =
+        (nextState === "DRAFT" && reward.state === "PENDING") ||
+        (nextState === "PENDING" && reward.state === "DRAFT") ||
+        (nextState === "RELEASED" && (reward.state === "DRAFT" || reward.state === "PENDING")) ||
+        (nextState === "REVOKED" && reward.state !== "REVOKED");
+
+      if (!allowed) {
+        txFailed.push({
+          id: rewardId,
+          message: `Cannot move reward from ${reward.state} to ${nextState}.`,
+        });
+        continue;
+      }
+
+      if (nextState === "REVOKED" && !note) {
+        txFailed.push({ id: rewardId, message: "Revocation requires a reason." });
+        continue;
+      }
+
       const updated = await tx.contributorReward.updateMany({
         where: { id: rewardId, tenantId, state: reward.state },
         data: {
@@ -447,7 +465,8 @@ export async function transitionContributorRewards(
       });
 
       if (updated.count === 0) {
-        throw new Error("Reward state changed before this action completed.");
+        txFailed.push({ id: rewardId, message: "Reward state changed before this action completed." });
+        continue;
       }
 
       const event = await tx.contributorRewardEvent.create({
@@ -483,15 +502,21 @@ export async function transitionContributorRewards(
           } satisfies Prisma.InputJsonValue,
         },
       });
-    });
 
-    updatedCount += 1;
+      txUpdatedCount += 1;
+      txSuccessful.push({ rewardId, fromState: reward.state });
+    }
+
+    return { updatedCount: txUpdatedCount, failed: txFailed, successfulTransitions: txSuccessful };
+  });
+
+  for (const { rewardId, fromState } of successfulTransitions) {
     await logRewardTransitionAndNotify({
       rewardId,
       tenantId,
       actorUserId,
       actorRole,
-      fromState: reward.state,
+      fromState: fromState as ContributorRewardStateView,
       toState: nextState,
       note,
     });

@@ -33,6 +33,9 @@ export const createStageInputSchema = z.object({
   evidenceTypes: z.array(evidenceTypeEnum).optional(),
   evidenceInstructions: z.string().trim().max(2000).optional(),
   deadline: z.coerce.date().optional(),
+  gracePeriodDays: z.number().int().min(0).default(0).optional(),
+  latePenaltyEnabled: z.boolean().default(false).optional(),
+  latePenaltyPercentPerDay: z.number().min(0).max(100).default(0).optional(),
 });
 
 export const updateStageInputSchema = z.object({
@@ -44,6 +47,9 @@ export const updateStageInputSchema = z.object({
   evidenceTypes: z.array(evidenceTypeEnum).optional(),
   evidenceInstructions: z.string().trim().max(2000).nullable().optional(),
   deadline: z.coerce.date().nullable().optional(),
+  gracePeriodDays: z.number().int().min(0).default(0).optional(),
+  latePenaltyEnabled: z.boolean().default(false).optional(),
+  latePenaltyPercentPerDay: z.number().min(0).max(100).default(0).optional(),
 });
 
 export type CreateStageInput = z.infer<typeof createStageInputSchema>;
@@ -146,6 +152,9 @@ export async function createStage(
         evidenceTypes: (data.evidenceTypes ?? []) as EvidenceType[],
         evidenceInstructions: data.evidenceInstructions,
         deadline: data.deadline,
+        gracePeriodDays: data.gracePeriodDays ?? 0,
+        latePenaltyEnabled: data.latePenaltyEnabled ?? false,
+        latePenaltyPercentPerDay: data.latePenaltyPercentPerDay ?? 0,
       },
     });
 
@@ -230,6 +239,9 @@ export async function updateStage(
           evidenceInstructions: data.evidenceInstructions,
         }),
         ...(data.deadline !== undefined && { deadline: data.deadline }),
+        ...(data.gracePeriodDays !== undefined && { gracePeriodDays: data.gracePeriodDays }),
+        ...(data.latePenaltyEnabled !== undefined && { latePenaltyEnabled: data.latePenaltyEnabled }),
+        ...(data.latePenaltyPercentPerDay !== undefined && { latePenaltyPercentPerDay: data.latePenaltyPercentPerDay }),
       },
     });
 
@@ -346,6 +358,9 @@ export async function listStages(
     evidenceTypes: s.evidenceTypes as string[],
     evidenceInstructions: s.evidenceInstructions,
     deadline: s.deadline,
+    gracePeriodDays: s.gracePeriodDays,
+    latePenaltyEnabled: s.latePenaltyEnabled,
+    latePenaltyPercentPerDay: s.latePenaltyPercentPerDay,
     completedProgressCount: countMap.get(s.id) ?? 0,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
