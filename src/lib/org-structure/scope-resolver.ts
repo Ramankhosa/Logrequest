@@ -29,6 +29,28 @@ export type UserDashboardScope = {
   }[];
 };
 
+export type DashboardUnitRoot = {
+  unitId: string;
+  unitName: string;
+  unitCode: string;
+};
+
+export type DashboardUnitSelection = {
+  scopeMode: "NODE" | "DESCENDANTS";
+  rootUnit: DashboardUnitRoot;
+  effectiveUnitIds: string[];
+};
+
+export class DashboardUnitSelectionError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "DashboardUnitSelectionError";
+    this.status = status;
+  }
+}
+
 // ── Resolver ─────────────────────────────────────────────────────────────────
 
 /**
@@ -183,6 +205,93 @@ export async function resolveUserDashboardScope(
     hasApprovalAuthority,
     visibleUnitIds: [...visibleSet],
     rootScopeUnits,
+  };
+}
+
+export async function resolveDashboardUnitSelection(
+  tenantId: string,
+  userId: string,
+  requestedUnitId?: string,
+): Promise<DashboardUnitSelection> {
+  const scope = await resolveUserDashboardScope(tenantId, userId);
+
+  if (scope.isTenantAdmin) {
+    const versionId = await getPublishedVersionId(tenantId);
+    if (!versionId) {
+      throw new DashboardUnitSelectionError(
+        404,
+        "No published organization structure is available.",
+      );
+    }
+
+    const requestedUnit = requestedUnitId
+      ? await prisma.orgUnit.findFirst({
+          where: { tenantId, versionId, id: requestedUnitId },
+          select: { id: true, name: true, code: true },
+        })
+      : null;
+
+    const fallbackRoot = scope.rootScopeUnits[0];
+    const selectedRoot =
+      requestedUnit
+      ?? (fallbackRoot
+        ? {
+            id: fallbackRoot.unitId,
+            name: fallbackRoot.unitName,
+            code: fallbackRoot.unitCode,
+          }
+        : null);
+
+    if (!selectedRoot) {
+      throw new DashboardUnitSelectionError(
+        404,
+        "No unit is available for dashboard selection.",
+      );
+    }
+
+    return {
+      scopeMode: "DESCENDANTS",
+      rootUnit: {
+        unitId: selectedRoot.id,
+        unitName: selectedRoot.name,
+        unitCode: selectedRoot.code,
+      },
+      effectiveUnitIds: await getDescendantUnitIds(tenantId, selectedRoot.id, true),
+    };
+  }
+
+  if (scope.headOfUnits.length === 0) {
+    throw new DashboardUnitSelectionError(
+      403,
+      "You do not head any units in the current dashboard scope.",
+    );
+  }
+
+  const selectedHead = requestedUnitId
+    ? scope.headOfUnits.find((unit) => unit.unitId === requestedUnitId) ?? null
+    : null;
+
+  if (requestedUnitId && !selectedHead) {
+    throw new DashboardUnitSelectionError(
+      403,
+      "You do not have access to the requested unit.",
+    );
+  }
+
+  const rootUnit = selectedHead ?? scope.headOfUnits[0]!;
+  const effectiveUnitIds =
+    rootUnit.scope === "DESCENDANTS"
+      ? await getDescendantUnitIds(tenantId, rootUnit.unitId, true)
+      : [rootUnit.unitId];
+
+  return {
+    scopeMode: rootUnit.scope,
+    rootUnit: {
+      unitId: rootUnit.unitId,
+      unitName: rootUnit.unitName,
+      unitCode: rootUnit.unitCode,
+    },
+    effectiveUnitIds: [...new Set(effectiveUnitIds)],
   };
 }
 

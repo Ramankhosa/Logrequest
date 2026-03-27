@@ -125,6 +125,15 @@ export async function getRewardConsoleAccessScope(
   return accessScope;
 }
 
+function buildExplicitRewardAccessScope(
+  accessibleUnitIds: string[],
+): RewardAccessScope {
+  return {
+    mode: "scoped",
+    accessibleUnitIds: [...new Set(accessibleUnitIds)],
+  };
+}
+
 function buildRewardAccessWhere(accessScope?: RewardAccessScope): Prisma.ContributorRewardWhereInput {
   if (!accessScope || accessScope.mode === "global") {
     return {};
@@ -577,6 +586,49 @@ export async function listContributorRewardsForActor(
 ): Promise<RewardConsoleListResult> {
   const accessScope = await getRewardConsoleAccessScope(tenantId, actorUserId, actorRole);
   return listContributorRewards(tenantId, filters, accessScope);
+}
+
+export async function listScopedPersonRewards(
+  tenantId: string,
+  periodId: string,
+  userId: string,
+  accessibleUnitIds: string[],
+): Promise<RewardConsoleListResult> {
+  const accessScope = buildExplicitRewardAccessScope(accessibleUnitIds);
+  const where = mergeRewardWhere(
+    { tenantId, periodId },
+    buildRewardAccessWhere(accessScope),
+    {
+      OR: [
+        { contributorUserId: userId },
+        {
+          contributorUserId: null,
+          achievement: { reportedByUserId: userId },
+        },
+      ],
+    },
+  );
+
+  const [totalRows, summaryRows, rewardRows] = await Promise.all([
+    prisma.contributorReward.count({ where }),
+    prisma.contributorReward.findMany({
+      where,
+      select: {
+        state: true,
+        finalAmount: true,
+        benefitType: {
+          select: { code: true, name: true, unit: true },
+        },
+      },
+    }),
+    loadRewardViews(where, 100, 0),
+  ]);
+
+  return {
+    rewards: rewardRows,
+    totals: summarizeRewards(summaryRows),
+    totalRows,
+  };
 }
 
 async function logRewardTransitionAndNotify(input: {

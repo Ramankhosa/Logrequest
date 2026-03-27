@@ -44,6 +44,7 @@ import { MyReviewItem } from "@/components/my-kpis/my-review-item";
 import { RewardOpsConsole } from "@/components/tenant/kra-kpi/reward-ops-console";
 import { ContributorPanel } from "@/components/dashboard/contributor/contributor-panel";
 import { ReviewerPanel } from "@/components/dashboard/reviewer/reviewer-panel";
+import { UnitPanel } from "@/components/dashboard/unit/unit-panel";
 import {
   Breadcrumb,
   ChartContainer,
@@ -470,7 +471,7 @@ export function DashboardHub({ scope }: DashboardHubProps) {
   }, [activeTab]);
 
   useEffect(() => {
-    if (!selectedPeriodId || !["unit", "org"].includes(activeTab)) return;
+    if (!selectedPeriodId || activeTab !== "org") return;
     let ignore = false;
 
     async function loadOrgData() {
@@ -1131,15 +1132,27 @@ export function DashboardHub({ scope }: DashboardHubProps) {
         </div>
       ) : null}
 
-      {!periodLoading && ["unit", "org"].includes(activeTab) && !selectedPeriodId ? (
+      {!periodLoading && activeTab === "unit" && !selectedPeriodId ? (
+        <EmptyState
+          icon={<Building2 className="h-8 w-8" />}
+          title="Select a period to open your unit workspace"
+          description="Member detail, KRA trends, and stage progress all depend on a selected assessment period."
+        />
+      ) : null}
+
+      {!periodLoading && activeTab === "unit" && selectedPeriodId ? (
+        <UnitPanel scope={scope} periodId={selectedPeriodId} />
+      ) : null}
+
+      {!periodLoading && activeTab === "org" && !selectedPeriodId ? (
         <EmptyState
           icon={<Network className="h-8 w-8" />}
-          title="Select a period to open unit and organization views"
+          title="Select a period to open the organization view"
           description="Completion rates, hierarchy drill-down, and bottlenecks all depend on a selected assessment period."
         />
       ) : null}
 
-      {!periodLoading && ["unit", "org"].includes(activeTab) && selectedPeriodId ? (
+      {!periodLoading && activeTab === "org" && selectedPeriodId ? (
         <div className="space-y-6">
           <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard
@@ -1178,7 +1191,7 @@ export function DashboardHub({ scope }: DashboardHubProps) {
 
           <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
             <ChartContainer
-              title={activeTab === "unit" ? "Unit completion and score" : "Organization completion and score"}
+              title="Organization completion and score"
               loading={orgLoading}
               fallbackData={{
                 headers: ["Unit", "Completion %", "Average Score"],

@@ -2,11 +2,11 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
 import { getPersonDetail } from "@/lib/kra-kpi/dashboard-service";
+import { listScopedPersonRewards } from "@/lib/kra-kpi/reward-ops-service";
 import { prisma } from "@/lib/prisma";
 import {
   DashboardUnitSelectionError,
   resolveDashboardUnitSelection,
-  resolveUserDashboardScope,
 } from "@/lib/org-structure/scope-resolver";
 
 export async function GET(request: Request) {
@@ -29,19 +29,36 @@ export async function GET(request: Request) {
     );
   }
 
-  let scopeUnitIds: string[] | "ALL";
   try {
-    if (unitId) {
-      const selection = await resolveDashboardUnitSelection(
-        session.user.tenantId,
-        session.user.id,
-        unitId,
+    const selection = await resolveDashboardUnitSelection(
+      session.user.tenantId,
+      session.user.id,
+      unitId,
+    );
+    const person = await getPersonDetail(
+      session.user.tenantId,
+      periodId,
+      userId,
+      selection.effectiveUnitIds,
+    );
+    if (!person) {
+      const userExists = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true },
+      });
+      return NextResponse.json(
+        { status: "error", message: userExists ? "You do not have access to the requested user." : "User not found." },
+        { status: userExists ? 403 : 404 },
       );
-      scopeUnitIds = selection.effectiveUnitIds;
-    } else {
-      const scope = await resolveUserDashboardScope(session.user.tenantId, session.user.id);
-      scopeUnitIds = scope.visibleUnitIds;
     }
+
+    const rewards = await listScopedPersonRewards(
+      session.user.tenantId,
+      periodId,
+      userId,
+      selection.effectiveUnitIds,
+    );
+    return NextResponse.json(rewards);
   } catch (error) {
     if (error instanceof DashboardUnitSelectionError) {
       return NextResponse.json(
@@ -51,18 +68,4 @@ export async function GET(request: Request) {
     }
     throw error;
   }
-
-  const result = await getPersonDetail(session.user.tenantId, periodId, userId, scopeUnitIds);
-  if (!result) {
-    const userExists = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true },
-    });
-    return NextResponse.json(
-      { status: "error", message: userExists ? "You do not have access to the requested user." : "User not found." },
-      { status: userExists ? 403 : 404 },
-    );
-  }
-
-  return NextResponse.json(result);
 }

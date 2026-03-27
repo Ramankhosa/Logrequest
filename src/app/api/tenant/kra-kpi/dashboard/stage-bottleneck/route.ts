@@ -1,8 +1,15 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { getStageBottleneckAnalysis } from "@/lib/kra-kpi/dashboard-service";
-import { resolveUserDashboardScope } from "@/lib/org-structure/scope-resolver";
+import {
+  getStageBottleneckAnalysis,
+  getUnitSummary,
+} from "@/lib/kra-kpi/dashboard-service";
+import {
+  DashboardUnitSelectionError,
+  resolveDashboardUnitSelection,
+  resolveUserDashboardScope,
+} from "@/lib/org-structure/scope-resolver";
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -16,6 +23,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const periodId = searchParams.get("periodId");
   const kpiId = searchParams.get("kpiId");
+  const unitId = searchParams.get("unitId") ?? undefined;
   if (!periodId || !kpiId) {
     return NextResponse.json(
       { status: "error", message: "periodId and kpiId are required." },
@@ -23,8 +31,48 @@ export async function GET(request: Request) {
     );
   }
 
-  const scope = await resolveUserDashboardScope(session.user.tenantId, session.user.id);
-  const result = await getStageBottleneckAnalysis(session.user.tenantId, periodId, kpiId, scope.visibleUnitIds);
+  let scopeUnitIds: string[] | "ALL";
+  if (unitId) {
+    try {
+      const selection = await resolveDashboardUnitSelection(
+        session.user.tenantId,
+        session.user.id,
+        unitId,
+      );
+      const summary = await getUnitSummary(
+        session.user.tenantId,
+        periodId,
+        selection.rootUnit.unitId,
+        selection.scopeMode,
+        selection.effectiveUnitIds,
+      );
+      if (!summary || !summary.stageKpiOptions.some((option) => option.kpiId === kpiId)) {
+        return NextResponse.json(
+          { status: "error", message: "KPI not found." },
+          { status: 404 },
+        );
+      }
+      scopeUnitIds = selection.effectiveUnitIds;
+    } catch (error) {
+      if (error instanceof DashboardUnitSelectionError) {
+        return NextResponse.json(
+          { status: "error", message: error.message },
+          { status: error.status },
+        );
+      }
+      throw error;
+    }
+  } else {
+    const scope = await resolveUserDashboardScope(session.user.tenantId, session.user.id);
+    scopeUnitIds = scope.visibleUnitIds;
+  }
+
+  const result = await getStageBottleneckAnalysis(
+    session.user.tenantId,
+    periodId,
+    kpiId,
+    scopeUnitIds,
+  );
   if (!result) {
     return NextResponse.json(
       { status: "error", message: "KPI not found." },

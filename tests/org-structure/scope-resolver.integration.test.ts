@@ -12,6 +12,8 @@ import {
 } from "@/lib/org-structure/roles-service";
 import {
   resolveUserDashboardScope,
+  resolveDashboardUnitSelection,
+  DashboardUnitSelectionError,
   applyScopeFilter,
   type UserDashboardScope,
 } from "@/lib/org-structure/scope-resolver";
@@ -337,6 +339,145 @@ describe("scope-resolver", () => {
       expect(result).toEqual({
         tenantId: "t1",
         assignedToUnitId: { in: ["u1", "u2"] },
+      });
+    });
+  });
+
+  describe("resolveDashboardUnitSelection", () => {
+    it("defaults NODE heads to their headed unit only", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const { context } = await setupActor(tracker, "TENANT_OWNER");
+        const tree = await createPublishedStructure(context);
+
+        const headUser = await createTestUser(tracker, { firstName: "Node", lastName: "Head" });
+        await createTestMembership({
+          tenantId: context.tenantId,
+          userId: headUser.id,
+          role: "TENANT_USER",
+          status: "ACTIVE",
+          createdByUserId: context.actorUserId,
+        });
+
+        const roleDefId = await createRoleAndGetId(context, {
+          roleKey: "NODE_HEAD",
+          displayLabel: "Node Head",
+          isUnitHead: true,
+          approvalAuthority: false,
+        });
+
+        await assignRoleToUser({
+          ...context,
+          values: { unitId: tree.cse.id, userId: headUser.id, roleDefinitionId: roleDefId, scope: "NODE" },
+        });
+
+        const selection = await resolveDashboardUnitSelection(context.tenantId, headUser.id);
+        expect(selection.scopeMode).toBe("NODE");
+        expect(selection.rootUnit.unitId).toBe(tree.cse.id);
+        expect(selection.effectiveUnitIds).toEqual([tree.cse.id]);
+      });
+    });
+
+    it("expands DESCENDANTS heads to the full subtree", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const { context } = await setupActor(tracker, "TENANT_OWNER");
+        const tree = await createPublishedStructure(context);
+
+        const dean = await createTestUser(tracker, { firstName: "Dina", lastName: "Dean" });
+        await createTestMembership({
+          tenantId: context.tenantId,
+          userId: dean.id,
+          role: "TENANT_USER",
+          status: "ACTIVE",
+          createdByUserId: context.actorUserId,
+        });
+
+        const roleDefId = await createRoleAndGetId(context, {
+          roleKey: "DESC_HEAD",
+          displayLabel: "Desc Head",
+          isUnitHead: true,
+          approvalAuthority: false,
+        });
+
+        await assignRoleToUser({
+          ...context,
+          values: { unitId: tree.cse.id, userId: dean.id, roleDefinitionId: roleDefId, scope: "DESCENDANTS" },
+        });
+
+        const selection = await resolveDashboardUnitSelection(context.tenantId, dean.id);
+        expect(selection.scopeMode).toBe("DESCENDANTS");
+        expect(selection.effectiveUnitIds).toContain(tree.cse.id);
+        expect(selection.effectiveUnitIds).toContain(tree.aiTeam.id);
+      });
+    });
+
+    it("lets multi-head users switch between headed roots", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const { context } = await setupActor(tracker, "TENANT_OWNER");
+        const tree = await createPublishedStructure(context);
+
+        const headUser = await createTestUser(tracker, { firstName: "Multi", lastName: "Head" });
+        await createTestMembership({
+          tenantId: context.tenantId,
+          userId: headUser.id,
+          role: "TENANT_USER",
+          status: "ACTIVE",
+          createdByUserId: context.actorUserId,
+        });
+
+        const roleDefId = await createRoleAndGetId(context, {
+          roleKey: "MULTI_HEAD",
+          displayLabel: "Multi Head",
+          isUnitHead: true,
+          approvalAuthority: false,
+        });
+
+        await assignRoleToUser({
+          ...context,
+          values: { unitId: tree.cse.id, userId: headUser.id, roleDefinitionId: roleDefId, scope: "NODE" },
+        });
+        await assignRoleToUser({
+          ...context,
+          values: { unitId: tree.eee.id, userId: headUser.id, roleDefinitionId: roleDefId, scope: "NODE" },
+        });
+
+        const selection = await resolveDashboardUnitSelection(context.tenantId, headUser.id, tree.eee.id);
+        expect(selection.rootUnit.unitId).toBe(tree.eee.id);
+        expect(selection.effectiveUnitIds).toEqual([tree.eee.id]);
+      });
+    });
+
+    it("rejects explicit unit selection outside the caller's headed units", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const { context } = await setupActor(tracker, "TENANT_OWNER");
+        const tree = await createPublishedStructure(context);
+
+        const headUser = await createTestUser(tracker, { firstName: "Scoped", lastName: "Head" });
+        await createTestMembership({
+          tenantId: context.tenantId,
+          userId: headUser.id,
+          role: "TENANT_USER",
+          status: "ACTIVE",
+          createdByUserId: context.actorUserId,
+        });
+
+        const roleDefId = await createRoleAndGetId(context, {
+          roleKey: "SCOPED_HEAD",
+          displayLabel: "Scoped Head",
+          isUnitHead: true,
+          approvalAuthority: false,
+        });
+
+        await assignRoleToUser({
+          ...context,
+          values: { unitId: tree.cse.id, userId: headUser.id, roleDefinitionId: roleDefId, scope: "NODE" },
+        });
+
+        await expect(
+          resolveDashboardUnitSelection(context.tenantId, headUser.id, tree.eee.id),
+        ).rejects.toMatchObject({
+          name: DashboardUnitSelectionError.name,
+          status: 403,
+        });
       });
     });
   });

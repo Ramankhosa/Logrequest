@@ -1,5 +1,8 @@
-import type { Prisma } from "@prisma/client";
+import type { KpiMeasurementType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import type { StageProgressView } from "./shared";
+import { formatTargetDisplay } from "./measurement-display";
+import { getStageProgressForAchievement } from "./stage-progress-service";
 
 /**
  * Builds a combined WHERE filter that captures both unit-assigned and
@@ -86,21 +89,73 @@ export type StageBottleneck = {
   }[];
 };
 
+export type UnitSummary = {
+  unitId: string;
+  unitName: string;
+  unitCode: string;
+  scopeMode: "NODE" | "DESCENDANTS";
+  effectiveUnitCount: number;
+  memberCount: number;
+  totalAllocations: number;
+  completedAllocations: number;
+  completionPercent: number;
+  averageScore: number;
+  kraBreakdown: {
+    kraId: string;
+    kraTitle: string;
+    weightage: number;
+    totalAllocations: number;
+    completedAllocations: number;
+    completionPercent: number;
+    averageScore: number;
+  }[];
+  stageKpiOptions: {
+    kpiId: string;
+    kpiTitle: string;
+    allocationCount: number;
+    stageCount: number;
+    completionPercent: number;
+  }[];
+};
+
+export type UnitMemberSummary = {
+  userId: string;
+  userName: string;
+  primaryUnitId: string | null;
+  primaryUnitName: string;
+  totalAllocations: number;
+  completedAllocations: number;
+  completionPercent: number;
+  overallScore: number;
+  overdueCount: number;
+  alertLevel: "brand" | "blue" | "amber" | "rose" | "slate";
+};
+
 export type PersonDetail = {
   userId: string;
   userName: string;
+  primaryUnitId: string | null;
+  primaryUnitCode: string | null;
   unitName: string;
   allocations: {
+    allocationId: string;
+    kpiDefinitionId: string;
     kpiTitle: string;
+    measurementType: KpiMeasurementType;
+    unitLabel: string | null;
     target: string;
+    targetDisplay: string;
+    latestAchievementId: string | null;
     stagesComplete: number;
     stagesTotal: number;
     completionPercent: number;
     score: number;
     state: string;
     isOverdue: boolean;
+    stageRows: StageProgressView[];
   }[];
   overallScore: number;
+  averageScore: number;
   overallCompletion: number;
 };
 
@@ -207,6 +262,8 @@ function scoreFromAchievement(achievement: {
     ?? 0;
 }
 
+// Legacy formatter kept for backward-compatible diffs while dashboard consumers migrate.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function formatTargetValue(allocation: {
   targetValue: number | null;
   targetDate: Date | null;
@@ -222,6 +279,35 @@ function formatTargetValue(allocation: {
   if (allocation.targetBoolean != null) return allocation.targetBoolean ? "Yes" : "No";
   if (allocation.targetRating != null) return String(allocation.targetRating);
   return "—";
+}
+
+function roundToTwo(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function toPercent(completed: number, total: number) {
+  return total > 0 ? roundToTwo((completed / total) * 100) : 0;
+}
+
+function formatUserName(user: { firstName: string; lastName: string } | null | undefined) {
+  return user ? `${user.firstName} ${user.lastName}` : "Unknown";
+}
+
+function isAllocationCompleted(achievements: Array<{ state: string }>) {
+  return achievements.some((achievement) => achievement.state === "VERIFIED");
+}
+
+function scoreToAlertLevel(
+  score: number,
+  completionPercent: number,
+  overdueCount: number,
+): UnitMemberSummary["alertLevel"] {
+  if (overdueCount > 0) return "rose";
+  if (completionPercent === 0 && score === 0) return "slate";
+  if (score >= 80 && completionPercent >= 80) return "brand";
+  if (score >= 50 && completionPercent >= 50) return "blue";
+  if (score >= 25 || completionPercent >= 25) return "amber";
+  return "rose";
 }
 
 export async function getOverviewStats(
@@ -663,6 +749,320 @@ export async function getStageBottleneckAnalysis(
   };
 }
 
+export async function getUnitSummary(
+  tenantId: string,
+  periodId: string,
+  unitId: string,
+  scopeMode: "NODE" | "DESCENDANTS",
+  effectiveUnitIds: string[],
+): Promise<UnitSummary | null> {
+  const versionId = await getPublishedVersionId(tenantId);
+  if (!versionId) return null;
+
+  const scopedUnitIds = [...new Set(effectiveUnitIds)];
+  const scopeFilter = buildEffectiveUnitFilter(scopedUnitIds);
+
+  const [unit, allocations, primaryMembers] = await Promise.all([
+    prisma.orgUnit.findFirst({
+      where: { tenantId, versionId, id: unitId },
+      select: { id: true, name: true, code: true },
+    }),
+    prisma.targetAllocation.findMany({
+      where: {
+        tenantId,
+        periodId,
+        ...scopeFilter,
+      },
+      select: {
+        assignedToUserId: true,
+        kpiDefinitionId: true,
+        kpiDefinition: {
+          select: {
+            id: true,
+            title: true,
+            _count: { select: { stages: true } },
+            kraDefinition: {
+              select: {
+                id: true,
+                title: true,
+                weightage: true,
+              },
+            },
+          },
+        },
+        achievements: {
+          orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
+          select: {
+            state: true,
+            effectiveScore: true,
+            stageCompletionScore: true,
+            computedScore: true,
+            stageProgress: { select: { isCompleted: true } },
+          },
+        },
+      },
+    }),
+    prisma.userOrgAssignment.findMany({
+      where: {
+        versionId,
+        isPrimary: true,
+        unitId: { in: scopedUnitIds },
+      },
+      select: { userId: true },
+    }),
+  ]);
+
+  if (!unit) return null;
+
+  let completedAllocations = 0;
+  let scoreTotal = 0;
+  let scoredCount = 0;
+  const memberIds = new Set(primaryMembers.map((member) => member.userId));
+  const kraBuckets = new Map<string, {
+    kraId: string;
+    kraTitle: string;
+    weightage: number;
+    totalAllocations: number;
+    completedAllocations: number;
+    scoreTotal: number;
+    scoredCount: number;
+  }>();
+  const stageBuckets = new Map<string, {
+    kpiId: string;
+    kpiTitle: string;
+    allocationCount: number;
+    stageCount: number;
+    completedStages: number;
+    totalStages: number;
+  }>();
+
+  for (const allocation of allocations) {
+    if (allocation.assignedToUserId) {
+      memberIds.add(allocation.assignedToUserId);
+    }
+
+    const latestAchievement = allocation.achievements[0];
+    const allocationCompleted = isAllocationCompleted(allocation.achievements);
+    const latestScore = latestAchievement ? scoreFromAchievement(latestAchievement) : null;
+
+    if (allocationCompleted) {
+      completedAllocations += 1;
+    }
+    if (latestScore != null) {
+      scoreTotal += latestScore;
+      scoredCount += 1;
+    }
+
+    const kra = allocation.kpiDefinition.kraDefinition;
+    const kraBucket = kraBuckets.get(kra.id) ?? {
+      kraId: kra.id,
+      kraTitle: kra.title,
+      weightage: kra.weightage,
+      totalAllocations: 0,
+      completedAllocations: 0,
+      scoreTotal: 0,
+      scoredCount: 0,
+    };
+    kraBucket.totalAllocations += 1;
+    if (allocationCompleted) {
+      kraBucket.completedAllocations += 1;
+    }
+    if (latestScore != null) {
+      kraBucket.scoreTotal += latestScore;
+      kraBucket.scoredCount += 1;
+    }
+    kraBuckets.set(kra.id, kraBucket);
+
+    if (allocation.kpiDefinition._count.stages > 0) {
+      const stageCount = allocation.kpiDefinition._count.stages;
+      const completedStages = latestAchievement?.stageProgress.filter((stage) => stage.isCompleted).length ?? 0;
+      const totalStages = latestAchievement?.stageProgress.length ?? stageCount;
+      const stageBucket = stageBuckets.get(allocation.kpiDefinitionId) ?? {
+        kpiId: allocation.kpiDefinitionId,
+        kpiTitle: allocation.kpiDefinition.title,
+        allocationCount: 0,
+        stageCount,
+        completedStages: 0,
+        totalStages: 0,
+      };
+      stageBucket.allocationCount += 1;
+      stageBucket.completedStages += completedStages;
+      stageBucket.totalStages += totalStages;
+      stageBuckets.set(allocation.kpiDefinitionId, stageBucket);
+    }
+  }
+
+  return {
+    unitId: unit.id,
+    unitName: unit.name,
+    unitCode: unit.code,
+    scopeMode,
+    effectiveUnitCount: scopedUnitIds.length,
+    memberCount: memberIds.size,
+    totalAllocations: allocations.length,
+    completedAllocations,
+    completionPercent: toPercent(completedAllocations, allocations.length),
+    averageScore: scoredCount > 0 ? roundToTwo(scoreTotal / scoredCount) : 0,
+    kraBreakdown: [...kraBuckets.values()]
+      .map((bucket) => ({
+        kraId: bucket.kraId,
+        kraTitle: bucket.kraTitle,
+        weightage: bucket.weightage,
+        totalAllocations: bucket.totalAllocations,
+        completedAllocations: bucket.completedAllocations,
+        completionPercent: toPercent(bucket.completedAllocations, bucket.totalAllocations),
+        averageScore: bucket.scoredCount > 0 ? roundToTwo(bucket.scoreTotal / bucket.scoredCount) : 0,
+      }))
+      .sort((left, right) => left.kraTitle.localeCompare(right.kraTitle)),
+    stageKpiOptions: [...stageBuckets.values()]
+      .map((bucket) => ({
+        kpiId: bucket.kpiId,
+        kpiTitle: bucket.kpiTitle,
+        allocationCount: bucket.allocationCount,
+        stageCount: bucket.stageCount,
+        completionPercent: toPercent(bucket.completedStages, bucket.totalStages),
+      }))
+      .sort((left, right) =>
+        left.completionPercent === right.completionPercent
+          ? left.kpiTitle.localeCompare(right.kpiTitle)
+          : left.completionPercent - right.completionPercent,
+      ),
+  };
+}
+
+export async function getUnitMembersSummary(
+  tenantId: string,
+  periodId: string,
+  effectiveUnitIds: string[],
+): Promise<UnitMemberSummary[]> {
+  const versionId = await getPublishedVersionId(tenantId);
+  if (!versionId) return [];
+
+  const scopedUnitIds = [...new Set(effectiveUnitIds)];
+  const scopeFilter = buildEffectiveUnitFilter(scopedUnitIds);
+  const [period, primaryAssignments, allocations] = await Promise.all([
+    prisma.assessmentPeriod.findFirst({
+      where: { id: periodId, tenantId },
+      select: { achievementDeadline: true, endDate: true },
+    }),
+    prisma.userOrgAssignment.findMany({
+      where: {
+        versionId,
+        isPrimary: true,
+        unitId: { in: scopedUnitIds },
+      },
+      select: {
+        userId: true,
+        unitId: true,
+        unit: { select: { name: true } },
+        user: { select: { firstName: true, lastName: true } },
+      },
+    }),
+    prisma.targetAllocation.findMany({
+      where: {
+        tenantId,
+        periodId,
+        assignedToUserId: { not: null },
+        ...scopeFilter,
+      },
+      select: {
+        assignedToUserId: true,
+        assignedToUser: { select: { firstName: true, lastName: true } },
+        achievements: {
+          orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
+          select: {
+            state: true,
+            effectiveScore: true,
+            stageCompletionScore: true,
+            computedScore: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  const dueDate = period?.achievementDeadline ?? period?.endDate ?? null;
+  const now = new Date();
+  const members = new Map<string, {
+    userId: string;
+    userName: string;
+    primaryUnitId: string | null;
+    primaryUnitName: string;
+    totalAllocations: number;
+    completedAllocations: number;
+    scoreTotal: number;
+    scoredCount: number;
+    overdueCount: number;
+  }>();
+
+  for (const assignment of primaryAssignments) {
+    members.set(assignment.userId, {
+      userId: assignment.userId,
+      userName: formatUserName(assignment.user),
+      primaryUnitId: assignment.unitId,
+      primaryUnitName: assignment.unit.name,
+      totalAllocations: 0,
+      completedAllocations: 0,
+      scoreTotal: 0,
+      scoredCount: 0,
+      overdueCount: 0,
+    });
+  }
+
+  for (const allocation of allocations) {
+    if (!allocation.assignedToUserId) continue;
+
+    const entry = members.get(allocation.assignedToUserId) ?? {
+      userId: allocation.assignedToUserId,
+      userName: formatUserName(allocation.assignedToUser),
+      primaryUnitId: null,
+      primaryUnitName: "Unassigned",
+      totalAllocations: 0,
+      completedAllocations: 0,
+      scoreTotal: 0,
+      scoredCount: 0,
+      overdueCount: 0,
+    };
+
+    entry.totalAllocations += 1;
+    const allocationCompleted = isAllocationCompleted(allocation.achievements);
+    if (allocationCompleted) {
+      entry.completedAllocations += 1;
+    }
+
+    const latestAchievement = allocation.achievements[0];
+    if (latestAchievement) {
+      entry.scoreTotal += scoreFromAchievement(latestAchievement);
+      entry.scoredCount += 1;
+    }
+
+    if (dueDate && now > dueDate && !allocationCompleted) {
+      entry.overdueCount += 1;
+    }
+
+    members.set(allocation.assignedToUserId, entry);
+  }
+
+  return [...members.values()]
+    .map((entry) => {
+      const overallScore = entry.scoredCount > 0 ? roundToTwo(entry.scoreTotal / entry.scoredCount) : 0;
+      const completionPercent = toPercent(entry.completedAllocations, entry.totalAllocations);
+      return {
+        userId: entry.userId,
+        userName: entry.userName,
+        primaryUnitId: entry.primaryUnitId,
+        primaryUnitName: entry.primaryUnitName,
+        totalAllocations: entry.totalAllocations,
+        completedAllocations: entry.completedAllocations,
+        completionPercent,
+        overallScore,
+        overdueCount: entry.overdueCount,
+        alertLevel: scoreToAlertLevel(overallScore, completionPercent, entry.overdueCount),
+      };
+    })
+    .sort((left, right) => left.userName.localeCompare(right.userName));
+}
+
 export async function getPersonDetail(
   tenantId: string,
   periodId: string,
@@ -678,21 +1078,10 @@ export async function getPersonDetail(
   ]);
   if (!user) return null;
 
-  // Access check: if scope is limited, verify user's primary unit is in scope
-  if (scopeUnitIds && scopeUnitIds !== "ALL" && versionId) {
-    const primaryUnit = await prisma.userOrgAssignment.findFirst({
-      where: { versionId, userId, isPrimary: true },
-      select: { unitId: true },
-    });
-    if (primaryUnit && !scopeUnitIds.includes(primaryUnit.unitId)) {
-      return null;
-    }
-  }
-
   const primaryAssignment = versionId
     ? await prisma.userOrgAssignment.findFirst({
         where: { versionId, userId, isPrimary: true },
-        include: { unit: { select: { name: true } } },
+        include: { unit: { select: { name: true, code: true } } },
       })
     : null;
 
@@ -705,6 +1094,8 @@ export async function getPersonDetail(
       ...scopeFilter,
     },
     select: {
+      id: true,
+      kpiDefinitionId: true,
       targetValue: true,
       targetDate: true,
       targetMilestone: true,
@@ -714,6 +1105,8 @@ export async function getPersonDetail(
       kpiDefinition: {
         select: {
           title: true,
+          measurementType: true,
+          unitLabel: true,
           _count: { select: { stages: true } },
         },
       },
@@ -725,7 +1118,6 @@ export async function getPersonDetail(
           effectiveScore: true,
           stageCompletionScore: true,
           computedScore: true,
-          stageProgress: { select: { isCompleted: true } },
         },
       },
     },
@@ -736,44 +1128,82 @@ export async function getPersonDetail(
     where: { id: periodId, tenantId },
     select: { achievementDeadline: true, endDate: true },
   });
+  if (
+    scopeUnitIds &&
+    scopeUnitIds !== "ALL" &&
+    primaryAssignment &&
+    !scopeUnitIds.includes(primaryAssignment.unitId) &&
+    allocations.length === 0
+  ) {
+    return null;
+  }
+  if (scopeUnitIds && scopeUnitIds !== "ALL" && !primaryAssignment && allocations.length === 0) {
+    return null;
+  }
   const dueDate = period?.achievementDeadline ?? period?.endDate ?? null;
   const now = new Date();
 
   let overallScore = 0;
+  let scoredCount = 0;
   let completedCount = 0;
 
-  const allocationRows = allocations.map((allocation) => {
-    const latestAchievement = allocation.achievements[0];
-    const stagesTotal = latestAchievement?.stageProgress.length ?? allocation.kpiDefinition._count.stages;
-    const stagesComplete =
-      latestAchievement?.stageProgress.filter((stage) => stage.isCompleted).length ?? 0;
-    const state = latestAchievement?.state ?? "NOT_STARTED";
-    const score = scoreFromAchievement(latestAchievement);
-    const isOverdue = Boolean(dueDate && now > dueDate && state !== "VERIFIED");
+  const allocationRows = await Promise.all(
+    allocations.map(async (allocation) => {
+      const latestAchievement = allocation.achievements[0] ?? null;
+      const stageRows = latestAchievement
+        ? await getStageProgressForAchievement(latestAchievement.id, tenantId)
+        : [];
+      const stagesTotal = stageRows.length || allocation.kpiDefinition._count.stages;
+      const stagesComplete = stageRows.filter((stage) => stage.isCompleted).length;
+      const state = latestAchievement?.state ?? "NOT_STARTED";
+      const score = scoreFromAchievement(latestAchievement);
+      const targetDisplay = formatTargetDisplay(
+        allocation.kpiDefinition.measurementType,
+        allocation,
+        allocation.kpiDefinition.unitLabel,
+      );
+      const isOverdue =
+        stageRows.length > 0
+          ? stageRows.some((stage) => stage.isOverdue)
+          : Boolean(dueDate && now > dueDate && state !== "VERIFIED");
 
-    overallScore += score;
-    if (state === "VERIFIED") {
-      completedCount += 1;
-    }
+      overallScore += score;
+      if (latestAchievement) {
+        scoredCount += 1;
+      }
+      if (isAllocationCompleted(allocation.achievements)) {
+        completedCount += 1;
+      }
 
-    return {
-      kpiTitle: allocation.kpiDefinition.title,
-      target: formatTargetValue(allocation),
-      stagesComplete,
-      stagesTotal,
-      completionPercent: stagesTotal > 0 ? Math.round((stagesComplete / stagesTotal) * 100) : 0,
-      score,
-      state,
-      isOverdue,
-    };
-  });
+      return {
+        allocationId: allocation.id,
+        kpiDefinitionId: allocation.kpiDefinitionId,
+        kpiTitle: allocation.kpiDefinition.title,
+        measurementType: allocation.kpiDefinition.measurementType,
+        unitLabel: allocation.kpiDefinition.unitLabel,
+        target: targetDisplay,
+        targetDisplay,
+        latestAchievementId: latestAchievement?.id ?? null,
+        stagesComplete,
+        stagesTotal,
+        completionPercent: stagesTotal > 0 ? Math.round((stagesComplete / stagesTotal) * 100) : 0,
+        score,
+        state,
+        isOverdue,
+        stageRows,
+      };
+    }),
+  );
 
   return {
     userId: user.id,
     userName: `${user.firstName} ${user.lastName}`,
     unitName: primaryAssignment?.unit?.name ?? "—",
+    primaryUnitId: primaryAssignment?.unitId ?? null,
+    primaryUnitCode: primaryAssignment?.unit?.code ?? null,
     allocations: allocationRows,
-    overallScore: Math.round(overallScore * 100) / 100,
+    overallScore: roundToTwo(overallScore),
+    averageScore: scoredCount > 0 ? roundToTwo(overallScore / scoredCount) : 0,
     overallCompletion:
       allocationRows.length > 0 ? Math.round((completedCount / allocationRows.length) * 100) : 0,
   };
