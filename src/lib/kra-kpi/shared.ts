@@ -489,6 +489,24 @@ export type RewardConsoleListResult = {
   totalRows: number;
 };
 
+export type RewardStateTotalsView = {
+  benefitTypeCode: string;
+  benefitTypeName: string;
+  unit: string;
+  count: number;
+  totalAmount: number;
+};
+
+export type MyRewardsTotalsByState = Record<
+  ContributorRewardStateView,
+  RewardStateTotalsView[]
+>;
+
+export type MyRewardsView = {
+  rewards: ContributorRewardView[];
+  totalsByState: MyRewardsTotalsByState;
+};
+
 export type TargetAllocationView = {
   id: string;
   tenantId: string;
@@ -1302,6 +1320,9 @@ export type ReviewQueueItem = {
   reportingDate: Date;
   reviewLevel: "RECOMMEND" | "VERIFY";
   startingUnitId: string;
+  reviewUnitId: string | null;
+  reviewUnitName: string | null;
+  waitingDays: number;
   contributionRole: string | null;
   creditPercent: number | null;
   contributors: AchievementContributorView[];
@@ -1310,6 +1331,8 @@ export type ReviewQueueItem = {
   effectiveScore: number | null;
   stagesComplete: number;
   stagesTotal: number;
+  targetDisplay: string;
+  actualDisplay: string;
 };
 
 export type MyDashboardSummary = {

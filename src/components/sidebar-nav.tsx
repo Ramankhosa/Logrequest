@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   LayoutDashboard,
   Users,
   Building2,
   BarChart2,
+  ClipboardCheck,
   Upload,
   Home,
   ShieldCheck,
@@ -21,9 +23,11 @@ import type { NavigationGroup } from "@/lib/navigation";
 
 const iconMap: Record<string, LucideIcon> = {
   "layout-dashboard": LayoutDashboard,
+  "clipboard-check": ClipboardCheck,
   "users": Users,
   "building-2": Building2,
   "bar-chart-2": BarChart2,
+  "bar-chart-3": BarChart3,
   "upload": Upload,
   "home": Home,
   "shield-check": ShieldCheck,

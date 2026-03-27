@@ -17,12 +17,17 @@ type TimelineEntry = {
   metadata: Record<string, unknown> | null;
 };
 
+function coerceDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
 const ACTION_MARKERS: Record<string, string> = {
   SUBMITTED: "S",
   RESUBMITTED: "R",
   RECOMMENDED: "R",
   VERIFIED: "V",
   REJECTED: "X",
+  SENT_BACK: "B",
   WITHDRAWN: "W",
   CORRECTED: "C",
   REWARD_RECALCULATED: "$",
@@ -51,7 +56,7 @@ function normalizeEntries(trail?: SubmissionTrailView[], log?: VerificationLogEn
       note: entry.note,
       actorName: entry.actorName,
       actorRole: entry.actorRole,
-      at: entry.createdAt,
+      at: coerceDate(entry.createdAt),
       metadata: entry.metadata,
     }));
   }

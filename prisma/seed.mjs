@@ -106,6 +106,187 @@ const R43_PUBLICATION_TIERS = [
   },
 ];
 
+const DASHBOARD_SEED_PREFIX = "seed:dashboard";
+const DASHBOARD_ACHIEVEMENT_PREFIX = "Seed Dashboard";
+
+const DASHBOARD_PERIOD_BLUEPRINTS = [
+  {
+    code: "AY2024_25",
+    label: "2024",
+    name: "AY 2024-25",
+    startDate: "2024-04-01T00:00:00.000Z",
+    endDate: "2025-03-31T00:00:00.000Z",
+    state: "CLOSED",
+    targetSettingDeadline: "2024-04-30T00:00:00.000Z",
+    achievementDeadline: "2025-03-10T00:00:00.000Z",
+    reviewDeadline: "2025-03-25T00:00:00.000Z",
+    description: "Historical seeded dashboard period with completed KPI data for 2024.",
+    kraTitle: "Seed: Research and Administration 2024",
+  },
+  {
+    code: "AY2025_26",
+    label: "2025",
+    name: "AY 2025-26",
+    startDate: "2025-04-01T00:00:00.000Z",
+    endDate: "2026-03-31T00:00:00.000Z",
+    state: "IN_PROGRESS",
+    targetSettingDeadline: "2025-04-30T00:00:00.000Z",
+    achievementDeadline: "2026-03-15T00:00:00.000Z",
+    reviewDeadline: "2026-03-31T00:00:00.000Z",
+    description: "Current seeded dashboard period with mixed KPI states for 2025.",
+    kraTitle: "Seed: Research and Administration 2025",
+  },
+];
+
+const DASHBOARD_ASSIGNEE_GROUPS = {
+  CSE: ["cseHead", "facultyOne", "demoEmployee"],
+  ECE: ["eceHead", "facultyTwo", "eceStaff"],
+  UNIV: ["provost", "admin", "owner"],
+};
+
+const DASHBOARD_KPI_BLUEPRINTS = [
+  {
+    key: "indexed_publications",
+    title: "Research: Indexed Journal Publications",
+    description: "Tracks indexed journal articles delivered by the department team.",
+    measurementType: "NUMERIC",
+    unitLabel: "papers",
+    defaultTarget: 12,
+    allocationType: "BOTH",
+    startingUnitKey: "CSE",
+    weightage: 10,
+    sortOrder: 1,
+    parentTarget: 14,
+    userTargets: [4, 5, 5],
+  },
+  {
+    key: "conference_presentations",
+    title: "Research: Conference Papers Presented",
+    description: "Tracks peer-reviewed conference presentations across the electronics group.",
+    measurementType: "NUMERIC",
+    unitLabel: "papers",
+    defaultTarget: 11,
+    allocationType: "BOTH",
+    startingUnitKey: "ECE",
+    weightage: 10,
+    sortOrder: 2,
+    parentTarget: 12,
+    userTargets: [4, 4, 4],
+  },
+  {
+    key: "patent_filings",
+    title: "Research: Patent Filings Submitted",
+    description: "Measures patent filing velocity for applied research outputs.",
+    measurementType: "NUMERIC",
+    unitLabel: "filings",
+    defaultTarget: 6,
+    allocationType: "INDIVIDUAL",
+    startingUnitKey: "CSE",
+    weightage: 10,
+    sortOrder: 3,
+    parentTarget: 7,
+    userTargets: [2, 3, 2],
+  },
+  {
+    key: "sponsored_grants",
+    title: "Research: Sponsored Grant Value Mobilized",
+    description: "Measures external research funding mobilized by the unit.",
+    measurementType: "CURRENCY",
+    unitLabel: "INR",
+    defaultTarget: 1500000,
+    allocationType: "BOTH",
+    startingUnitKey: "ECE",
+    weightage: 10,
+    sortOrder: 4,
+    parentTarget: 1800000,
+    userTargets: [600000, 650000, 550000],
+  },
+  {
+    key: "phd_completions",
+    title: "Research: PhD Scholars Graduated",
+    description: "Tracks successful doctoral completions under faculty supervision.",
+    measurementType: "NUMERIC",
+    unitLabel: "scholars",
+    defaultTarget: 5,
+    allocationType: "INDIVIDUAL",
+    startingUnitKey: "CSE",
+    weightage: 10,
+    sortOrder: 5,
+    parentTarget: 6,
+    userTargets: [2, 2, 2],
+  },
+  {
+    key: "consultancy_revenue",
+    title: "Research: Consultancy Revenue Generated",
+    description: "Captures revenue from industry consultancy and expert assignments.",
+    measurementType: "CURRENCY",
+    unitLabel: "INR",
+    defaultTarget: 900000,
+    allocationType: "BOTH",
+    startingUnitKey: "ECE",
+    weightage: 10,
+    sortOrder: 6,
+    parentTarget: 1050000,
+    userTargets: [350000, 350000, 350000],
+  },
+  {
+    key: "accreditation_actions",
+    title: "Administration: Accreditation Action Items Closed",
+    description: "Tracks institution-level accreditation action items closed on time.",
+    measurementType: "NUMERIC",
+    unitLabel: "items",
+    defaultTarget: 30,
+    allocationType: "BOTH",
+    startingUnitKey: "UNIV",
+    weightage: 10,
+    sortOrder: 7,
+    parentTarget: 36,
+    userTargets: [12, 12, 12],
+  },
+  {
+    key: "budget_savings",
+    title: "Administration: Budget Savings Realized",
+    description: "Measures budget savings realized through procurement and utilization discipline.",
+    measurementType: "CURRENCY",
+    unitLabel: "INR",
+    defaultTarget: 400000,
+    allocationType: "BOTH",
+    startingUnitKey: "UNIV",
+    weightage: 10,
+    sortOrder: 8,
+    parentTarget: 480000,
+    userTargets: [180000, 150000, 150000],
+  },
+  {
+    key: "committee_deliverables",
+    title: "Administration: Committee Deliverables Completed",
+    description: "Tracks committee and governance deliverables closed by the CSE team.",
+    measurementType: "NUMERIC",
+    unitLabel: "deliverables",
+    defaultTarget: 16,
+    allocationType: "BOTH",
+    startingUnitKey: "CSE",
+    weightage: 10,
+    sortOrder: 9,
+    parentTarget: 18,
+    userTargets: [6, 6, 6],
+  },
+  {
+    key: "automation_rollouts",
+    title: "Administration: Process Automation Rollouts",
+    description: "Measures digital process rollouts completed for institutional operations.",
+    measurementType: "NUMERIC",
+    unitLabel: "rollouts",
+    defaultTarget: 8,
+    allocationType: "BOTH",
+    startingUnitKey: "UNIV",
+    weightage: 10,
+    sortOrder: 10,
+    parentTarget: 9,
+    userTargets: [3, 3, 3],
+  },
+];
+
 function userName(user) {
   return `${user.firstName} ${user.lastName}`;
 }
@@ -130,6 +311,31 @@ function buildUnitSnapshot(unit) {
 function roundTo(value, precision) {
   const factor = 10 ** precision;
   return Math.round(value * factor) / factor;
+}
+
+function addDays(value, days) {
+  const next = new Date(value);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function buildDashboardMeasurementConfig(measurementType) {
+  switch (measurementType) {
+    case "CURRENCY":
+      return {
+        type: "CURRENCY",
+        currencyCode: "INR",
+        minValue: 0,
+        decimalPlaces: 0,
+      };
+    case "NUMERIC":
+    default:
+      return {
+        type: "NUMERIC",
+        minValue: 0,
+        decimalPlaces: 0,
+      };
+  }
 }
 
 async function upsertUser({
@@ -261,11 +467,15 @@ async function ensurePrimaryUnitAssignment({ versionId, unitId, userId }) {
   });
 }
 
-async function ensureOrgRoleDefinition({
+async function ensureRoleDefinition({
   tenantId,
   roleKey,
   displayLabel,
   description,
+  isUnitHead,
+  approvalAuthority,
+  maxPerUnit,
+  sortOrder,
   createdByUserId,
 }) {
   return prisma.orgRoleDefinition.upsert({
@@ -278,10 +488,10 @@ async function ensureOrgRoleDefinition({
     update: {
       displayLabel,
       description,
-      isUnitHead: true,
-      approvalAuthority: true,
-      maxPerUnit: 1,
-      sortOrder: 10,
+      isUnitHead,
+      approvalAuthority,
+      maxPerUnit,
+      sortOrder,
       isActive: true,
     },
     create: {
@@ -289,22 +499,43 @@ async function ensureOrgRoleDefinition({
       roleKey,
       displayLabel,
       description,
-      isUnitHead: true,
-      approvalAuthority: true,
-      maxPerUnit: 1,
-      sortOrder: 10,
+      isUnitHead,
+      approvalAuthority,
+      maxPerUnit,
+      sortOrder,
       isActive: true,
       createdByUserId,
     },
   });
 }
 
-async function ensureUnitHeadAssignment({
+async function ensureOrgRoleDefinition({
+  tenantId,
+  roleKey,
+  displayLabel,
+  description,
+  createdByUserId,
+}) {
+  return ensureRoleDefinition({
+    tenantId,
+    roleKey,
+    displayLabel,
+    description,
+    isUnitHead: true,
+    approvalAuthority: true,
+    maxPerUnit: 1,
+    sortOrder: 10,
+    createdByUserId,
+  });
+}
+
+async function ensureRoleAssignment({
   versionId,
   unitId,
   userId,
   roleDefinitionId,
   roleName,
+  scope = "NODE",
 }) {
   const existing = await prisma.orgRoleAssignment.findFirst({
     where: {
@@ -324,7 +555,7 @@ async function ensureUnitHeadAssignment({
       data: {
         roleDefinitionId,
         roleName,
-        scope: "NODE",
+        scope,
         isActive: true,
         effectiveTo: null,
         effectiveFrom: existing.effectiveFrom ?? new Date(),
@@ -339,10 +570,28 @@ async function ensureUnitHeadAssignment({
       userId,
       roleDefinitionId,
       roleName,
-      scope: "NODE",
+      scope,
       isActive: true,
       effectiveFrom: new Date(),
     },
+  });
+}
+
+async function ensureUnitHeadAssignment({
+  versionId,
+  unitId,
+  userId,
+  roleDefinitionId,
+  roleName,
+  scope = "NODE",
+}) {
+  return ensureRoleAssignment({
+    versionId,
+    unitId,
+    userId,
+    roleDefinitionId,
+    roleName,
+    scope,
   });
 }
 
@@ -970,6 +1219,582 @@ async function ensureDemoDataset(
       demoEmployeeAllocation,
     ],
     demoEmployeeAllocation,
+  };
+}
+
+async function ensureDashboardSupportUsers({
+  tenant,
+  owner,
+  admin,
+  rootUnit,
+  cseUnit,
+  eceUnit,
+  reviewerUsers,
+  facultyOne,
+  facultyTwo,
+  demoEmployee,
+}) {
+  const provost = await upsertUser({
+    email: "provost@demo-university.local.test",
+    firstName: "Priya",
+    lastName: "Provost",
+    password: DEMO_PASSWORD,
+  });
+  const eceStaff = await upsertUser({
+    email: "ece.staff@demo-university.local.test",
+    firstName: "Ethan",
+    lastName: "Staff",
+    password: DEMO_PASSWORD,
+  });
+
+  for (const [user, employeeId, designation] of [
+    [provost, "EMP-UNIV-HEAD-001", "Provost"],
+    [eceStaff, "EMP-ECE-003", "Assistant Professor"],
+  ]) {
+    await ensureMembership({
+      tenantId: tenant.id,
+      userId: user.id,
+      role: "TENANT_USER",
+      createdByUserId: owner.id,
+      employeeId,
+      designation,
+    });
+  }
+
+  await ensurePrimaryUnitAssignment({
+    versionId: rootUnit.versionId,
+    unitId: rootUnit.id,
+    userId: owner.id,
+  });
+  await ensurePrimaryUnitAssignment({
+    versionId: rootUnit.versionId,
+    unitId: rootUnit.id,
+    userId: admin.id,
+  });
+  await ensurePrimaryUnitAssignment({
+    versionId: rootUnit.versionId,
+    unitId: rootUnit.id,
+    userId: provost.id,
+  });
+  await ensurePrimaryUnitAssignment({
+    versionId: eceUnit.versionId,
+    unitId: eceUnit.id,
+    userId: eceStaff.id,
+  });
+
+  const institutionHeadRole = await ensureOrgRoleDefinition({
+    tenantId: tenant.id,
+    roleKey: "INSTITUTION_HEAD",
+    displayLabel: "Institution Head",
+    description: "Seeded institution-wide approver for hierarchy and dashboard testing.",
+    createdByUserId: owner.id,
+  });
+
+  await ensureUnitHeadAssignment({
+    versionId: rootUnit.versionId,
+    unitId: rootUnit.id,
+    userId: provost.id,
+    roleDefinitionId: institutionHeadRole.id,
+    roleName: institutionHeadRole.displayLabel,
+    scope: "DESCENDANTS",
+  });
+
+  const professorRole = await ensureRoleDefinition({
+    tenantId: tenant.id,
+    roleKey: "PROFESSOR",
+    displayLabel: "Professor",
+    description: "Seeded faculty role for mixed-role hierarchy testing.",
+    isUnitHead: false,
+    approvalAuthority: false,
+    maxPerUnit: -1,
+    sortOrder: 50,
+    createdByUserId: owner.id,
+  });
+
+  for (const [user, unit] of [
+    [reviewerUsers.cseHead, cseUnit],
+    [reviewerUsers.eceHead, eceUnit],
+    [facultyOne, cseUnit],
+    [facultyTwo, eceUnit],
+    [demoEmployee, cseUnit],
+    [eceStaff, eceUnit],
+  ]) {
+    await ensureRoleAssignment({
+      versionId: unit.versionId,
+      unitId: unit.id,
+      userId: user.id,
+      roleDefinitionId: professorRole.id,
+      roleName: professorRole.displayLabel,
+      scope: "NODE",
+    });
+  }
+
+  return { provost, eceStaff };
+}
+
+function pickDashboardAchievementStates(periodCode, kpiIndex) {
+  if (periodCode === "AY2024_25") {
+    return ["VERIFIED", "VERIFIED", "VERIFIED"];
+  }
+
+  const patterns = [
+    ["VERIFIED", "SUBMITTED", "REJECTED"],
+    ["VERIFIED", "VERIFIED", "SUBMITTED"],
+    ["VERIFIED", "REJECTED", "VERIFIED"],
+    ["VERIFIED", "SUBMITTED", "VERIFIED"],
+  ];
+
+  return patterns[kpiIndex % patterns.length];
+}
+
+function buildDashboardActualValue(targetValue, state, kpiIndex, userIndex) {
+  const multipliers = {
+    VERIFIED: 1.08 + ((kpiIndex + userIndex) % 4) * 0.05,
+    SUBMITTED: 0.88 + ((kpiIndex + userIndex) % 3) * 0.06,
+    REJECTED: 0.52 + ((kpiIndex + userIndex) % 3) * 0.07,
+  };
+  return roundTo(targetValue * multipliers[state], 0);
+}
+
+function resolveDashboardReviewer(startingUnitKey, reporterKey, userContexts) {
+  const primaryReviewerKeyByUnit = {
+    CSE: "cseHead",
+    ECE: "eceHead",
+    UNIV: "provost",
+  };
+  const fallbackReviewerKeys = ["owner", "admin", "provost", "cseHead", "eceHead"];
+
+  for (const key of [
+    primaryReviewerKeyByUnit[startingUnitKey],
+    ...fallbackReviewerKeys,
+  ]) {
+    if (key && key !== reporterKey) {
+      return userContexts[key];
+    }
+  }
+
+  throw new Error(`Unable to resolve reviewer for ${startingUnitKey}/${reporterKey}.`);
+}
+
+async function ensureDashboardKra({
+  tenant,
+  owner,
+  period,
+  tenantCategory,
+  title,
+  description,
+}) {
+  const existing = await prisma.kraDefinition.findFirst({
+    where: {
+      tenantId: tenant.id,
+      periodId: period.id,
+      title,
+    },
+  });
+
+  if (existing) {
+    return prisma.kraDefinition.update({
+      where: { id: existing.id },
+      data: {
+        categoryId: tenantCategory.id,
+        description,
+        weightage: 100,
+        state: "ACTIVE",
+        sortOrder: 2,
+      },
+    });
+  }
+
+  return prisma.kraDefinition.create({
+    data: {
+      tenantId: tenant.id,
+      periodId: period.id,
+      categoryId: tenantCategory.id,
+      title,
+      description,
+      weightage: 100,
+      state: "ACTIVE",
+      sortOrder: 2,
+      createdByUserId: owner.id,
+    },
+  });
+}
+
+async function ensureDashboardKpi({
+  kra,
+  owner,
+  startingUnit,
+  blueprint,
+}) {
+  const existing = await prisma.kpiDefinition.findFirst({
+    where: {
+      kraDefinitionId: kra.id,
+      title: blueprint.title,
+    },
+  });
+
+  const baseData = {
+    kraDefinitionId: kra.id,
+    title: blueprint.title,
+    description: blueprint.description,
+    measurementType: blueprint.measurementType,
+    unitLabel: blueprint.unitLabel,
+    weightage: blueprint.weightage,
+    defaultTarget: blueprint.defaultTarget,
+    measurementConfig: buildDashboardMeasurementConfig(blueprint.measurementType),
+    scoringMethod: "LINEAR",
+    scoringDirection: "ASCENDING",
+    scoringConfig: { method: "LINEAR", capAt100: true },
+    allocationType: blueprint.allocationType,
+    startingUnitId: startingUnit.id,
+    achievementTemplateKey: "GENERIC",
+    achievementFormConfig: {
+      templateKey: "GENERIC",
+      fields: [
+        {
+          key: "summary",
+          label: "Summary",
+          type: "TEXTAREA",
+          required: true,
+          sortOrder: 0,
+        },
+        {
+          key: "impact",
+          label: "Impact",
+          type: "TEXT",
+          required: false,
+          sortOrder: 1,
+        },
+      ],
+    },
+    guidanceNotes: `${DASHBOARD_ACHIEVEMENT_PREFIX}: ${blueprint.description}`,
+    state: "ACTIVE",
+    sortOrder: blueprint.sortOrder,
+    evidenceRequired: true,
+    evidenceTypes: ["DOCUMENT", "URL"],
+    evidenceInstructions: "Seeded dashboard scenario. Use a short narrative and one supporting link.",
+    allowPartialCompletion: true,
+  };
+
+  if (existing) {
+    return prisma.kpiDefinition.update({
+      where: { id: existing.id },
+      data: baseData,
+    });
+  }
+
+  return prisma.kpiDefinition.create({
+    data: baseData,
+  });
+}
+
+async function seedDashboardAchievement({
+  tenant,
+  period,
+  kpi,
+  allocation,
+  reporterContext,
+  reviewerContext,
+  startingUnit,
+  blueprint,
+  state,
+  title,
+  evidenceDescription,
+  actualValue,
+  targetValue,
+  reportingDate,
+}) {
+  await prisma.achievement.deleteMany({
+    where: {
+      targetAllocationId: allocation.id,
+      title: { startsWith: `${DASHBOARD_ACHIEVEMENT_PREFIX} ${period.code}` },
+    },
+  });
+
+  const submittedAt = addDays(reportingDate, 1);
+  const reviewAt = addDays(submittedAt, 2);
+  const computedScore =
+    targetValue > 0
+      ? roundTo(Math.min(100, (actualValue / targetValue) * 100), 2)
+      : 100;
+  const reviewNote =
+    state === "VERIFIED"
+      ? `Verified in seeded dashboard scenario for ${period.code}.`
+      : "Requires stronger documentary evidence before approval.";
+
+  const verificationLog =
+    state === "SUBMITTED"
+      ? []
+      : [
+          buildVerificationLogEntry(
+            "VERIFY",
+            reviewerContext.user,
+            state,
+            reviewNote,
+            reviewAt,
+          ),
+        ];
+
+  const achievement = await prisma.achievement.create({
+    data: {
+      tenantId: tenant.id,
+      periodId: period.id,
+      kpiDefinitionId: kpi.id,
+      targetAllocationId: allocation.id,
+      reportedByUserId: reporterContext.user.id,
+      title,
+      actualValue,
+      actualDate: reportingDate,
+      evidenceDescription,
+      evidenceLinks: [
+        `https://demo-university.local.test/evidence/${period.code}/${blueprint.key}/${reporterContext.key}`,
+      ],
+      achievementFormData: {
+        summary: `${title} seeded for KPI dashboard coverage.`,
+        impact: blueprint.description,
+      },
+      state,
+      currentVerifierUnitId: state === "SUBMITTED" ? startingUnit.id : null,
+      currentVerifierUserId: state === "SUBMITTED" ? reviewerContext.user.id : null,
+      computedScore,
+      effectiveScore: computedScore,
+      verifiedByUserId: state === "SUBMITTED" ? null : reviewerContext.user.id,
+      verifiedAt: state === "SUBMITTED" ? null : reviewAt,
+      verificationNote: state === "VERIFIED" ? reviewNote : null,
+      rejectionReason: state === "REJECTED" ? reviewNote : null,
+      verificationLog,
+      reportingDate,
+    },
+  });
+
+  const trailEntries = [
+    {
+      action: "RECORDED",
+      actor: reporterContext.user,
+      actorRole: reporterContext.role,
+      actorUnitName: reporterContext.unit.name,
+      note: `Seeded dashboard activity for ${period.code}.`,
+      scoreAtAction: computedScore,
+      createdAt: reportingDate,
+    },
+    {
+      action: "SUBMITTED",
+      actor: reporterContext.user,
+      actorRole: reporterContext.role,
+      actorUnitName: reporterContext.unit.name,
+      note: `Submitted to ${startingUnit.name} review queue.`,
+      scoreAtAction: computedScore,
+      createdAt: submittedAt,
+    },
+  ];
+
+  if (state === "VERIFIED" || state === "REJECTED") {
+    trailEntries.push({
+      action: state,
+      actor: reviewerContext.user,
+      actorRole: reviewerContext.role,
+      actorUnitName: reviewerContext.unit.name,
+      note: reviewNote,
+      scoreAtAction: computedScore,
+      createdAt: reviewAt,
+    });
+  }
+
+  await recreateSubmissionTrail(achievement.id, trailEntries);
+  return achievement;
+}
+
+async function ensureDashboardPeriodData({
+  tenant,
+  owner,
+  periodBlueprint,
+  tenantCategory,
+  unitsByKey,
+  userContexts,
+}) {
+  const period = await prisma.assessmentPeriod.upsert({
+    where: {
+      tenantId_code: {
+        tenantId: tenant.id,
+        code: periodBlueprint.code,
+      },
+    },
+    update: {
+      name: periodBlueprint.name,
+      periodType: "SPECIFIC_RANGE",
+      startDate: at(periodBlueprint.startDate),
+      endDate: at(periodBlueprint.endDate),
+      state: periodBlueprint.state,
+      reviewFrequency: "ANNUAL",
+      targetSettingDeadline: at(periodBlueprint.targetSettingDeadline),
+      achievementDeadline: at(periodBlueprint.achievementDeadline),
+      reviewDeadline: at(periodBlueprint.reviewDeadline),
+      description: periodBlueprint.description,
+    },
+    create: {
+      tenantId: tenant.id,
+      name: periodBlueprint.name,
+      code: periodBlueprint.code,
+      periodType: "SPECIFIC_RANGE",
+      startDate: at(periodBlueprint.startDate),
+      endDate: at(periodBlueprint.endDate),
+      state: periodBlueprint.state,
+      reviewFrequency: "ANNUAL",
+      targetSettingDeadline: at(periodBlueprint.targetSettingDeadline),
+      achievementDeadline: at(periodBlueprint.achievementDeadline),
+      reviewDeadline: at(periodBlueprint.reviewDeadline),
+      description: periodBlueprint.description,
+      createdByUserId: owner.id,
+    },
+  });
+
+  const kra = await ensureDashboardKra({
+    tenant,
+    owner,
+    period,
+    tenantCategory,
+    title: periodBlueprint.kraTitle,
+    description: `Seeded dashboard KRA for ${periodBlueprint.label} with mixed research and administration KPIs.`,
+  });
+
+  const kpis = [];
+  const allocations = [];
+  const achievements = [];
+
+  for (const [kpiIndex, blueprint] of DASHBOARD_KPI_BLUEPRINTS.entries()) {
+    const startingUnit = unitsByKey[blueprint.startingUnitKey];
+    const kpi = await ensureDashboardKpi({
+      kra,
+      owner,
+      startingUnit,
+      blueprint,
+    });
+    kpis.push(kpi);
+
+    const prefix = `${DASHBOARD_SEED_PREFIX}:${period.code}:${blueprint.key}`;
+    const parentAllocation = await ensureSeedAllocation({
+      tenantId: tenant.id,
+      periodId: period.id,
+      kpiDefinitionId: kpi.id,
+      assignedToUnitId: startingUnit.id,
+      allocatedByUserId: owner.id,
+      targetValue: blueprint.parentTarget,
+      notes: `${prefix}:parent`,
+    });
+    allocations.push(parentAllocation);
+
+    const assigneeKeys = DASHBOARD_ASSIGNEE_GROUPS[blueprint.startingUnitKey];
+    const states = pickDashboardAchievementStates(period.code, kpiIndex);
+
+    for (const [userIndex, assigneeKey] of assigneeKeys.entries()) {
+      const assignee = userContexts[assigneeKey];
+      const allocation = await ensureSeedAllocation({
+        tenantId: tenant.id,
+        periodId: period.id,
+        kpiDefinitionId: kpi.id,
+        assignedToUserId: assignee.user.id,
+        allocatedByUserId: owner.id,
+        targetValue: blueprint.userTargets[userIndex],
+        parentAllocationId: parentAllocation.id,
+        notes: `${prefix}:${assigneeKey}`,
+      });
+      allocations.push(allocation);
+
+      const state = states[userIndex];
+      const reviewer = resolveDashboardReviewer(
+        blueprint.startingUnitKey,
+        assigneeKey,
+        userContexts,
+      );
+      const reportingDate = addDays(at(periodBlueprint.startDate), 18 + (kpiIndex * 7) + (userIndex * 3));
+      const actualValue = buildDashboardActualValue(
+        blueprint.userTargets[userIndex],
+        state,
+        kpiIndex,
+        userIndex,
+      );
+      const title = `${DASHBOARD_ACHIEVEMENT_PREFIX} ${period.code}: ${blueprint.title} / ${userName(assignee.user)}`;
+      const evidenceDescription =
+        `${DASHBOARD_SEED_PREFIX}:${period.code}:${blueprint.key}:${assigneeKey}`;
+
+      const achievement = await seedDashboardAchievement({
+        tenant,
+        period,
+        kpi,
+        allocation,
+        reporterContext: assignee,
+        reviewerContext: reviewer,
+        startingUnit,
+        blueprint,
+        state,
+        title,
+        evidenceDescription,
+        actualValue,
+        targetValue: blueprint.userTargets[userIndex],
+        reportingDate,
+      });
+      achievements.push(achievement);
+    }
+  }
+
+  return {
+    period,
+    kra,
+    kpis,
+    allocations,
+    achievements,
+  };
+}
+
+async function ensureDashboardDataset({
+  tenant,
+  owner,
+  tenantCategory,
+  rootUnit,
+  cseUnit,
+  eceUnit,
+  reviewerUsers,
+  supportUsers,
+  admin,
+  facultyOne,
+  facultyTwo,
+  demoEmployee,
+}) {
+  const userContexts = {
+    owner: { key: "owner", user: owner, role: "TENANT_OWNER", unit: rootUnit },
+    admin: { key: "admin", user: admin, role: "TENANT_ADMIN", unit: rootUnit },
+    provost: { key: "provost", user: supportUsers.provost, role: "TENANT_USER", unit: rootUnit },
+    cseHead: { key: "cseHead", user: reviewerUsers.cseHead, role: "TENANT_USER", unit: cseUnit },
+    eceHead: { key: "eceHead", user: reviewerUsers.eceHead, role: "TENANT_USER", unit: eceUnit },
+    facultyOne: { key: "facultyOne", user: facultyOne, role: "TENANT_USER", unit: cseUnit },
+    facultyTwo: { key: "facultyTwo", user: facultyTwo, role: "TENANT_USER", unit: eceUnit },
+    demoEmployee: { key: "demoEmployee", user: demoEmployee, role: "TENANT_USER", unit: cseUnit },
+    eceStaff: { key: "eceStaff", user: supportUsers.eceStaff, role: "TENANT_USER", unit: eceUnit },
+  };
+
+  const unitsByKey = {
+    UNIV: rootUnit,
+    CSE: cseUnit,
+    ECE: eceUnit,
+  };
+
+  const periods = [];
+  for (const periodBlueprint of DASHBOARD_PERIOD_BLUEPRINTS) {
+    periods.push(
+      await ensureDashboardPeriodData({
+        tenant,
+        owner,
+        periodBlueprint,
+        tenantCategory,
+        unitsByKey,
+        userContexts,
+      }),
+    );
+  }
+
+  return {
+    periods,
+    kpiTopicCount: DASHBOARD_KPI_BLUEPRINTS.length,
   };
 }
 
@@ -1892,6 +2717,91 @@ async function ensureR43InterfaceSeed({
     ],
   });
 
+  const r52StaleRecommendation = await createSeedAchievement({
+    tenant,
+    period,
+    kpi,
+    allocationId: facultyAllocation.id,
+    reporter: facultyOne,
+    state: "SUBMITTED",
+    title: "Seed R5.2 Stale Recommendation Queue",
+    reportingDate: at("2026-01-22T09:30:00.000Z"),
+    actualValue: 1,
+    actualDate: at("2026-01-20T00:00:00.000Z"),
+    evidenceDescription: "Older resubmitted publication kept in queue for stale-review dashboard coverage.",
+    evidenceLinks: ["https://example.com/r52/stale-recommendation.pdf"],
+    achievementFormData: {
+      paperTitle: "Queued Review Age Tracking for Multi-Step Verifiers",
+      journalName: "Review Operations Quarterly",
+      doi: "10.1000/seed-r52-stale-recommendation",
+      indexing: ["Scopus"],
+      journalTier: "Q3",
+      publicationDate: "2026-01-20",
+      pdfLink: "https://example.com/r52/stale-recommendation.pdf",
+    },
+    currentVerifierUnitId: eceUnit.id,
+    currentVerifierUserId: reviewerUsers.eceHead.id,
+    verificationLog: [
+      buildVerificationLogEntry("SUBMIT", facultyOne, "submitted", "Waiting for recommendation.", at("2026-01-22T09:30:00.000Z")),
+    ],
+    contributors: [
+      {
+        user: facultyOne,
+        contributorRoleId: roleMap.get("LEAD_AUTHOR").id,
+        creditPercent: 100,
+        selectorTags: ["FIRST_AUTHOR"],
+      },
+    ],
+    trailEntries: [
+      { action: "SUBMITTED", actor: facultyOne, actorRole: "Employee", actorUnitName: cseUnit.name, note: "Waiting for recommendation.", scoreAtAction: 25, createdAt: at("2026-01-22T09:30:00.000Z") },
+    ],
+  });
+
+  const r52StaleVerification = await createSeedAchievement({
+    tenant,
+    period,
+    kpi,
+    allocationId: employeeAllocation.id,
+    reporter: demoEmployee,
+    state: "RECOMMENDED",
+    title: "Seed R5.2 Stale Verification Queue",
+    reportingDate: at("2026-01-18T11:00:00.000Z"),
+    actualValue: 1,
+    actualDate: at("2026-01-17T00:00:00.000Z"),
+    evidenceDescription: "Recommended publication kept waiting for final verification to test stale-age highlighting.",
+    evidenceLinks: ["https://example.com/r52/stale-verification.pdf"],
+    achievementFormData: {
+      paperTitle: "Final Verification Aging Patterns in Contributor Workflows",
+      journalName: "Academic KPI Review Journal",
+      doi: "10.1000/seed-r52-stale-verification",
+      indexing: ["Scopus"],
+      journalTier: "Q2",
+      publicationDate: "2026-01-17",
+      pdfLink: "https://example.com/r52/stale-verification.pdf",
+    },
+    currentVerifierUnitId: cseUnit.id,
+    currentVerifierUserId: reviewerUsers.cseHead.id,
+    recommendedByUserId: reviewerUsers.eceHead.id,
+    recommendedAt: at("2026-01-18T10:10:00.000Z"),
+    recommendationNote: "Ready for final verification after source check.",
+    verificationLog: [
+      buildVerificationLogEntry("SUBMIT", demoEmployee, "submitted", "Submitted with source proof.", at("2026-01-17T16:20:00.000Z")),
+      buildVerificationLogEntry("RECOMMEND", reviewerUsers.eceHead, "recommended", "Ready for final verification after source check.", at("2026-01-18T10:10:00.000Z")),
+    ],
+    contributors: [
+      {
+        user: demoEmployee,
+        contributorRoleId: roleMap.get("LEAD_AUTHOR").id,
+        creditPercent: 100,
+        selectorTags: ["FIRST_AUTHOR"],
+      },
+    ],
+    trailEntries: [
+      { action: "SUBMITTED", actor: demoEmployee, actorRole: "Employee", actorUnitName: cseUnit.name, note: "Submitted with source proof.", scoreAtAction: 25, createdAt: at("2026-01-17T16:20:00.000Z") },
+      { action: "RECOMMENDED", actor: reviewerUsers.eceHead, actorRole: "Department Head", actorUnitName: eceUnit.name, note: "Ready for final verification after source check.", scoreAtAction: 25, createdAt: at("2026-01-18T10:10:00.000Z") },
+    ],
+  });
+
   const rejectedPublication = await createSeedAchievement({
     tenant,
     period,
@@ -2392,6 +3302,30 @@ async function ensureR43InterfaceSeed({
     },
     {
       tenantId: tenant.id,
+      userId: reviewerUsers.eceHead.id,
+      type: "ACHIEVEMENT_SUBMITTED",
+      eventKey: makeSeedEventKey("achievement-submitted:r52-stale-recommendation"),
+      title: "Achievement submitted for recommendation",
+      message: `${userName(facultyOne)} has an older publication still waiting in the recommendation queue.`,
+      entityType: "Achievement",
+      entityId: r52StaleRecommendation.achievement.id,
+      linkUrl: "/my-kpis",
+      createdAt: at("2026-01-22T09:31:00.000Z"),
+    },
+    {
+      tenantId: tenant.id,
+      userId: reviewerUsers.cseHead.id,
+      type: "ACHIEVEMENT_RECOMMENDED",
+      eventKey: makeSeedEventKey("achievement-recommended:r52-stale-verification"),
+      title: "Achievement waiting final verification",
+      message: `${userName(demoEmployee)} still has a recommendation waiting in the final verification queue.`,
+      entityType: "Achievement",
+      entityId: r52StaleVerification.achievement.id,
+      linkUrl: "/my-kpis",
+      createdAt: at("2026-01-18T10:15:00.000Z"),
+    },
+    {
+      tenantId: tenant.id,
       userId: facultyOne.id,
       type: "ACHIEVEMENT_REJECTED",
       eventKey: makeSeedEventKey("achievement-rejected:rejected-publication"),
@@ -2423,6 +3357,8 @@ async function ensureR43InterfaceSeed({
     achievements: [
       pendingRecommendation.achievement,
       pendingVerification.achievement,
+      r52StaleRecommendation.achievement,
+      r52StaleVerification.achievement,
       rejectedPublication.achievement,
       draftRewardsPublication.achievement,
       pendingRewardsPublication.achievement,
@@ -2545,9 +3481,9 @@ async function main() {
     designation: "Associate Professor",
   });
 
-  const { cseUnit, eceUnit } = await ensurePublishedStructure(tenant.id, owner.id);
-  if (!cseUnit || !eceUnit) {
-    throw new Error("Seed structure did not create the CSE/ECE units.");
+  const { rootUnit, cseUnit, eceUnit } = await ensurePublishedStructure(tenant.id, owner.id);
+  if (!rootUnit || !cseUnit || !eceUnit) {
+    throw new Error("Seed structure did not create the UNIV/CSE/ECE units.");
   }
 
   await ensureMembership({
@@ -2610,6 +3546,32 @@ async function main() {
     cseUnit,
     eceUnit,
   });
+  const supportUsers = await ensureDashboardSupportUsers({
+    tenant,
+    owner,
+    admin,
+    rootUnit,
+    cseUnit,
+    eceUnit,
+    reviewerUsers,
+    facultyOne,
+    facultyTwo,
+    demoEmployee,
+  });
+  const dashboardSeed = await ensureDashboardDataset({
+    tenant,
+    owner,
+    tenantCategory,
+    rootUnit,
+    cseUnit,
+    eceUnit,
+    reviewerUsers,
+    supportUsers,
+    admin,
+    facultyOne,
+    facultyTwo,
+    demoEmployee,
+  });
   const r43Data = await ensureR43InterfaceSeed({
     tenant,
     owner,
@@ -2644,13 +3606,25 @@ async function main() {
       demoPassword: DEMO_PASSWORD,
     },
     reviewers: {
+      provostEmail: supportUsers.provost.officialEmail,
       cseHeadEmail: reviewerUsers.cseHead.officialEmail,
       eceHeadEmail: reviewerUsers.eceHead.officialEmail,
+      eceStaffEmail: supportUsers.eceStaff.officialEmail,
       demoPassword: DEMO_PASSWORD,
     },
     seededPeriodCode: demoData.period.code,
     seededKra: demoData.kra.title,
     seededKpi: demoData.kpi.title,
+    dashboardSeed: {
+      periodCodes: dashboardSeed.periods.map((row) => row.period.code),
+      kraTitles: dashboardSeed.periods.map((row) => row.kra.title),
+      kpiTopicsMirroredAcrossPeriods: dashboardSeed.kpiTopicCount,
+      totalDashboardKpisSeeded: dashboardSeed.periods.reduce((sum, row) => sum + row.kpis.length, 0),
+      totalDashboardAchievementsSeeded: dashboardSeed.periods.reduce(
+        (sum, row) => sum + row.achievements.length,
+        0,
+      ),
+    },
     allocationCount: demoData.allocations.length,
     r43WorkflowSeed: {
       kpiTitle: r43Data.kpi.title,

@@ -1,6 +1,8 @@
 import type { GradeValue, MilestoneStatus, Prisma, Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { getDescendantUnitIds } from "@/lib/org-structure/hierarchy-utils";
+import { getUserAssignments } from "@/lib/org-structure/roles-service";
 import { canRecord } from "./assignee-access";
 import { getMyKpiContext, isUserHeadOfUnit } from "./my-kpi-service";
 import {
@@ -115,6 +117,53 @@ function roleToTrailLabel(role: Role): string {
 function normalizeRemark(note: string | null | undefined): string | null {
   const trimmed = note?.trim();
   return trimmed ? trimmed : null;
+}
+
+type AchievementRejectionType = "SEND_BACK" | "REJECT";
+
+function resolveRejectionType(value?: AchievementRejectionType): AchievementRejectionType {
+  return value === "SEND_BACK" ? "SEND_BACK" : "REJECT";
+}
+
+function buildRejectionOutcome(
+  rejectionType?: AchievementRejectionType,
+): {
+  rejectionType: AchievementRejectionType;
+  logLevel: VerificationLogEntry["level"];
+  logAction: string;
+  trailAction: string;
+  auditAction: string;
+  notificationTitle: string;
+  notificationMessage: (kpiTitle: string, note: string) => string;
+  resultMessage: string;
+} {
+  const resolved = resolveRejectionType(rejectionType);
+
+  if (resolved === "SEND_BACK") {
+    return {
+      rejectionType: resolved,
+      logLevel: "SEND_BACK",
+      logAction: "sent back",
+      trailAction: "SENT_BACK",
+      auditAction: "SEND_BACK",
+      notificationTitle: "Achievement sent back",
+      notificationMessage: (kpiTitle, note) =>
+        `Your '${kpiTitle}' submission was sent back for correction. Reason: ${note}`,
+      resultMessage: "Achievement sent back. Reporter can revise and resubmit.",
+    };
+  }
+
+  return {
+    rejectionType: resolved,
+    logLevel: "REJECT",
+    logAction: "rejected",
+    trailAction: "REJECTED",
+    auditAction: "REJECT",
+    notificationTitle: "Achievement rejected",
+    notificationMessage: (kpiTitle, note) =>
+      `Your '${kpiTitle}' submission was rejected. Reason: ${note}`,
+    resultMessage: "Achievement rejected. Reporter can revise and resubmit.",
+  };
 }
 
 function normalizeContributionRoleToken(value: string): string {
@@ -622,7 +671,22 @@ async function canActorReviewUnit(
     return false;
   }
 
-  return isUserHeadOfUnit(tenantId, actorUserId, unitId);
+  if (await isUserHeadOfUnit(tenantId, actorUserId, unitId)) {
+    return true;
+  }
+
+  const assignments = (await getUserAssignments(tenantId, actorUserId))
+    .filter((assignment) => assignment.isUnitHead && assignment.scope === "DESCENDANTS");
+
+  if (assignments.length === 0) {
+    return false;
+  }
+
+  const descendantGroups = await Promise.all(
+    assignments.map((assignment) => getDescendantUnitIds(tenantId, assignment.unitId, true)),
+  );
+
+  return descendantGroups.some((descendantIds) => descendantIds.includes(unitId));
 }
 
 function mapAchievementView(
@@ -2058,7 +2122,8 @@ export async function verifyAchievement(
   approved: boolean,
   note: string | null,
   actorUserId: string,
-  actorRole: Role
+  actorRole: Role,
+  rejectionType?: AchievementRejectionType,
 ): Promise<KraKpiActionResult> {
   const normalizedNote = normalizeRemark(note);
   if (!approved && !normalizedNote) {
@@ -2140,14 +2205,15 @@ export async function verifyAchievement(
     select: { firstName: true, lastName: true },
   });
   const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
+  const rejectionOutcome = buildRejectionOutcome(rejectionType);
 
   const newState = approved ? "VERIFIED" : "REJECTED";
   const existingLog = (achievement.verificationLog as VerificationLogEntry[]) ?? [];
   const logEntry: VerificationLogEntry = {
-    level: "VERIFY",
+    level: approved ? "VERIFY" : rejectionOutcome.logLevel,
     userId: actorUserId,
     userName: actorName,
-    action: approved ? "verified" : "not approved",
+    action: approved ? "verified" : rejectionOutcome.logAction,
     note: normalizedNote ?? undefined,
     at: new Date().toISOString(),
   };
@@ -2208,7 +2274,7 @@ export async function verifyAchievement(
 
     await appendSubmissionTrailEntry(tx, {
       achievementId,
-      action: approved ? "VERIFIED" : "REJECTED",
+      action: approved ? "VERIFIED" : rejectionOutcome.trailAction,
       actorUserId,
       actorName,
       actorRole: roleToTrailLabel(actorRole),
@@ -2219,6 +2285,7 @@ export async function verifyAchievement(
         : (achievement.effectiveScore
             ?? achievement.stageCompletionScore
             ?? achievement.computedScore),
+      metadata: approved ? null : { rejectionType: rejectionOutcome.rejectionType },
     });
 
     await tx.auditLog.create({
@@ -2228,9 +2295,13 @@ export async function verifyAchievement(
         actorRole,
         targetType: "Achievement",
         targetId: achievementId,
-        action: approved ? "VERIFY" : "REJECT",
+        action: approved ? "VERIFY" : rejectionOutcome.auditAction,
         previousState: { state: achievement.state },
-        newState: { state: newState, note: normalizedNote },
+        newState: {
+          state: newState,
+          note: normalizedNote,
+          ...(!approved ? { rejectionType: rejectionOutcome.rejectionType } : {}),
+        },
       },
     });
   });
@@ -2260,9 +2331,11 @@ export async function verifyAchievement(
           tenantId,
           reporterId,
           "ACHIEVEMENT_REJECTED",
-          `achievement:${achievementId}:rejected:${reporterId}`,
-          "Achievement rejected",
-          `'${kpiTitle}' was rejected.${normalizedNote ? ` Reason: ${normalizedNote}` : ""}`,
+          `achievement:${achievementId}:${rejectionOutcome.rejectionType.toLowerCase()}:${reporterId}`,
+          rejectionOutcome.notificationTitle,
+          normalizedNote
+            ? rejectionOutcome.notificationMessage(kpiTitle, normalizedNote)
+            : `'${kpiTitle}' was not approved.`,
           "Achievement",
           achievementId,
           "/my-kpis",
@@ -2290,7 +2363,7 @@ export async function verifyAchievement(
     status: "success",
     message: approved
       ? "Achievement verified."
-      : "Achievement not approved. Reporter can revise and resubmit.",
+      : rejectionOutcome.resultMessage,
   };
 }
 
@@ -2303,6 +2376,7 @@ export async function recommendAchievement(
   note: string | null,
   actorUserId: string,
   actorRole: Role,
+  rejectionType?: AchievementRejectionType,
 ): Promise<KraKpiActionResult> {
   const normalizedNote = normalizeRemark(note);
   const achievement = await prisma.achievement.findFirst({
@@ -2362,6 +2436,7 @@ export async function recommendAchievement(
   const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
 
   const existingLog = (achievement.verificationLog as VerificationLogEntry[]) ?? [];
+  const rejectionOutcome = buildRejectionOutcome(rejectionType);
 
   if (approved) {
     const logEntry: VerificationLogEntry = {
@@ -2447,10 +2522,10 @@ export async function recommendAchievement(
   }
 
   const logEntry: VerificationLogEntry = {
-    level: "REJECT",
+    level: rejectionOutcome.logLevel,
     userId: actorUserId,
     userName: actorName,
-    action: "rejected",
+    action: rejectionOutcome.logAction,
     note: normalizedNote,
     at: new Date().toISOString(),
   };
@@ -2471,7 +2546,7 @@ export async function recommendAchievement(
 
     await appendSubmissionTrailEntry(tx, {
       achievementId,
-      action: "REJECTED",
+      action: rejectionOutcome.trailAction,
       actorUserId,
       actorName,
       actorRole: roleToTrailLabel(actorRole),
@@ -2481,6 +2556,7 @@ export async function recommendAchievement(
         achievement.effectiveScore
         ?? achievement.stageCompletionScore
         ?? achievement.computedScore,
+      metadata: { rejectionType: rejectionOutcome.rejectionType },
     });
 
     await tx.auditLog.create({
@@ -2490,9 +2566,13 @@ export async function recommendAchievement(
         actorRole,
         targetType: "Achievement",
         targetId: achievementId,
-        action: "REJECT",
+        action: rejectionOutcome.auditAction,
         previousState: { state: "SUBMITTED" },
-        newState: { state: "REJECTED", note: normalizedNote },
+        newState: {
+          state: "REJECTED",
+          note: normalizedNote,
+          rejectionType: rejectionOutcome.rejectionType,
+        },
       },
     });
   });
@@ -2506,9 +2586,9 @@ export async function recommendAchievement(
         tenantId,
         reporterId,
         "ACHIEVEMENT_REJECTED",
-        `achievement:${achievementId}:recommendation-rejected:${reporterId}`,
-        "Achievement rejected",
-        `Your '${kpiTitle}' submission was rejected. Reason: ${normalizedNote}`,
+        `achievement:${achievementId}:recommendation-${rejectionOutcome.rejectionType.toLowerCase()}:${reporterId}`,
+        rejectionOutcome.notificationTitle,
+        rejectionOutcome.notificationMessage(kpiTitle, normalizedNote),
         "Achievement",
         achievementId,
         "/my-kpis",
@@ -2518,7 +2598,7 @@ export async function recommendAchievement(
     console.warn("[achievement-service] recommendAchievement rejection notification failed:", err);
   }
 
-  return { status: "success", message: "Achievement rejected. Reporter can revise and resubmit." };
+  return { status: "success", message: rejectionOutcome.resultMessage };
 }
 
 // ── Withdraw Submission ──────────────────────────────────────────────────────

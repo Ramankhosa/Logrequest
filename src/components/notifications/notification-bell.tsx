@@ -66,7 +66,7 @@ const NOTIFICATION_ICONS: Record<string, { icon: React.ElementType; color: strin
   REWARD_PENDING: { icon: Wallet, color: "text-amber-500" },
   REWARD_RELEASED: { icon: Wallet, color: "text-green-500" },
   REWARD_REVOKED: { icon: Wallet, color: "text-red-500" },
-  PERIOD_STATE_CHANGED: { icon: Calendar, color: "text-purple-500" },
+  PERIOD_STATE_CHANGED: { icon: Calendar, color: "text-blue-500" },
 };
 
 function getRelativeTime(dateStr: string): string {
@@ -184,6 +184,11 @@ export function NotificationBell() {
     }
   }
 
+  function handleViewAll() {
+    router.push("/kpi-dashboard?tab=notifications");
+    setOpen(false);
+  }
+
   const badgeLabel = unreadCount > 99 ? "99+" : unreadCount > 0 ? String(unreadCount) : null;
 
   return (
@@ -272,6 +277,15 @@ export function NotificationBell() {
                 })}
               </ul>
             )}
+          </div>
+
+          <div className="border-t border-slate-100 px-4 py-3">
+            <button
+              onClick={handleViewAll}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-white"
+            >
+              View all in KPI Dashboard
+            </button>
           </div>
         </div>
       )}

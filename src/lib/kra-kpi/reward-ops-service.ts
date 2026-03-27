@@ -4,12 +4,15 @@ import type {
   ContributorRewardEventView,
   ContributorRewardStateView,
   ContributorRewardView,
+  MyRewardsView,
   RewardConsoleListResult,
   RewardConsoleTotals,
+  RewardStateTotalsView,
 } from "./shared";
 import { createNotification } from "@/lib/notifications/notification-service";
 import { recalculateContributorRewardsForAchievement } from "./reward-service";
 import { getUserAssignments } from "@/lib/org-structure/roles-service";
+import { getDescendantUnitIds } from "@/lib/org-structure/hierarchy-utils";
 
 type RewardListFilters = {
   periodId?: string;
@@ -34,8 +37,136 @@ type RewardTransitionResult = {
   failed: Array<{ id: string; message: string }>;
 };
 
+type RewardAccessScope = {
+  mode: "global" | "scoped";
+  accessibleUnitIds: string[];
+};
+
+type RewardAccessRecord = {
+  rewardOwnerUnitId: string | null;
+  reporterUnitId: string | null;
+  kpiDefinition: {
+    startingUnitId: string;
+    keyUnitId: string | null;
+    finalUnitId: string | null;
+  };
+};
+
+export class RewardAccessDeniedError extends Error {
+  constructor(message = "You do not have permission to manage rewards.") {
+    super(message);
+    this.name = "RewardAccessDeniedError";
+  }
+}
+
 function formatUserName(user: { firstName: string; lastName: string } | null | undefined) {
   return user ? `${user.firstName} ${user.lastName}` : null;
+}
+
+function isRewardAdmin(role: Role | null | undefined) {
+  return role === "TENANT_OWNER" || role === "TENANT_ADMIN" || role === "SUPERADMIN";
+}
+
+async function resolveRewardAccessScope(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+): Promise<RewardAccessScope | null> {
+  if (isRewardAdmin(actorRole)) {
+    return {
+      mode: "global",
+      accessibleUnitIds: [],
+    };
+  }
+
+  const approvalAssignments = (await getUserAssignments(tenantId, actorUserId))
+    .filter((assignment) => assignment.approvalAuthority);
+  if (approvalAssignments.length === 0) {
+    return null;
+  }
+
+  const accessibleUnitIds = new Set<string>();
+  const descendantScopes = approvalAssignments
+    .filter((assignment) => assignment.scope === "DESCENDANTS")
+    .map((assignment) => assignment.unitId);
+
+  for (const assignment of approvalAssignments) {
+    accessibleUnitIds.add(assignment.unitId);
+  }
+
+  const descendantUnitGroups = await Promise.all(
+    descendantScopes.map((unitId) => getDescendantUnitIds(tenantId, unitId, true)),
+  );
+  for (const descendantUnitIds of descendantUnitGroups) {
+    for (const unitId of descendantUnitIds) {
+      accessibleUnitIds.add(unitId);
+    }
+  }
+
+  if (accessibleUnitIds.size === 0) {
+    return null;
+  }
+
+  return {
+    mode: "scoped",
+    accessibleUnitIds: [...accessibleUnitIds],
+  };
+}
+
+export async function getRewardConsoleAccessScope(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+): Promise<RewardAccessScope> {
+  const accessScope = await resolveRewardAccessScope(tenantId, actorUserId, actorRole);
+  if (!accessScope) {
+    throw new RewardAccessDeniedError("You do not have reward approval authority.");
+  }
+  return accessScope;
+}
+
+function buildRewardAccessWhere(accessScope?: RewardAccessScope): Prisma.ContributorRewardWhereInput {
+  if (!accessScope || accessScope.mode === "global") {
+    return {};
+  }
+
+  return {
+    OR: [
+      { rewardOwnerUnitId: { in: accessScope.accessibleUnitIds } },
+      { reporterUnitId: { in: accessScope.accessibleUnitIds } },
+      { kpiDefinition: { startingUnitId: { in: accessScope.accessibleUnitIds } } },
+      { kpiDefinition: { keyUnitId: { in: accessScope.accessibleUnitIds } } },
+      { kpiDefinition: { finalUnitId: { in: accessScope.accessibleUnitIds } } },
+    ],
+  };
+}
+
+function mergeRewardWhere(
+  ...clauses: Prisma.ContributorRewardWhereInput[]
+): Prisma.ContributorRewardWhereInput {
+  const nonEmptyClauses = clauses.filter((clause) => Object.keys(clause).length > 0);
+  if (nonEmptyClauses.length === 0) {
+    return {};
+  }
+  if (nonEmptyClauses.length === 1) {
+    return nonEmptyClauses[0]!;
+  }
+  return {
+    AND: nonEmptyClauses,
+  };
+}
+
+function rewardFallsWithinScope(
+  reward: RewardAccessRecord,
+  accessibleUnitIds: Set<string>,
+): boolean {
+  return [
+    reward.rewardOwnerUnitId,
+    reward.reporterUnitId,
+    reward.kpiDefinition.startingUnitId,
+    reward.kpiDefinition.keyUnitId,
+    reward.kpiDefinition.finalUnitId,
+  ].some((unitId) => unitId != null && accessibleUnitIds.has(unitId));
 }
 
 function mapRewardEvent(event: {
@@ -254,48 +385,86 @@ function summarizeRewards(
   );
 }
 
-export async function listContributorRewards(
-  tenantId: string,
-  filters: RewardListFilters,
-): Promise<RewardConsoleListResult> {
-  const where = buildRewardWhere(filters);
-  const [totalRows, summaryRows, rewardRows] = await Promise.all([
-    prisma.contributorReward.count({ where: { tenantId, ...where } }),
-    prisma.contributorReward.findMany({
-      where: { tenantId, ...where },
-      select: {
-        state: true,
-        finalAmount: true,
-        benefitType: {
-          select: { code: true, name: true, unit: true },
+function buildEmptyRewardStateTotals(): Record<ContributorRewardStateView, RewardStateTotalsView[]> {
+  return {
+    DRAFT: [],
+    PENDING: [],
+    RELEASED: [],
+    REVOKED: [],
+  };
+}
+
+function summarizeRewardsByState(
+  rows: Array<{
+    state: ContributorRewardStateView;
+    finalAmount: number;
+    benefitType: { code: string; name: string; unit: string };
+  }>,
+) {
+  const totalsByState = buildEmptyRewardStateTotals();
+  const stateBuckets = new Map<string, RewardStateTotalsView>();
+
+  for (const row of rows) {
+    const bucketKey = `${row.state}:${row.benefitType.code}:${row.benefitType.unit}`;
+    const bucket = stateBuckets.get(bucketKey) ?? {
+      benefitTypeCode: row.benefitType.code,
+      benefitTypeName: row.benefitType.name,
+      unit: row.benefitType.unit,
+      count: 0,
+      totalAmount: 0,
+    };
+
+    bucket.count += 1;
+    bucket.totalAmount += row.finalAmount;
+    stateBuckets.set(bucketKey, bucket);
+  }
+
+  for (const [bucketKey, bucket] of stateBuckets.entries()) {
+    const [state] = bucketKey.split(":") as [ContributorRewardStateView];
+    totalsByState[state].push(bucket);
+  }
+
+  for (const state of Object.keys(totalsByState) as ContributorRewardStateView[]) {
+    totalsByState[state].sort((left, right) => {
+      if (left.benefitTypeName !== right.benefitTypeName) {
+        return left.benefitTypeName.localeCompare(right.benefitTypeName);
+      }
+      return left.unit.localeCompare(right.unit);
+    });
+  }
+
+  return totalsByState;
+}
+
+async function loadRewardViews(
+  where: Prisma.ContributorRewardWhereInput,
+  take: number,
+  skip: number,
+): Promise<ContributorRewardView[]> {
+  const rewardRows = await prisma.contributorReward.findMany({
+    where,
+    include: {
+      rewardTier: { select: { code: true, name: true } },
+      rewardComponent: { select: { code: true, name: true } },
+      benefitType: { select: { id: true, code: true, name: true, unit: true } },
+      achievement: {
+        select: {
+          reportedByUserId: true,
+          kpiDefinition: { select: { title: true } },
         },
       },
-    }),
-    prisma.contributorReward.findMany({
-      where: { tenantId, ...where },
-      include: {
-        rewardTier: { select: { code: true, name: true } },
-        rewardComponent: { select: { code: true, name: true } },
-        benefitType: { select: { id: true, code: true, name: true, unit: true } },
-        achievement: {
-          select: {
-            reportedByUserId: true,
-            kpiDefinition: { select: { title: true } },
-          },
+      contributorUser: { select: { firstName: true, lastName: true } },
+      events: {
+        include: {
+          actorUser: { select: { firstName: true, lastName: true } },
         },
-        contributorUser: { select: { firstName: true, lastName: true } },
-        events: {
-          include: {
-            actorUser: { select: { firstName: true, lastName: true } },
-          },
-          orderBy: { createdAt: "asc" },
-        },
+        orderBy: { createdAt: "asc" },
       },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: filters.limit ?? 50,
-      skip: filters.offset ?? 0,
-    }),
-  ]);
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take,
+    skip,
+  });
 
   const userIds = [
     ...new Set(
@@ -315,7 +484,7 @@ export async function listContributorRewards(
       : [];
   const userMap = new Map(users.map((user) => [user.id, user]));
 
-  const rewards = rewardRows.map((row) =>
+  return rewardRows.map((row) =>
     mapRewardRow({
       ...row,
       achievement: {
@@ -327,12 +496,87 @@ export async function listContributorRewards(
       revokedByUser: row.revokedById ? userMap.get(row.revokedById) ?? null : null,
     }),
   );
+}
+
+export async function listContributorRewards(
+  tenantId: string,
+  filters: RewardListFilters,
+  accessScope?: RewardAccessScope,
+): Promise<RewardConsoleListResult> {
+  const where = mergeRewardWhere(
+    { tenantId },
+    buildRewardWhere(filters),
+    buildRewardAccessWhere(accessScope),
+  );
+  const [totalRows, summaryRows, rewardRows] = await Promise.all([
+    prisma.contributorReward.count({ where }),
+    prisma.contributorReward.findMany({
+      where,
+      select: {
+        state: true,
+        finalAmount: true,
+        benefitType: {
+          select: { code: true, name: true, unit: true },
+        },
+      },
+    }),
+    loadRewardViews(where, filters.limit ?? 50, filters.offset ?? 0),
+  ]);
 
   return {
-    rewards,
+    rewards: rewardRows,
     totals: summarizeRewards(summaryRows),
     totalRows,
   };
+}
+
+export async function listMyRewards(
+  tenantId: string,
+  actorUserId: string,
+  filters: Pick<RewardListFilters, "periodId" | "limit" | "offset"> = {},
+): Promise<MyRewardsView> {
+  const where = mergeRewardWhere(
+    { tenantId },
+    filters.periodId ? { periodId: filters.periodId } : {},
+    {
+      OR: [
+        { contributorUserId: actorUserId },
+        {
+          contributorUserId: null,
+          achievement: { reportedByUserId: actorUserId },
+        },
+      ],
+    },
+  );
+
+  const [summaryRows, rewards] = await Promise.all([
+    prisma.contributorReward.findMany({
+      where,
+      select: {
+        state: true,
+        finalAmount: true,
+        benefitType: {
+          select: { code: true, name: true, unit: true },
+        },
+      },
+    }),
+    loadRewardViews(where, filters.limit ?? 25, filters.offset ?? 0),
+  ]);
+
+  return {
+    rewards,
+    totalsByState: summarizeRewardsByState(summaryRows),
+  };
+}
+
+export async function listContributorRewardsForActor(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+  filters: RewardListFilters,
+): Promise<RewardConsoleListResult> {
+  const accessScope = await getRewardConsoleAccessScope(tenantId, actorUserId, actorRole);
+  return listContributorRewards(tenantId, filters, accessScope);
 }
 
 async function logRewardTransitionAndNotify(input: {
@@ -384,20 +628,18 @@ export async function transitionContributorRewards(
     return { updatedCount: 0, failed: [] };
   }
 
-  const isTenantAdmin = actorRole === "TENANT_OWNER" || actorRole === "TENANT_ADMIN";
-  if (!isTenantAdmin) {
-    const assignments = await getUserAssignments(tenantId, actorUserId);
-    const hasApprovalAuthority = assignments.some((a) => a.approvalAuthority);
-    if (!hasApprovalAuthority) {
-      return {
-        updatedCount: 0,
-        failed: uniqueIds.map((id) => ({
-          id,
-          message: "You do not have reward approval authority.",
-        })),
-      };
-    }
+  const accessScope = await resolveRewardAccessScope(tenantId, actorUserId, actorRole);
+  if (!accessScope) {
+    return {
+      updatedCount: 0,
+      failed: uniqueIds.map((id) => ({
+        id,
+        message: "You do not have reward approval authority.",
+      })),
+    };
   }
+  const scopedUnitIds =
+    accessScope.mode === "scoped" ? new Set(accessScope.accessibleUnitIds) : null;
 
   const note = options?.note?.trim() || null;
 
@@ -408,6 +650,15 @@ export async function transitionContributorRewards(
         id: true,
         state: true,
         contributorUserId: true,
+        rewardOwnerUnitId: true,
+        reporterUnitId: true,
+        kpiDefinition: {
+          select: {
+            startingUnitId: true,
+            keyUnitId: true,
+            finalUnitId: true,
+          },
+        },
       },
     });
     const rewardMap = new Map(rewards.map((reward) => [reward.id, reward]));
@@ -420,6 +671,14 @@ export async function transitionContributorRewards(
       const reward = rewardMap.get(rewardId);
       if (!reward) {
         txFailed.push({ id: rewardId, message: "Reward not found." });
+        continue;
+      }
+
+      if (scopedUnitIds && !rewardFallsWithinScope(reward, scopedUnitIds)) {
+        txFailed.push({
+          id: rewardId,
+          message: "You do not have permission to act on this reward.",
+        });
         continue;
       }
 

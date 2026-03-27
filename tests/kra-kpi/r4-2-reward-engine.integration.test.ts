@@ -169,6 +169,128 @@ async function createPublicationFixture() {
   };
 }
 
+async function createJournalArticleFixture() {
+  tracker ??= newDbTracker();
+  const { tenant, actor } = await createTenantActor(tracker, "TENANT_OWNER");
+
+  const version = await prisma.orgStructureVersion.create({
+    data: {
+      tenantId: tenant.id,
+      name: rand("VERSION"),
+      versionNumber: 1,
+      state: "PUBLISHED",
+    },
+  });
+
+  const unitType = await prisma.orgUnitType.create({
+    data: {
+      versionId: version.id,
+      typeKey: rand("DEPT"),
+      internalCategory: "DEPARTMENT_LIKE_UNIT",
+      displayLabel: "Department",
+    },
+  });
+
+  const unit = await prisma.orgUnit.create({
+    data: {
+      tenantId: tenant.id,
+      versionId: version.id,
+      typeId: unitType.id,
+      code: rand("UNIT"),
+      name: "Research Department",
+      state: "ACTIVE",
+    },
+  });
+
+  const periodCode = rand("PERIOD");
+  const periodResult = await createPeriod(
+    tenant.id,
+    {
+      name: "Journal Article Reward Period",
+      code: periodCode,
+      periodType: "SPECIFIC_RANGE",
+      startDate: new Date("2026-01-01T00:00:00.000Z"),
+      endDate: new Date("2026-12-31T00:00:00.000Z"),
+      reviewFrequency: "ANNUAL",
+    },
+    actor.id,
+    "TENANT_OWNER",
+  );
+  expect(periodResult.status).toBe("success");
+
+  const period = await prisma.assessmentPeriod.findUnique({
+    where: {
+      tenantId_code: {
+        tenantId: tenant.id,
+        code: periodCode,
+      },
+    },
+  });
+  expect(period).toBeTruthy();
+
+  const kraTitle = rand("KRA");
+  const kraResult = await createKra(
+    tenant.id,
+    {
+      periodId: period!.id,
+      title: kraTitle,
+      weightage: 100,
+    },
+    actor.id,
+    "TENANT_OWNER",
+  );
+  expect(kraResult.status).toBe("success");
+
+  const kra = await prisma.kraDefinition.findFirst({
+    where: { tenantId: tenant.id, title: kraTitle },
+  });
+  expect(kra).toBeTruthy();
+
+  const templates = await listKpiTemplates(tenant.id);
+  const journalTemplate = templates.find((row) => row.code === "SYSTEM_TEMPLATE_JOURNAL_ARTICLE");
+  expect(journalTemplate).toBeTruthy();
+
+  const applyResult = await applyTemplateToKpi(
+    tenant.id,
+    journalTemplate!.id,
+    {
+      kraDefinitionId: kra!.id,
+      titleOverride: "Journal Article KPI",
+      startingUnitId: unit.id,
+    },
+    actor.id,
+    "TENANT_OWNER",
+  );
+  expect(applyResult.status).toBe("success");
+
+  const kpi = await prisma.kpiDefinition.findFirst({
+    where: { id: applyResult.id },
+  });
+  expect(kpi).toBeTruthy();
+
+  const roles = await prisma.contributorRole.findMany({
+    where: {
+      tenantId: tenant.id,
+      code: {
+        in: ["LEAD_AUTHOR", "CO_AUTHOR", "CORRESPONDING"],
+      },
+    },
+  });
+  const roleByCode = new Map(roles.map((role) => [role.code, role]));
+
+  return {
+    tenant,
+    actor,
+    period: period!,
+    kpi: kpi!,
+    roles: {
+      leadAuthor: roleByCode.get("LEAD_AUTHOR")!,
+      coAuthor: roleByCode.get("CO_AUTHOR")!,
+      corresponding: roleByCode.get("CORRESPONDING")!,
+    },
+  };
+}
+
 async function createBuilderFixture() {
   tracker ??= newDbTracker();
   const { tenant, actor } = await createTenantActor(tracker, "TENANT_OWNER");
@@ -251,6 +373,86 @@ async function createBuilderFixture() {
 }
 
 describe("R4.2 reward engine", () => {
+  test("journal article preview returns monetary, research-points, weighted, and flat publication outputs", async () => {
+    const fixture = await createJournalArticleFixture();
+    const firstAuthor = await createTestUser(tracker!);
+    const coAuthorOne = await createTestUser(tracker!);
+    const coAuthorTwo = await createTestUser(tracker!);
+
+    const preview = await previewKpiRewards(fixture.kpi.id, fixture.tenant.id, {
+      actualValue: 1,
+      reportingDate: new Date("2026-06-05T00:00:00.000Z"),
+      achievementFormData: {
+        journalQuartile: "Q1",
+        publicationDate: new Date("2026-06-01T00:00:00.000Z").toISOString(),
+        doi: "10.1000/new-q1-paper",
+      },
+      contributors: [
+        previewContributor({
+          userId: firstAuthor.id,
+          contributorRoleId: fixture.roles.leadAuthor.id,
+          creditPercent: 70,
+          selectorTags: ["FIRST_AUTHOR"],
+        }),
+        previewContributor({
+          userId: coAuthorOne.id,
+          contributorRoleId: fixture.roles.coAuthor.id,
+          creditPercent: 15,
+        }),
+        previewContributor({
+          userId: coAuthorTwo.id,
+          contributorRoleId: fixture.roles.coAuthor.id,
+          creditPercent: 15,
+        }),
+      ],
+      systemMetrics: {},
+    });
+
+    expect(preview?.matchedTiers.map((tier) => tier.code)).toEqual(["Q1"]);
+
+    const money = preview?.components.find(
+      (component) => component.componentCode === "Q1_JOURNAL_MONETARY",
+    );
+    expect(money?.totalAmount).toBe(35000);
+
+    const researchPoints = preview?.components.find(
+      (component) => component.componentCode === "Q1_JOURNAL_RESEARCH_POINTS",
+    );
+    expect(researchPoints?.totalAmount).toBe(150);
+
+    const weightedAchievement = preview?.components.find(
+      (component) => component.componentCode === "Q1_JOURNAL_PUBLICATION_WEIGHTED",
+    );
+    expect(weightedAchievement?.totalAmount).toBe(1);
+
+    const flatAchievement = preview?.components.find(
+      (component) => component.componentCode === "Q1_JOURNAL_PUBLICATION",
+    );
+    expect(flatAchievement?.baseAmount).toBe(3);
+    expect(flatAchievement?.contributors.every((contributor) => contributor.amount === 1)).toBe(true);
+
+    const moneyByUser = new Map(
+      money?.contributors.map((contributor) => [contributor.userId, contributor.amount]) ?? [],
+    );
+    expect(moneyByUser.get(firstAuthor.id)).toBeCloseTo(24500, 2);
+    expect(moneyByUser.get(coAuthorOne.id)).toBeCloseTo(5250, 2);
+    expect(moneyByUser.get(coAuthorTwo.id)).toBeCloseTo(5250, 2);
+
+    const researchByUser = new Map(
+      researchPoints?.contributors.map((contributor) => [contributor.userId, contributor.amount]) ?? [],
+    );
+    expect(researchByUser.get(firstAuthor.id)).toBeCloseTo(105, 2);
+    expect(researchByUser.get(coAuthorOne.id)).toBeCloseTo(22.5, 2);
+    expect(researchByUser.get(coAuthorTwo.id)).toBeCloseTo(22.5, 2);
+
+    const weightedByUser = new Map(
+      weightedAchievement?.contributors.map((contributor) => [contributor.userId, contributor.amount]) ?? [],
+    );
+    expect(weightedByUser.get(firstAuthor.id)).toBeCloseTo(0.7, 2);
+    expect(weightedByUser.get(coAuthorOne.id)).toBeCloseTo(0.15, 2);
+    expect(weightedByUser.get(coAuthorTwo.id)).toBeCloseTo(0.15, 2);
+  });
+
   test("publication Q1 preview uses first-author-led 70/30 split", async () => {
     const fixture = await createPublicationFixture();
     const firstAuthor = await createTestUser(tracker!);

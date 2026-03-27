@@ -121,9 +121,20 @@ describe("R4.2 KPI templates", () => {
     const fixture = await createTemplateFixture();
 
     const templates = await listKpiTemplates(fixture.tenant.id);
+    expect(templates.some((row) => row.code === "SYSTEM_TEMPLATE_JOURNAL_ARTICLE")).toBe(true);
     expect(templates.some((row) => row.code === "SYSTEM_RESEARCH_PUBLICATION")).toBe(true);
     expect(templates.some((row) => row.code === "SYSTEM_RESEARCH_GRANT")).toBe(true);
     expect(templates.some((row) => row.code === "SYSTEM_PATENT")).toBe(true);
+
+    const journalArticle = templates.find((row) => row.code === "SYSTEM_TEMPLATE_JOURNAL_ARTICLE");
+    expect(journalArticle).toBeTruthy();
+
+    const journalPayload = journalArticle?.builderPayload as {
+      rewardTiers: Array<unknown>;
+      rewardComponents: Array<unknown>;
+    };
+    expect(journalPayload.rewardTiers).toHaveLength(4);
+    expect(journalPayload.rewardComponents).toHaveLength(16);
 
     const publication = templates.find((row) => row.code === "SYSTEM_RESEARCH_PUBLICATION");
     expect(publication).toBeTruthy();

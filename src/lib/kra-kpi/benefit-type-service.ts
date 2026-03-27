@@ -56,6 +56,18 @@ const DEFAULT_BENEFIT_TYPES: Array<{
     unit: "Certificate",
     sortOrder: 6,
   },
+  {
+    code: "PUBLICATION_ACHIEVEMENT_WEIGHTED",
+    name: "Publication Achievement (Contribution-Wise)",
+    unit: "Count",
+    sortOrder: 7,
+  },
+  {
+    code: "PUBLICATION_ACHIEVEMENT",
+    name: "Publication Achievement",
+    unit: "Count",
+    sortOrder: 8,
+  },
 ];
 
 export async function seedDefaultBenefitTypes(tenantId: string): Promise<void> {

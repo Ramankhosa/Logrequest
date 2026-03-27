@@ -202,14 +202,25 @@ describe("R1.1a My KPI routes", () => {
     const recommendRes = await recommendRoute.POST(
       new Request("http://localhost", {
         method: "POST",
-        body: JSON.stringify({ achievementId: "ach-1", approved: true, note: "ok", level: "RECOMMEND" }),
+        body: JSON.stringify({
+          achievementId: "ach-1",
+          approved: true,
+          note: "ok",
+          level: "RECOMMEND",
+        }),
         headers: { "content-type": "application/json" },
       }),
     );
     const verifyRes = await recommendRoute.POST(
       new Request("http://localhost", {
         method: "POST",
-        body: JSON.stringify({ achievementId: "ach-1", approved: true, note: "ok", level: "VERIFY" }),
+        body: JSON.stringify({
+          achievementId: "ach-1",
+          approved: true,
+          note: "ok",
+          level: "VERIFY",
+          rejectionType: "REJECT",
+        }),
         headers: { "content-type": "application/json" },
       }),
     );
@@ -223,6 +234,7 @@ describe("R1.1a My KPI routes", () => {
       "ok",
       "user-1",
       "TENANT_USER",
+      undefined,
     );
     expect(verifyAchievementMock).toHaveBeenCalledWith(
       "ach-1",
@@ -231,6 +243,7 @@ describe("R1.1a My KPI routes", () => {
       "ok",
       "user-1",
       "TENANT_USER",
+      "REJECT",
     );
   });
 });

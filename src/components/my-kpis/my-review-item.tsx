@@ -19,7 +19,7 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
 
   const isRecommend = item.reviewLevel === "RECOMMEND";
   const approveLabel = isRecommend ? "Recommend" : "Verify";
-  const rejectLabel = isRecommend ? "Send Back" : "Not Approve";
+  const rejectLabel = isRecommend ? "Send Back" : "Reject";
 
   const handleAction = async (approved: boolean) => {
     if (!approved && !note.trim()) {
@@ -38,6 +38,7 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
         approved,
         note: note.trim() || undefined,
         level: item.reviewLevel,
+        rejectionType: !approved ? (isRecommend ? "SEND_BACK" : "REJECT") : undefined,
       }),
     });
 
@@ -54,60 +55,58 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-      <div className="p-4 space-y-3">
-        {/* Header */}
+      <div className="space-y-3 p-4">
         <div className="flex items-start justify-between">
           <div>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold text-gray-900">{item.kpiTitle}</span>
-              <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                isRecommend
-                  ? "bg-blue-100 text-blue-700"
-                  : "bg-indigo-100 text-indigo-700"
-              }`}>
+              <span
+                className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                  isRecommend
+                    ? "bg-blue-100 text-blue-700"
+                    : "bg-indigo-100 text-indigo-700"
+                }`}
+              >
                 {isRecommend ? "Needs Recommendation" : "Needs Verification"}
               </span>
             </div>
             <div className="mt-1 text-xs text-gray-500">
               <span className="font-medium">{item.facultyName}</span>
-              {item.facultyDesignation && ` — ${item.facultyDesignation}`}
+              {item.facultyDesignation ? ` | ${item.facultyDesignation}` : ""}
             </div>
           </div>
           <div className="text-right text-sm">
             <div className="text-gray-500">
-              Target: <strong>{item.targetValue ?? "—"}</strong>
-              {item.unitLabel ? ` ${item.unitLabel}` : ""}
+              Target: <strong>{item.targetDisplay}</strong>
             </div>
             <div className="text-gray-700">
-              Actual: <strong>{item.actualValue ?? "—"}</strong>
+              Actual: <strong>{item.actualDisplay}</strong>
             </div>
           </div>
         </div>
 
-        {/* Evidence summary */}
-        {item.evidenceDescription && (
-          <div className="text-xs text-gray-600 bg-gray-50 rounded p-2">
+        {item.evidenceDescription ? (
+          <div className="rounded bg-gray-50 p-2 text-xs text-gray-600">
             {item.evidenceDescription}
           </div>
-        )}
+        ) : null}
 
-        {item.evidenceLinks.length > 0 && (
+        {item.evidenceLinks.length > 0 ? (
           <div className="flex flex-wrap gap-2">
-            {item.evidenceLinks.map((link, i) => (
+            {item.evidenceLinks.map((link, index) => (
               <a
-                key={i}
+                key={`${link}-${index}`}
                 href={link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-xs text-blue-600 hover:underline truncate max-w-xs"
+                className="max-w-xs truncate text-xs text-blue-600 hover:underline"
               >
-                Evidence {i + 1}
+                Evidence {index + 1}
               </a>
             ))}
           </div>
-        )}
+        ) : null}
 
-        {/* Expand for details */}
         <button
           onClick={() => setExpanded(!expanded)}
           className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
@@ -116,12 +115,11 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
           {expanded ? "Less details" : "More details"}
         </button>
 
-        {expanded && (
-          <div className="border-t border-gray-100 pt-3 space-y-3">
-            {/* Form data */}
-            {item.achievementFormData && item.achievementFormConfig && (
+        {expanded ? (
+          <div className="space-y-3 border-t border-gray-100 pt-3">
+            {item.achievementFormData && item.achievementFormConfig ? (
               <div>
-                <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Form Data</h4>
+                <h4 className="mb-2 text-xs font-semibold uppercase text-gray-500">Form Data</h4>
                 <DynamicFormRenderer
                   fields={item.achievementFormConfig.fields}
                   values={item.achievementFormData}
@@ -129,19 +127,17 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
                   readOnly
                 />
               </div>
-            )}
+            ) : null}
 
-            {/* Trail */}
-            {(item.submissionTrail.length > 0 || item.verificationLog.length > 0) && (
+            {item.submissionTrail.length > 0 || item.verificationLog.length > 0 ? (
               <MyAchievementTrail trail={item.submissionTrail} log={item.verificationLog} />
-            )}
+            ) : null}
           </div>
-        )}
+        ) : null}
 
-        {/* Action area */}
-        {error && (
+        {error ? (
           <div className="rounded-md bg-red-50 p-2 text-xs text-red-700">{error}</div>
-        )}
+        ) : null}
 
         <div className="flex items-center gap-3 border-t border-gray-100 pt-3">
           <input
@@ -149,7 +145,7 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
             className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
             placeholder={`Add a note (${rejectLabel.toLowerCase()} requires a reason)...`}
             value={note}
-            onChange={(e) => setNote(e.target.value)}
+            onChange={(event) => setNote(event.target.value)}
           />
           <button
             onClick={() => handleAction(true)}

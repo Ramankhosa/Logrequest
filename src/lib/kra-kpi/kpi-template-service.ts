@@ -10,6 +10,7 @@ import { seedDefaultContributorRoles } from "./contributor-role-service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
+const JOURNAL_ARTICLE_TEMPLATE_KEY = "JOURNAL_ARTICLE_TEMPLATE";
 
 function isTenantAdmin(role: Role): boolean {
   return (
@@ -64,6 +65,41 @@ const PUBLICATION_TIER_ROWS = [
     leavePoints: 5,
     leadSelectorTag: "CORRESPONDING_AUTHOR",
     priority: 4,
+  },
+] as const;
+
+const JOURNAL_ARTICLE_TIER_ROWS = [
+  {
+    code: "Q1",
+    name: "Q1 Journal Article",
+    value: "Q1",
+    monetaryAmount: 35000,
+    researchPoints: 150,
+    priority: 0,
+  },
+  {
+    code: "Q2",
+    name: "Q2 Journal Article",
+    value: "Q2",
+    monetaryAmount: 25000,
+    researchPoints: 125,
+    priority: 1,
+  },
+  {
+    code: "Q3",
+    name: "Q3 Journal Article",
+    value: "Q3",
+    monetaryAmount: 20000,
+    researchPoints: 100,
+    priority: 2,
+  },
+  {
+    code: "Q4",
+    name: "Q4 Journal Article",
+    value: "Q4",
+    monetaryAmount: 15000,
+    researchPoints: 70,
+    priority: 3,
   },
 ] as const;
 
@@ -145,13 +181,202 @@ function buildPublicationRewardComponents() {
   ]);
 }
 
+function buildJournalArticleRewardTiers() {
+  return JOURNAL_ARTICLE_TIER_ROWS.map((tier) => ({
+    tierSetKey: "PRIMARY",
+    code: tier.code,
+    name: tier.name,
+    description: `Auto-matches when the journal quartile is ${tier.value}.`,
+    priority: tier.priority,
+    matchMode: "HIGHEST_MATCH" as const,
+    effectiveFrom: null,
+    effectiveTo: null,
+    isActive: true,
+    rules: [
+      {
+        source: "FORM_FIELD" as const,
+        operator: "eq" as const,
+        fieldKey: "journalQuartile",
+        value: tier.value,
+        sortOrder: 0,
+      },
+    ],
+  }));
+}
+
+function buildJournalArticleSelectorDistributions() {
+  return [
+    {
+      selectorType: "SELECTOR_TAG" as const,
+      selectorTag: "FIRST_AUTHOR",
+      sharePercent: 70,
+      splitMode: "FULL_TO_MATCHED" as const,
+      sortOrder: 0,
+    },
+    {
+      selectorType: "SELECTOR_TAG" as const,
+      selectorTag: "CORRESPONDING_AUTHOR",
+      sharePercent: 70,
+      splitMode: "FULL_TO_MATCHED" as const,
+      sortOrder: 1,
+    },
+  ];
+}
+
+function buildJournalArticleRewardComponents() {
+  return JOURNAL_ARTICLE_TIER_ROWS.flatMap((tier, sortIndex) => {
+    const selectorDistributions = buildJournalArticleSelectorDistributions();
+
+    return [
+      {
+        rewardTierCode: tier.code,
+        benefitTypeCode: "MONETARY",
+        code: `${tier.code}_JOURNAL_MONETARY`,
+        name: `${tier.name} Monetary Incentive`,
+        description: `${tier.name} pooled monetary incentive split by internal contribution credit.`,
+        trigger: "FINAL_VERIFY" as const,
+        amountMode: "FIXED_POOL" as const,
+        amountValue: tier.monetaryAmount,
+        distributionMode: "CREDIT_PERCENT_SPLIT" as const,
+        singleEligibleHandling: "FULL_TO_SINGLE" as const,
+        emptyShareHandling: "ROLLOVER_TO_MATCHED" as const,
+        isActive: true,
+        sortOrder: sortIndex * 4,
+        distributions: selectorDistributions,
+      },
+      {
+        rewardTierCode: tier.code,
+        benefitTypeCode: "RESEARCH_POINTS",
+        code: `${tier.code}_JOURNAL_RESEARCH_POINTS`,
+        name: `${tier.name} Research Points`,
+        description: `${tier.name} research points split by internal contribution credit.`,
+        trigger: "FINAL_VERIFY" as const,
+        amountMode: "FIXED_POOL" as const,
+        amountValue: tier.researchPoints,
+        distributionMode: "CREDIT_PERCENT_SPLIT" as const,
+        singleEligibleHandling: "FULL_TO_SINGLE" as const,
+        emptyShareHandling: "ROLLOVER_TO_MATCHED" as const,
+        isActive: true,
+        sortOrder: sortIndex * 4 + 1,
+        distributions: selectorDistributions,
+      },
+      {
+        rewardTierCode: tier.code,
+        benefitTypeCode: "PUBLICATION_ACHIEVEMENT_WEIGHTED",
+        code: `${tier.code}_JOURNAL_PUBLICATION_WEIGHTED`,
+        name: `${tier.name} Publication Achievement (Contribution-Wise)`,
+        description: `${tier.name} weighted publication achievement split by internal contribution credit.`,
+        trigger: "FINAL_VERIFY" as const,
+        amountMode: "FIXED_POOL" as const,
+        amountValue: 1,
+        distributionMode: "CREDIT_PERCENT_SPLIT" as const,
+        singleEligibleHandling: "FULL_TO_SINGLE" as const,
+        emptyShareHandling: "ROLLOVER_TO_MATCHED" as const,
+        isActive: true,
+        sortOrder: sortIndex * 4 + 2,
+        distributions: selectorDistributions,
+      },
+      {
+        rewardTierCode: tier.code,
+        benefitTypeCode: "PUBLICATION_ACHIEVEMENT",
+        code: `${tier.code}_JOURNAL_PUBLICATION`,
+        name: `${tier.name} Publication Achievement`,
+        description: `${tier.name} publication achievement counted as one per eligible internal contributor.`,
+        trigger: "FINAL_VERIFY" as const,
+        amountMode: "FIXED_PER_PERSON" as const,
+        amountValue: 1,
+        distributionMode: "FIXED_PER_PERSON" as const,
+        singleEligibleHandling: "FULL_TO_SINGLE" as const,
+        emptyShareHandling: "ROLLOVER_TO_MATCHED" as const,
+        isActive: true,
+        sortOrder: sortIndex * 4 + 3,
+        distributions: [],
+      },
+    ];
+  });
+}
+
 const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
+  {
+    code: "SYSTEM_TEMPLATE_JOURNAL_ARTICLE",
+    name: "Journal Article",
+    description:
+      "Journal article KPI template with Q1-Q4 incentives, research points, and publication-achievement outputs.",
+    category: "TEMPLATES",
+    sortOrder: 0,
+    isActive: true,
+    payload: {
+      definition: {
+        kraDefinitionId: "TEMPLATE_KRA",
+        title: "Journal Article",
+        description:
+          "Tracks verified journal articles with quartile-based incentive, research point, and publication-achievement outputs.",
+        measurementType: "NUMERIC",
+        unitLabel: "articles",
+        weightage: 0,
+        defaultTarget: null,
+        measurementConfig: null,
+        scoringMethod: "LINEAR",
+        scoringDirection: "ASCENDING",
+        scoringConfig: null,
+        isPerCapita: false,
+        allocationType: "BOTH",
+        startingUnitId: "TEMPLATE_UNIT",
+        achievementTemplateKey: "PUBLICATION",
+        achievementFormConfig: {
+          templateKey: JOURNAL_ARTICLE_TEMPLATE_KEY,
+          fields: [
+            ...ACHIEVEMENT_TEMPLATES.PUBLICATION.fields,
+            {
+              key: "journalQuartile",
+              label: "Journal Quartile",
+              type: "SELECT",
+              required: true,
+              options: ["Q1", "Q2", "Q3", "Q4"],
+              sortOrder: 10,
+              marker: "CATEGORY_FIELD",
+            },
+          ],
+        },
+        guidanceNotes:
+          "Internal author credit is auto-derived for this template: solo internal author gets 100%; otherwise the lead internal author gets 70% and the remaining 30% is split equally across other internal authors. FIRST_AUTHOR is preferred; CORRESPONDING_AUTHOR is used only as a fallback lead marker. External contributors are ignored for these splits.",
+        sortOrder: 0,
+        keyUnitId: null,
+        finalUnitId: null,
+        sopDescription: null,
+        evidenceRequired: true,
+        evidenceTypes: ["DOCUMENT", "URL"],
+        evidenceInstructions: "Attach the journal proof, DOI, and publication evidence.",
+        isTeamKpi: true,
+        teamCreditMethod: "WEIGHTED_SPLIT",
+        allowPartialCompletion: true,
+        participantMode: "OPTIONAL_TEAM",
+        rewardRecurrencePolicy: "ONCE_PER_UNIQUE_KEY",
+        policyDateFieldKey: "publicationDate",
+        contributionRoles: null,
+      },
+      applicableRoles: [
+        { roleCode: "LEAD_AUTHOR", isDefault: true, sortOrder: 0 },
+        { roleCode: "CO_AUTHOR", isDefault: false, sortOrder: 1 },
+        { roleCode: "CORRESPONDING", isDefault: false, sortOrder: 2 },
+      ],
+      contributorConfig: {
+        externalContribTemplateId: null,
+        allowExternalContributors: true,
+        duplicateCheckFields: ["doi"],
+        creditSumMode: "MUST_EQUAL_100",
+      },
+      stages: [],
+      rewardTiers: buildJournalArticleRewardTiers(),
+      rewardComponents: buildJournalArticleRewardComponents(),
+    },
+  },
   {
     code: "SYSTEM_RESEARCH_PUBLICATION",
     name: "Research Paper",
     description: "Publication KPI with quartile tiers and first/corresponding-author reward selectors.",
     category: "RESEARCH",
-    sortOrder: 0,
+    sortOrder: 1,
     isActive: true,
     payload: {
       definition: {
@@ -222,7 +447,7 @@ const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
     name: "Grant",
     description: "Research grant KPI starter template.",
     category: "RESEARCH",
-    sortOrder: 1,
+    sortOrder: 2,
     isActive: true,
     payload: {
       definition: {
@@ -281,7 +506,7 @@ const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
     name: "Patent",
     description: "Patent filing and grant KPI starter template.",
     category: "RESEARCH",
-    sortOrder: 2,
+    sortOrder: 3,
     isActive: true,
     payload: {
       definition: {

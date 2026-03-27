@@ -12,6 +12,7 @@ type RecommendBody = {
   approved: boolean;
   note?: string;
   level: "RECOMMEND" | "VERIFY";
+  rejectionType?: "SEND_BACK" | "REJECT";
 };
 
 export async function POST(request: Request) {
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
       body.note ?? null,
       session.user.id,
       (session.user.role ?? "TENANT_USER") as Role,
+      body.rejectionType,
     );
   } else {
     result = await recommendAchievement(
@@ -58,6 +60,7 @@ export async function POST(request: Request) {
       body.note ?? null,
       session.user.id,
       (session.user.role ?? "TENANT_USER") as Role,
+      body.rejectionType,
     );
   }
 

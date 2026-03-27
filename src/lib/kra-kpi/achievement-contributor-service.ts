@@ -6,6 +6,8 @@ import { validateExternalData } from "./external-contrib-template-service";
 import { getEffectiveConfig } from "./kpi-contributor-config-service";
 import type { AchievementContributorView, KraKpiActionResult } from "./shared";
 
+const JOURNAL_ARTICLE_TEMPLATE_KEY = "JOURNAL_ARTICLE_TEMPLATE";
+
 export const achievementContributorInputSchema = z.object({
   type: z.enum(["INTERNAL", "EXTERNAL"]).default("INTERNAL"),
   userId: z.string().trim().min(1).optional(),
@@ -49,6 +51,7 @@ type PreparedContributor = {
   isExcludedFromReward: boolean;
   note: string | null;
   roleName: string;
+  roleCode?: string | null;
 };
 
 type ContributorMutationSuccess = {
@@ -115,6 +118,19 @@ function scopeLabel(scope: ExternalContributorScope | null): string | undefined 
   return undefined;
 }
 
+function normalizeSelectorTag(value: string): string {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function hasSelectorTag(selectorTags: string[], tag: string): boolean {
+  const normalizedTag = normalizeSelectorTag(tag);
+  return selectorTags.some((value) => normalizeSelectorTag(value) === normalizedTag);
+}
+
 function computeCredits(
   contributors: Array<{
     isExcludedFromReward: boolean;
@@ -173,6 +189,103 @@ function computeCredits(
   }
 
   return credits;
+}
+
+function pickJournalArticleLeadIndex(
+  contributors: Array<{
+    roleCode?: string | null;
+    selectorTags: string[];
+  }>,
+  eligibleInternalIndexes: number[],
+): number {
+  const findFirstMatch = (
+    predicate: (row: { roleCode?: string | null; selectorTags: string[] }) => boolean,
+  ) =>
+    eligibleInternalIndexes.find((index) => predicate(contributors[index]!));
+
+  return (
+    findFirstMatch((row) => hasSelectorTag(row.selectorTags, "FIRST_AUTHOR")) ??
+    findFirstMatch((row) => normalizeRoleToken(row.roleCode ?? "") === "LEAD_AUTHOR") ??
+    findFirstMatch((row) => hasSelectorTag(row.selectorTags, "CORRESPONDING_AUTHOR")) ??
+    findFirstMatch((row) => normalizeRoleToken(row.roleCode ?? "") === "CORRESPONDING") ??
+    eligibleInternalIndexes[0]!
+  );
+}
+
+function computeJournalArticleCredits(
+  contributors: Array<{
+    type: ContributorType;
+    roleCode?: string | null;
+    selectorTags: string[];
+    isExcludedFromReward: boolean;
+  }>,
+): {
+  credits: number[];
+  excludedFlags: boolean[];
+} {
+  const credits = contributors.map(() => 0);
+  const excludedFlags = contributors.map(
+    (row) => row.type === "EXTERNAL" || row.isExcludedFromReward,
+  );
+  const eligibleInternalIndexes = contributors
+    .map((row, index) => ({ row, index }))
+    .filter((entry) => entry.row.type === "INTERNAL" && !excludedFlags[entry.index])
+    .map((entry) => entry.index);
+
+  if (eligibleInternalIndexes.length === 0) {
+    return { credits, excludedFlags };
+  }
+
+  if (eligibleInternalIndexes.length === 1) {
+    credits[eligibleInternalIndexes[0]!] = 100;
+    return { credits, excludedFlags };
+  }
+
+  const leadIndex = pickJournalArticleLeadIndex(contributors, eligibleInternalIndexes);
+  const remainingIndexes = eligibleInternalIndexes.filter((index) => index !== leadIndex);
+  credits[leadIndex] = 70;
+
+  if (remainingIndexes.length === 0) {
+    credits[leadIndex] = 100;
+    return { credits, excludedFlags };
+  }
+
+  const evenShare = round2(30 / remainingIndexes.length);
+  let consumed = 70;
+  for (const [position, index] of remainingIndexes.entries()) {
+    const value =
+      position === remainingIndexes.length - 1
+        ? round2(100 - consumed)
+        : evenShare;
+    credits[index] = value;
+    consumed += value;
+  }
+
+  return { credits, excludedFlags };
+}
+
+async function getContributorCreditPolicy(
+  kpiDefinitionId: string,
+  tenantId: string,
+  tx: DbClient,
+): Promise<"DEFAULT" | "JOURNAL_ARTICLE"> {
+  const kpi = await tx.kpiDefinition.findFirst({
+    where: { id: kpiDefinitionId, kraDefinition: { tenantId } },
+    select: {
+      achievementFormConfig: true,
+    },
+  });
+  const templateKey =
+    kpi?.achievementFormConfig &&
+    typeof kpi.achievementFormConfig === "object" &&
+    "templateKey" in kpi.achievementFormConfig &&
+    typeof kpi.achievementFormConfig.templateKey === "string"
+      ? kpi.achievementFormConfig.templateKey
+      : null;
+
+  return templateKey === JOURNAL_ARTICLE_TEMPLATE_KEY
+    ? "JOURNAL_ARTICLE"
+    : "DEFAULT";
 }
 
 async function getApplicableRoleMap(
@@ -304,6 +417,11 @@ async function prepareContributors(input: {
     input.tx,
   );
   const effectiveConfig = await getEffectiveConfig(input.kpiDefinitionId, input.tenantId);
+  const creditPolicy = await getContributorCreditPolicy(
+    input.kpiDefinitionId,
+    input.tenantId,
+    input.tx,
+  );
   if (!effectiveConfig) {
     return {
       ok: false,
@@ -369,6 +487,7 @@ async function prepareContributors(input: {
         isExcludedFromReward: contributor.isExcludedFromReward,
         note: contributor.note ?? null,
         roleName: applicableRole.contributorRole.name,
+        roleCode: applicableRole.contributorRole.code,
         defaultCreditPercent: applicableRole.contributorRole.defaultCreditPercent,
       });
       continue;
@@ -424,19 +543,33 @@ async function prepareContributors(input: {
       isExcludedFromReward: contributor.isExcludedFromReward,
       note: contributor.note ?? null,
       roleName: applicableRole.contributorRole.name,
+      roleCode: applicableRole.contributorRole.code,
       defaultCreditPercent: applicableRole.contributorRole.defaultCreditPercent,
     });
   }
 
-  const credits = computeCredits(
-    preparedBase.map((row) => ({
-      isExcludedFromReward: row.isExcludedFromReward,
-      contributorRoleId: row.contributorRoleId,
-      roleName: row.roleName,
-      defaultCreditPercent: row.defaultCreditPercent,
-    })),
-    effectiveConfig.creditSumMode,
-  );
+  const journalCredits =
+    creditPolicy === "JOURNAL_ARTICLE"
+      ? computeJournalArticleCredits(
+          preparedBase.map((row) => ({
+            type: row.type,
+            roleCode: row.roleCode,
+            selectorTags: row.selectorTags,
+            isExcludedFromReward: row.isExcludedFromReward,
+          })),
+        )
+      : null;
+  const credits =
+    journalCredits?.credits ??
+    computeCredits(
+      preparedBase.map((row) => ({
+        isExcludedFromReward: row.isExcludedFromReward,
+        contributorRoleId: row.contributorRoleId,
+        roleName: row.roleName,
+        defaultCreditPercent: row.defaultCreditPercent,
+      })),
+      effectiveConfig.creditSumMode,
+    );
 
   const prepared = preparedBase.map((row, index) => ({
     type: row.type,
@@ -448,9 +581,10 @@ async function prepareContributors(input: {
     contributorRoleId: row.contributorRoleId,
     selectorTags: row.selectorTags,
     creditPercent: credits[index] ?? 0,
-    isExcludedFromReward: row.isExcludedFromReward,
+    isExcludedFromReward: journalCredits?.excludedFlags[index] ?? row.isExcludedFromReward,
     note: row.note,
     roleName: row.roleName,
+    roleCode: row.roleCode,
   }));
 
   const shadowUserId = pickShadowUserId({

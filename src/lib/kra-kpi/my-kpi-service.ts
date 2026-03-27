@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { getDescendantUnitIds } from "@/lib/org-structure/hierarchy-utils";
 import { getUserAssignments } from "@/lib/org-structure/roles-service";
 import {
   computeReviewCycles,
@@ -25,6 +26,7 @@ import type {
   MeasurementConfig,
   SubmissionTrailView,
 } from "./shared";
+import { formatActualDisplay, formatTargetDisplay } from "./measurement-display";
 
 // ── Build MyKpiContext ───────────────────────────────────────────────────────
 
@@ -55,6 +57,91 @@ export async function isUserHeadOfUnit(
   const context = await getMyKpiContext(tenantId, userId);
 
   return context.headOfUnits.some((unit) => unit.unitId === unitId);
+}
+
+type ReviewScopeDetails = {
+  unitIds: string[];
+  unitNameById: Map<string, string>;
+};
+
+async function getReviewScopeDetails(
+  tenantId: string,
+  userId: string,
+): Promise<ReviewScopeDetails> {
+  const assignments = (await getUserAssignments(tenantId, userId))
+    .filter((assignment) => assignment.isUnitHead);
+
+  const unitIds = new Set<string>();
+  const unitNameById = new Map<string, string>();
+
+  for (const assignment of assignments) {
+    unitIds.add(assignment.unitId);
+    unitNameById.set(assignment.unitId, assignment.unitName);
+  }
+
+  const descendantGroups = await Promise.all(
+    assignments
+      .filter((assignment) => assignment.scope === "DESCENDANTS")
+      .map((assignment) => getDescendantUnitIds(tenantId, assignment.unitId, true)),
+  );
+
+  const unresolvedUnitIds = new Set<string>();
+  for (const descendantIds of descendantGroups) {
+    for (const unitId of descendantIds) {
+      unitIds.add(unitId);
+      if (!unitNameById.has(unitId)) {
+        unresolvedUnitIds.add(unitId);
+      }
+    }
+  }
+
+  if (unresolvedUnitIds.size > 0) {
+    const units = await prisma.orgUnit.findMany({
+      where: { id: { in: [...unresolvedUnitIds] } },
+      select: { id: true, name: true },
+    });
+
+    for (const unit of units) {
+      unitNameById.set(unit.id, unit.name);
+    }
+  }
+
+  return {
+    unitIds: [...unitIds],
+    unitNameById,
+  };
+}
+
+function daysWaitingSince(date: Date): number {
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / (24 * 60 * 60 * 1000)));
+}
+
+function resolveReviewUnitId(achievement: {
+  state: string;
+  currentVerifierUnitId: string | null;
+  kpiDefinition: {
+    startingUnitId: string;
+    keyUnitId: string | null;
+    finalUnitId: string | null;
+  };
+}): string {
+  if (achievement.currentVerifierUnitId) {
+    return achievement.currentVerifierUnitId;
+  }
+
+  if (achievement.state === "RECOMMENDED") {
+    return achievement.kpiDefinition.finalUnitId
+      ?? achievement.kpiDefinition.keyUnitId
+      ?? achievement.kpiDefinition.startingUnitId;
+  }
+
+  if (achievement.kpiDefinition.keyUnitId && achievement.kpiDefinition.finalUnitId) {
+    return achievement.kpiDefinition.keyUnitId;
+  }
+
+  return achievement.kpiDefinition.finalUnitId
+    ?? achievement.kpiDefinition.keyUnitId
+    ?? achievement.kpiDefinition.startingUnitId;
 }
 
 function findCycleNumberForDate(
@@ -757,16 +844,15 @@ export async function getMyReviewQueue(
   userId: string,
   periodId: string,
 ): Promise<ReviewQueueItem[]> {
-  const ctx = await getMyKpiContext(tenantId, userId);
-  if (ctx.headOfUnits.length === 0) return [];
+  const reviewScope = await getReviewScopeDetails(tenantId, userId);
+  if (reviewScope.unitIds.length === 0) return [];
 
-  const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
   const achievements = await prisma.achievement.findMany({
     where: {
       tenantId,
       periodId,
       state: { in: ["SUBMITTED", "RECOMMENDED"] },
-      currentVerifierUnitId: { in: headUnitIds },
+      currentVerifierUnitId: { in: reviewScope.unitIds },
       reportedByUserId: { not: userId },
     },
     include: {
@@ -782,7 +868,14 @@ export async function getMyReviewQueue(
         },
       },
       targetAllocation: {
-        select: { targetValue: true },
+        select: {
+          targetValue: true,
+          targetDate: true,
+          targetMilestone: true,
+          targetGrade: true,
+          targetBoolean: true,
+          targetRating: true,
+        },
       },
       contributors: { include: achievementContributorInclude },
       submissionTrail: { orderBy: { createdAt: "asc" } },
@@ -817,12 +910,29 @@ export async function getMyReviewQueue(
   return achievements.map((achievement): ReviewQueueItem => {
     const stagesTotal = achievement.stageProgress.length;
     const stagesComplete = achievement.stageProgress.filter((stage) => stage.isCompleted).length;
+    const reviewUnitId = resolveReviewUnitId({
+      state: achievement.state,
+      currentVerifierUnitId: achievement.currentVerifierUnitId,
+      kpiDefinition: achievement.kpiDefinition,
+    });
     const reviewLevel: ReviewQueueItem["reviewLevel"] =
       achievement.state === "SUBMITTED"
       && achievement.kpiDefinition.keyUnitId
       && achievement.kpiDefinition.finalUnitId
         ? "RECOMMEND"
         : "VERIFY";
+    const targetDisplay = achievement.targetAllocation
+      ? formatTargetDisplay(
+          achievement.kpiDefinition.measurementType,
+          achievement.targetAllocation,
+          achievement.kpiDefinition.unitLabel,
+        )
+      : "--";
+    const actualDisplay = formatActualDisplay(
+      achievement.kpiDefinition.measurementType,
+      achievement,
+      achievement.kpiDefinition.unitLabel,
+    );
 
     return {
       achievementId: achievement.id,
@@ -847,6 +957,9 @@ export async function getMyReviewQueue(
       reportingDate: achievement.reportingDate,
       reviewLevel,
       startingUnitId: achievement.kpiDefinition.startingUnitId,
+      reviewUnitId,
+      reviewUnitName: reviewScope.unitNameById.get(reviewUnitId) ?? null,
+      waitingDays: daysWaitingSince(achievement.reportingDate),
       contributionRole: achievement.contributionRole ?? null,
       creditPercent: achievement.creditPercent ?? null,
       contributors:
@@ -859,6 +972,8 @@ export async function getMyReviewQueue(
       effectiveScore: achievement.effectiveScore ?? null,
       stagesComplete,
       stagesTotal,
+      targetDisplay,
+      actualDisplay,
     };
   });
 }
@@ -1155,17 +1270,17 @@ async function getMyPendingCountLegacy(
 export async function getMyPendingCount(
   tenantId: string,
   userId: string,
+  periodId?: string,
 ): Promise<number> {
-  const ctx = await getMyKpiContext(tenantId, userId);
-  if (ctx.headOfUnits.length === 0) return 0;
-
-  const headUnitIds = ctx.headOfUnits.map((u) => u.unitId);
+  const reviewScope = await getReviewScopeDetails(tenantId, userId);
+  if (reviewScope.unitIds.length === 0) return 0;
 
   return prisma.achievement.count({
     where: {
       tenantId,
+      ...(periodId ? { periodId } : {}),
       state: { in: ["SUBMITTED", "RECOMMENDED"] },
-      currentVerifierUnitId: { in: headUnitIds },
+      currentVerifierUnitId: { in: reviewScope.unitIds },
       reportedByUserId: { not: userId },
     },
   });

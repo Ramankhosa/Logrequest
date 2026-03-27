@@ -55,15 +55,15 @@ export type OrgHierarchyUnit = {
 
 export type KpiCrossComparison = {
   kpiTitle: string;
-  targetTotal: number;
-  achievedTotal: number;
+  totalAllocations: number;
+  overallAverageScore: number;
   units: {
     unitId: string;
     unitName: string;
-    target: number;
-    achieved: number;
+    allocationCount: number;
+    scoredCount: number;
+    averageScore: number;
     completionPercent: number;
-    achievementCount: number;
   }[];
 };
 
@@ -391,13 +391,17 @@ export async function getKpiCrossComparison(
       ...scopeFilter,
     },
     select: {
-      targetValue: true,
       assignedToUnitId: true,
       assignedToUserId: true,
       assignedToUnit: { select: { id: true, name: true } },
       achievements: {
         orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
-        select: { state: true, actualValue: true },
+        select: {
+          state: true,
+          effectiveScore: true,
+          stageCompletionScore: true,
+          computedScore: true,
+        },
       },
     },
   });
@@ -411,7 +415,12 @@ export async function getKpiCrossComparison(
   const units = await getPublishedUnits(tenantId);
   const unitNameMap = new Map(units.map((unit) => [unit.id, unit.name]));
 
-  const unitMap = new Map<string, { name: string; target: number; achieved: number; count: number }>();
+  const unitMap = new Map<string, {
+    name: string;
+    allocationCount: number;
+    scoredCount: number;
+    scoreTotal: number;
+  }>();
   for (const allocation of allocations) {
     const unitId =
       allocation.assignedToUnitId
@@ -422,39 +431,59 @@ export async function getKpiCrossComparison(
       allocation.assignedToUnit?.name
       ?? unitNameMap.get(unitId)
       ?? "Unassigned";
-    const entry = unitMap.get(unitId) ?? { name: unitName, target: 0, achieved: 0, count: 0 };
-    entry.target += allocation.targetValue ?? 0;
+    const entry = unitMap.get(unitId) ?? {
+      name: unitName,
+      allocationCount: 0,
+      scoredCount: 0,
+      scoreTotal: 0,
+    };
+    entry.allocationCount += 1;
 
     const latestAchievement = allocation.achievements[0];
     if (latestAchievement && ["SUBMITTED", "RECOMMENDED", "VERIFIED"].includes(latestAchievement.state)) {
-      entry.achieved += latestAchievement.actualValue ?? 0;
-      entry.count += 1;
+      const score =
+        latestAchievement.effectiveScore
+        ?? latestAchievement.stageCompletionScore
+        ?? latestAchievement.computedScore;
+
+      if (score != null) {
+        entry.scoreTotal += score;
+        entry.scoredCount += 1;
+      }
     }
 
     unitMap.set(unitId, entry);
   }
 
-  let targetTotal = 0;
-  let achievedTotal = 0;
+  let totalAllocations = 0;
+  let totalScore = 0;
+  let scoredCount = 0;
   const unitRows = Array.from(unitMap.entries()).map(([unitId, unit]) => {
-    targetTotal += unit.target;
-    achievedTotal += unit.achieved;
+    totalAllocations += unit.allocationCount;
+    totalScore += unit.scoreTotal;
+    scoredCount += unit.scoredCount;
 
     return {
       unitId,
       unitName: unit.name,
-      target: unit.target,
-      achieved: unit.achieved,
+      allocationCount: unit.allocationCount,
+      scoredCount: unit.scoredCount,
+      averageScore:
+        unit.scoredCount > 0
+          ? Math.round((unit.scoreTotal / unit.scoredCount) * 100) / 100
+          : 0,
       completionPercent:
-        unit.target > 0 ? Math.round((unit.achieved / unit.target) * 10000) / 100 : 0,
-      achievementCount: unit.count,
+        unit.allocationCount > 0
+          ? Math.round((unit.scoredCount / unit.allocationCount) * 10000) / 100
+          : 0,
     };
   });
 
   return {
     kpiTitle: kpi.title,
-    targetTotal,
-    achievedTotal,
+    totalAllocations,
+    overallAverageScore:
+      scoredCount > 0 ? Math.round((totalScore / scoredCount) * 100) / 100 : 0,
     units: unitRows,
   };
 }

@@ -5,7 +5,11 @@ import {
   submitForVerification,
   verifyAchievement,
 } from "@/lib/kra-kpi/achievement-service";
-import { listContributorRewards, transitionContributorRewards } from "@/lib/kra-kpi/reward-ops-service";
+import {
+  listContributorRewards,
+  listContributorRewardsForActor,
+  transitionContributorRewards,
+} from "@/lib/kra-kpi/reward-ops-service";
 import {
   createPublicationRewardFixture,
   createScenarioAllocation,
@@ -441,8 +445,19 @@ describe("database-first reward and correction scenarios", () => {
           { note: "Concurrent release", releaseReference: "RACE-2" },
         ),
       ]);
-      expect(concurrentRelease.filter((row) => row.status === "fulfilled")).toHaveLength(1);
-      expect(concurrentRelease.filter((row) => row.status === "rejected")).toHaveLength(1);
+      expect(concurrentRelease.filter((row) => row.status === "fulfilled")).toHaveLength(2);
+      expect(concurrentRelease.filter((row) => row.status === "rejected")).toHaveLength(0);
+
+      const settledResults = concurrentRelease
+        .filter((row): row is PromiseFulfilledResult<Awaited<ReturnType<typeof transitionContributorRewards>>> => row.status === "fulfilled")
+        .map((row) => row.value);
+      expect(settledResults.filter((row) => row.updatedCount === 1)).toHaveLength(1);
+      expect(
+        settledResults.filter(
+          (row) => row.updatedCount === 0
+            && row.failed.some((entry) => entry.id === targetRewardId && entry.message.includes("state changed")),
+        ),
+      ).toHaveLength(1);
 
       const releasedReward = await prisma.contributorReward.findUniqueOrThrow({
         where: { id: targetRewardId },
@@ -450,6 +465,18 @@ describe("database-first reward and correction scenarios", () => {
       });
       expect(releasedReward.state).toBe("RELEASED");
       expect(releasedReward.events.filter((event) => event.action === "RELEASED")).toHaveLength(1);
+
+      const retryRelease = await transitionContributorRewards(
+        fixture.tenant.id,
+        [targetRewardId],
+        "RELEASED",
+        fixture.actor.id,
+        "TENANT_OWNER",
+        { note: "Retry release", releaseReference: "RACE-3" },
+      );
+      expect(retryRelease.updatedCount).toBe(0);
+      expect(retryRelease.failed).toHaveLength(1);
+      expect(retryRelease.failed[0]!.message).toContain("Cannot move reward");
 
       const consoleBeforeTransfer = await listContributorRewards(fixture.tenant.id, {
         kpiDefinitionId: fixture.publication.kpi.id,
@@ -480,6 +507,109 @@ describe("database-first reward and correction scenarios", () => {
 
       expect(consoleAfterTransfer.rewards.length).toBe(consoleBeforeTransfer.rewards.length);
       expect(consoleWrongUnit.rewards).toHaveLength(0);
+    });
+  });
+
+  test("non-admin approvers can manage rewards only within their governed hierarchy scope", async () => {
+    await withKraKpiScenarioDb(async (tracker) => {
+      const fixture = await createPublicationRewardFixture(tracker);
+      const created = await recordPublicationAchievement({
+        fixture,
+        allocationId: fixture.publication.allocation.id,
+        reporterUserId: fixture.users.facultyCse.id,
+        doi: "10.1000/db-hierarchy-scope",
+        tier: "Q1",
+        contributors: [
+          {
+            type: "INTERNAL",
+            userId: fixture.users.facultyCse.id,
+            contributorRoleId: fixture.publication.roles.leadAuthor.id,
+            selectorTags: ["FIRST_AUTHOR"],
+          },
+        ],
+      });
+      expect(created.status).toBe("success");
+
+      await submitForVerification(
+        created.id!,
+        fixture.tenant.id,
+        fixture.users.facultyCse.id,
+        "TENANT_USER",
+        "Submitting for hierarchy-scoped reward approval.",
+      );
+      await verifyAchievement(
+        created.id!,
+        fixture.tenant.id,
+        true,
+        "Verified before scoped reward approval checks.",
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+
+      await prisma.orgRoleAssignment.updateMany({
+        where: {
+          versionId: fixture.structure.versionId,
+          unitId: fixture.structure.schoolUnitId,
+          userId: fixture.users.schoolHead.id,
+        },
+        data: { scope: "DESCENDANTS" },
+      });
+
+      const rewardRows = await loadActiveRewards(created.id!);
+      expect(rewardRows.length).toBeGreaterThan(0);
+
+      const cseHeadConsole = await listContributorRewardsForActor(
+        fixture.tenant.id,
+        fixture.users.cseHead.id,
+        "TENANT_USER",
+        { achievementId: created.id!, limit: 20 },
+      );
+      expect(cseHeadConsole.rewards).toHaveLength(rewardRows.length);
+
+      const schoolHeadConsole = await listContributorRewardsForActor(
+        fixture.tenant.id,
+        fixture.users.schoolHead.id,
+        "TENANT_USER",
+        { achievementId: created.id!, limit: 20 },
+      );
+      expect(schoolHeadConsole.rewards).toHaveLength(rewardRows.length);
+
+      await expect(
+        listContributorRewardsForActor(
+          fixture.tenant.id,
+          fixture.users.facultyCse.id,
+          "TENANT_USER",
+          { achievementId: created.id!, limit: 20 },
+        ),
+      ).rejects.toThrow("reward approval authority");
+
+      const cseHeadTransition = await transitionContributorRewards(
+        fixture.tenant.id,
+        [rewardRows[0]!.id],
+        "PENDING",
+        fixture.users.cseHead.id,
+        "TENANT_USER",
+        { note: "Department head recommendation." },
+      );
+      expect(cseHeadTransition.updatedCount).toBe(1);
+      expect(cseHeadTransition.failed).toHaveLength(0);
+
+      const outsiderTransition = await transitionContributorRewards(
+        fixture.tenant.id,
+        [rewardRows[1]!.id],
+        "RELEASED",
+        fixture.users.eceHead.id,
+        "TENANT_USER",
+        { note: "Should not release another department reward." },
+      );
+      expect(outsiderTransition.updatedCount).toBe(0);
+      expect(outsiderTransition.failed[0]?.message).toContain("do not have permission");
+
+      const pendingReward = await prisma.contributorReward.findUniqueOrThrow({
+        where: { id: rewardRows[0]!.id },
+        select: { state: true },
+      });
+      expect(pendingReward.state).toBe("PENDING");
     });
   });
 });

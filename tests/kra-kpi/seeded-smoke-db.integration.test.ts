@@ -95,8 +95,25 @@ describe("database-first seeded smoke and regression scenarios", () => {
       cseQueue.some((row) => row.achievementTitle === "Seed R4.3 Pending Verification"),
     ).toBe(true);
     expect(
+      cseQueue.some((row) => row.achievementTitle === "Seed R5.2 Stale Verification Queue"),
+    ).toBe(true);
+    expect(
       eceQueue.some((row) => row.achievementTitle === "Seed R4.3 Pending Recommendation"),
     ).toBe(true);
+    expect(
+      eceQueue.some((row) => row.achievementTitle === "Seed R5.2 Stale Recommendation Queue"),
+    ).toBe(true);
+
+    const seededR52Verification = cseQueue.find(
+      (row) => row.achievementTitle === "Seed R5.2 Stale Verification Queue",
+    );
+    const seededR52Recommendation = eceQueue.find(
+      (row) => row.achievementTitle === "Seed R5.2 Stale Recommendation Queue",
+    );
+    expect(seededR52Verification?.reviewUnitName).toBeTruthy();
+    expect(seededR52Verification?.waitingDays).toBeGreaterThan(14);
+    expect(seededR52Recommendation?.reviewUnitName).toBeTruthy();
+    expect(seededR52Recommendation?.waitingDays).toBeGreaterThan(14);
 
     expect(await getMyPendingCount(seed.tenantId, seed.cseHeadId)).toBeGreaterThan(0);
     expect(await getMyPendingCount(seed.tenantId, seed.eceHeadId)).toBeGreaterThan(0);

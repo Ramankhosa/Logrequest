@@ -2,7 +2,11 @@ import type { Role } from "@prisma/client";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { transitionContributorRewards } from "@/lib/kra-kpi/reward-ops-service";
+import {
+  getRewardConsoleAccessScope,
+  RewardAccessDeniedError,
+  transitionContributorRewards,
+} from "@/lib/kra-kpi/reward-ops-service";
 
 type TransitionBody = {
   rewardIds: string[];
@@ -11,17 +15,26 @@ type TransitionBody = {
   releaseReference?: string;
 };
 
-function canManageRewards(role: string | null | undefined): boolean {
-  return role === "TENANT_OWNER" || role === "TENANT_ADMIN" || role === "SUPERADMIN";
-}
-
 export async function POST(request: Request) {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id || !session.user.tenantId || !canManageRewards(session.user.role)) {
+  if (!session?.user?.id || !session.user.tenantId) {
     return NextResponse.json(
       { status: "error", message: "You do not have permission to manage rewards." },
       { status: 403 },
     );
+  }
+  const actorRole = (session.user.role ?? "TENANT_USER") as Role;
+
+  try {
+    await getRewardConsoleAccessScope(session.user.tenantId, session.user.id, actorRole);
+  } catch (error) {
+    if (error instanceof RewardAccessDeniedError) {
+      return NextResponse.json(
+        { status: "error", message: error.message },
+        { status: 403 },
+      );
+    }
+    throw error;
   }
 
   let body: TransitionBody;
@@ -46,7 +59,7 @@ export async function POST(request: Request) {
     body.rewardIds,
     body.nextState,
     session.user.id,
-    session.user.role as Role,
+    actorRole,
     {
       note: body.note ?? null,
       releaseReference: body.releaseReference ?? null,

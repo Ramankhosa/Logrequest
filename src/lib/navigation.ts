@@ -35,6 +35,7 @@ export const tenantNavigationGroups: NavigationGroup[] = [
       { href: "/tenant-admin/structure", label: "Organization", icon: "network" },
       { href: "/tenant-admin/personnel", label: "Personnel", icon: "contact" },
       { href: "/tenant-admin/kra-kpi", label: "KRA / KPI", icon: "target" },
+      { href: "/kpi-dashboard", label: "KPI Dashboard", icon: "bar-chart-3" },
     ],
   },
   {
@@ -53,6 +54,7 @@ export const userNavigationGroups: NavigationGroup[] = [
     items: [
       { href: "/workspace", label: "Dashboard", icon: "layout-dashboard" },
       { href: "/my-kpis", label: "My KPIs", icon: "clipboard-check" },
+      { href: "/kpi-dashboard", label: "KPI Dashboard", icon: "bar-chart-3" },
     ],
   },
   {

@@ -66,7 +66,13 @@ describe("KRA/KPI scoring", () => {
       "LINEAR",
       "ASCENDING",
       { method: "LINEAR", capAt100: true },
-      null,
+      {
+        type: "DATE_TARGET",
+        allowEarly: true,
+        gracePeriodDays: 0,
+        latePenaltyEnabled: true,
+        latePenaltyPercentPerDay: 5,
+      },
       {
         targetDate: new Date("2026-01-10T00:00:00.000Z"),
         actualDate: new Date("2026-01-12T00:00:00.000Z"),
@@ -74,6 +80,28 @@ describe("KRA/KPI scoring", () => {
     );
 
     expect(score).toBe(90);
+  });
+
+  test("does not penalize late DATE_TARGET achievements when penalties are disabled", () => {
+    const score = computeScore(
+      "DATE_TARGET",
+      "LINEAR",
+      "ASCENDING",
+      { method: "LINEAR", capAt100: true },
+      {
+        type: "DATE_TARGET",
+        allowEarly: true,
+        gracePeriodDays: 0,
+        latePenaltyEnabled: false,
+        latePenaltyPercentPerDay: 5,
+      },
+      {
+        targetDate: new Date("2026-01-10T00:00:00.000Z"),
+        actualDate: new Date("2026-01-12T00:00:00.000Z"),
+      },
+    );
+
+    expect(score).toBe(100);
   });
 
   test("uses SLAB scoring ranges when configured", () => {
