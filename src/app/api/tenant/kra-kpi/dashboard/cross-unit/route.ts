@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { getOrgHierarchyStats } from "@/lib/kra-kpi/dashboard-service";
+import { getCrossUnitComparison } from "@/lib/kra-kpi/dashboard-service";
 import {
   DashboardOrgSelectionError,
   resolveDashboardOrgNodeSelection,
@@ -18,6 +18,7 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const periodId = searchParams.get("periodId");
+  const parentUnitId = searchParams.get("parentUnitId") ?? undefined;
   if (!periodId) {
     return NextResponse.json(
       { status: "error", message: "periodId is required." },
@@ -25,20 +26,19 @@ export async function GET(request: Request) {
     );
   }
 
-  const parentUnitId = searchParams.get("parentUnitId") ?? undefined;
   try {
     const selection = await resolveDashboardOrgNodeSelection(
       session.user.tenantId,
       session.user.id,
       parentUnitId,
     );
-    const stats = await getOrgHierarchyStats(
+    const comparison = await getCrossUnitComparison(
       session.user.tenantId,
       periodId,
       selection.visibleChildren.map((unit) => unit.unitId),
       selection.effectiveUnitIds,
     );
-    return NextResponse.json(stats);
+    return NextResponse.json(comparison);
   } catch (error) {
     if (error instanceof DashboardOrgSelectionError) {
       return NextResponse.json(

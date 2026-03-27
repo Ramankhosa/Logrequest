@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { getOrgHierarchyStats } from "@/lib/kra-kpi/dashboard-service";
+import { getDrillDownNode } from "@/lib/kra-kpi/dashboard-service";
 import {
   DashboardOrgSelectionError,
   resolveDashboardOrgNodeSelection,
@@ -18,6 +18,7 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const periodId = searchParams.get("periodId");
+  const unitId = searchParams.get("unitId") ?? undefined;
   if (!periodId) {
     return NextResponse.json(
       { status: "error", message: "periodId is required." },
@@ -25,20 +26,33 @@ export async function GET(request: Request) {
     );
   }
 
-  const parentUnitId = searchParams.get("parentUnitId") ?? undefined;
   try {
     const selection = await resolveDashboardOrgNodeSelection(
       session.user.tenantId,
       session.user.id,
-      parentUnitId,
+      unitId,
     );
-    const stats = await getOrgHierarchyStats(
-      session.user.tenantId,
-      periodId,
-      selection.visibleChildren.map((unit) => unit.unitId),
-      selection.effectiveUnitIds,
-    );
-    return NextResponse.json(stats);
+    const node = await getDrillDownNode(session.user.tenantId, periodId, {
+      unitId: selection.currentNode?.unitId ?? null,
+      effectiveUnitIds: selection.effectiveUnitIds,
+      visibleChildUnitIds: selection.visibleChildren.map((unit) => unit.unitId),
+    });
+    if (!node) {
+      return NextResponse.json(
+        { status: "error", message: "Unit not found." },
+        { status: 404 },
+      );
+    }
+
+    return NextResponse.json({
+      selection: {
+        entryRoots: selection.entryRoots,
+        currentNode: selection.currentNode,
+        breadcrumb: selection.breadcrumb,
+        visibleChildren: selection.visibleChildren,
+      },
+      node,
+    });
   } catch (error) {
     if (error instanceof DashboardOrgSelectionError) {
       return NextResponse.json(

@@ -13,6 +13,8 @@ import {
 import {
   resolveUserDashboardScope,
   resolveDashboardUnitSelection,
+  resolveDashboardOrgNodeSelection,
+  DashboardOrgSelectionError,
   DashboardUnitSelectionError,
   applyScopeFilter,
   type UserDashboardScope,
@@ -476,6 +478,195 @@ describe("scope-resolver", () => {
           resolveDashboardUnitSelection(context.tenantId, headUser.id, tree.eee.id),
         ).rejects.toMatchObject({
           name: DashboardUnitSelectionError.name,
+          status: 403,
+        });
+      });
+    });
+  });
+
+  describe("resolveDashboardOrgNodeSelection", () => {
+    it("returns descendant-head entry roots and trimmed breadcrumbs inside the governed subtree", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const { context } = await setupActor(tracker, "TENANT_OWNER");
+        const tree = await createPublishedStructure(context);
+
+        const headUser = await createTestUser(tracker, { firstName: "Org", lastName: "Head" });
+        await createTestMembership({
+          tenantId: context.tenantId,
+          userId: headUser.id,
+          role: "TENANT_USER",
+          status: "ACTIVE",
+          createdByUserId: context.actorUserId,
+        });
+
+        const roleDefId = await createRoleAndGetId(context, {
+          roleKey: "ORG_DESC_HEAD",
+          displayLabel: "Org Desc Head",
+          isUnitHead: true,
+          approvalAuthority: false,
+        });
+
+        await assignRoleToUser({
+          ...context,
+          values: {
+            unitId: tree.cse.id,
+            userId: headUser.id,
+            roleDefinitionId: roleDefId,
+            scope: "DESCENDANTS",
+          },
+        });
+
+        const rootSelection = await resolveDashboardOrgNodeSelection(
+          context.tenantId,
+          headUser.id,
+        );
+        expect(rootSelection.currentNode).toBeNull();
+        expect(rootSelection.entryRoots.map((unit) => unit.unitId)).toEqual([tree.cse.id]);
+        expect(rootSelection.visibleChildren.map((unit) => unit.unitId)).toEqual([tree.cse.id]);
+        expect(rootSelection.effectiveUnitIds).toContain(tree.cse.id);
+        expect(rootSelection.effectiveUnitIds).toContain(tree.aiTeam.id);
+        expect(rootSelection.effectiveUnitIds).not.toContain(tree.eee.id);
+
+        const childSelection = await resolveDashboardOrgNodeSelection(
+          context.tenantId,
+          headUser.id,
+          tree.aiTeam.id,
+        );
+        expect(childSelection.currentNode?.unitId).toBe(tree.aiTeam.id);
+        expect(childSelection.breadcrumb.map((unit) => unit.unitId)).toEqual([
+          tree.cse.id,
+          tree.aiTeam.id,
+        ]);
+      });
+    });
+
+    it("collapses overlapping descendant roots to the highest visible entry root", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const { context } = await setupActor(tracker, "TENANT_OWNER");
+        const tree = await createPublishedStructure(context);
+
+        const headUser = await createTestUser(tracker, {
+          firstName: "Overlap",
+          lastName: "Head",
+        });
+        await createTestMembership({
+          tenantId: context.tenantId,
+          userId: headUser.id,
+          role: "TENANT_USER",
+          status: "ACTIVE",
+          createdByUserId: context.actorUserId,
+        });
+
+        const roleDefId = await createRoleAndGetId(context, {
+          roleKey: "OVERLAP_HEAD",
+          displayLabel: "Overlap Head",
+          isUnitHead: true,
+          approvalAuthority: false,
+        });
+
+        await assignRoleToUser({
+          ...context,
+          values: {
+            unitId: tree.root.id,
+            userId: headUser.id,
+            roleDefinitionId: roleDefId,
+            scope: "DESCENDANTS",
+          },
+        });
+        await assignRoleToUser({
+          ...context,
+          values: {
+            unitId: tree.cse.id,
+            userId: headUser.id,
+            roleDefinitionId: roleDefId,
+            scope: "DESCENDANTS",
+          },
+        });
+
+        const selection = await resolveDashboardOrgNodeSelection(
+          context.tenantId,
+          headUser.id,
+        );
+        expect(selection.entryRoots.map((unit) => unit.unitId)).toEqual([tree.root.id]);
+        expect(selection.visibleChildren.map((unit) => unit.unitId)).toEqual([tree.root.id]);
+      });
+    });
+
+    it("blocks NODE-only heads from opening organization drill-down", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const { context } = await setupActor(tracker, "TENANT_OWNER");
+        const tree = await createPublishedStructure(context);
+
+        const headUser = await createTestUser(tracker, { firstName: "Node", lastName: "Only" });
+        await createTestMembership({
+          tenantId: context.tenantId,
+          userId: headUser.id,
+          role: "TENANT_USER",
+          status: "ACTIVE",
+          createdByUserId: context.actorUserId,
+        });
+
+        const roleDefId = await createRoleAndGetId(context, {
+          roleKey: "NODE_ONLY_HEAD",
+          displayLabel: "Node Only Head",
+          isUnitHead: true,
+          approvalAuthority: false,
+        });
+
+        await assignRoleToUser({
+          ...context,
+          values: {
+            unitId: tree.cse.id,
+            userId: headUser.id,
+            roleDefinitionId: roleDefId,
+            scope: "NODE",
+          },
+        });
+
+        await expect(
+          resolveDashboardOrgNodeSelection(context.tenantId, headUser.id),
+        ).rejects.toMatchObject({
+          name: DashboardOrgSelectionError.name,
+          status: 403,
+        });
+      });
+    });
+
+    it("rejects requested organization nodes outside the caller's visible hierarchy", async () => {
+      await withIsolatedDb(async (tracker) => {
+        const { context } = await setupActor(tracker, "TENANT_OWNER");
+        const tree = await createPublishedStructure(context);
+
+        const headUser = await createTestUser(tracker, { firstName: "Scoped", lastName: "Org" });
+        await createTestMembership({
+          tenantId: context.tenantId,
+          userId: headUser.id,
+          role: "TENANT_USER",
+          status: "ACTIVE",
+          createdByUserId: context.actorUserId,
+        });
+
+        const roleDefId = await createRoleAndGetId(context, {
+          roleKey: "SCOPED_ORG_HEAD",
+          displayLabel: "Scoped Org Head",
+          isUnitHead: true,
+          approvalAuthority: false,
+        });
+
+        await assignRoleToUser({
+          ...context,
+          values: {
+            unitId: tree.cse.id,
+            userId: headUser.id,
+            roleDefinitionId: roleDefId,
+            scope: "DESCENDANTS",
+          },
+        });
+
+        await expect(
+          resolveDashboardOrgNodeSelection(context.tenantId, headUser.id, tree.eee.id),
+        ).rejects.toMatchObject({
+          name: DashboardOrgSelectionError.name,
           status: 403,
         });
       });

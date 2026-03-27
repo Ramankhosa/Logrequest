@@ -11,44 +11,23 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
-  AlertTriangle,
   BellRing,
   Building2,
   CheckCircle2,
-  ChevronRight,
   ClipboardList,
   Clock3,
   ExternalLink,
   Layers3,
   Network,
   Search,
-  Target,
-  Users2,
   Wallet,
 } from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { MyDashboard } from "@/components/my-kpis/my-dashboard";
-import { MyReviewItem } from "@/components/my-kpis/my-review-item";
 import { RewardOpsConsole } from "@/components/tenant/kra-kpi/reward-ops-console";
 import { ContributorPanel } from "@/components/dashboard/contributor/contributor-panel";
+import { OrgPanel } from "@/components/dashboard/org/org-panel";
 import { ReviewerPanel } from "@/components/dashboard/reviewer/reviewer-panel";
 import { UnitPanel } from "@/components/dashboard/unit/unit-panel";
 import {
-  Breadcrumb,
-  ChartContainer,
-  CompletionBar,
   ConfirmDialog,
   DataTable,
   EmptyState,
@@ -57,11 +36,8 @@ import {
   MetricCard,
   OrientationBanner,
   PeriodSelector,
-  ScoreBadge,
   SkeletonCard,
-  SlideOver,
   StatusPill,
-  CHART_COLORS,
   formatStateLabel,
   resolveDefaultPeriodId,
 } from "@/components/dashboard/shared";
@@ -97,62 +73,11 @@ type NotificationItem = {
   createdAt: string;
 };
 
-type OverviewStats = {
-  totalKpis: number;
-  totalAllocations: number;
-  totalAchievements: number;
-  achievementsByState: Record<string, number>;
-  overallCompletionPercent: number;
-  overdueCount: number;
-  pendingReviewCount: number;
-};
-
-type AttentionItems = {
-  overdueAchievements: number;
-  zeroProgressEmployees: number;
-  stalePendingReviews: number;
-  lowCompletionKpis: { kpiId: string; kpiTitle: string; completionPercent: number }[];
-};
-
-type OrgUnit = {
-  unitId: string;
-  unitName: string;
-  unitCode: string;
-  category: string;
-  totalAllocations: number;
-  completedAllocations: number;
-  completionPercent: number;
-  averageScore: number;
-  childUnitCount: number;
-};
-
-type StageBottleneck = {
-  kpiTitle: string;
-  stages: {
-    stageOrder: number;
-    title: string;
-    totalAssigned: number;
-    completedCount: number;
-    completionPercent: number;
-    averageDaysToComplete: number | null;
-  }[];
-};
-
-type ReviewFilters = {
-  stage: string;
-  state: string;
-};
-
 type NotificationFilters = {
   status: string;
   type: string;
   receivedFrom: string;
   receivedTo: string;
-};
-
-const REVIEW_FILTERS: ReviewFilters = {
-  stage: "",
-  state: "",
 };
 
 const NOTIFICATION_FILTERS: NotificationFilters = {
@@ -206,15 +131,6 @@ const TAB_META: Array<{
   },
 ];
 
-const STATUS_LABELS: Record<string, string> = {
-  notStarted: "Not Started",
-  inProgress: "In Progress",
-  pendingReview: "Pending Review",
-  completed: "Completed",
-  notApproved: "Not Approved",
-  needsCascade: "Needs Cascade",
-};
-
 export function DashboardHub({ scope }: DashboardHubProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -232,10 +148,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
 
   const [reviewQueue, setReviewQueue] = useState<ReviewQueueItem[]>([]);
   const [reviewLoading, setReviewLoading] = useState(false);
-  const [selectedReview, setSelectedReview] = useState<ReviewQueueItem | null>(null);
-  const [reviewFilters, setReviewFilters] = useState<ReviewFilters>(REVIEW_FILTERS);
-  const [reviewSearch, setReviewSearch] = useState("");
-  const [reviewFeedback, setReviewFeedback] = useState<string | null>(null);
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [notificationTotal, setNotificationTotal] = useState(0);
@@ -246,19 +158,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
   const [showMarkAllReadConfirm, setShowMarkAllReadConfirm] = useState(false);
   const [markAllLoading, setMarkAllLoading] = useState(false);
 
-  const [overview, setOverview] = useState<OverviewStats | null>(null);
-  const [attention, setAttention] = useState<AttentionItems | null>(null);
-  const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([]);
-  const [unitTrail, setUnitTrail] = useState<Array<{ id: string; name: string }>>([]);
-  const [orgLoading, setOrgLoading] = useState(false);
-  const [selectedBottleneck, setSelectedBottleneck] = useState<{
-    id: string;
-    title: string;
-  } | null>(null);
-  const [bottleneck, setBottleneck] = useState<StageBottleneck | null>(null);
-  const [bottleneckLoading, setBottleneckLoading] = useState(false);
-
-  const deferredReviewSearch = useDeferredValue(reviewSearch);
   const deferredNotificationSearch = useDeferredValue(notificationSearch);
 
   const visibleTabs = useMemo(() => {
@@ -267,7 +166,12 @@ export function DashboardHub({ scope }: DashboardHubProps) {
         return scope.headOfUnits.length > 0;
       }
       if (tab.key === "org") {
-        return scope.isTenantAdmin || scope.headOfUnits.some((unit) => unit.hasChildUnits);
+        return (
+          scope.isTenantAdmin
+          || scope.headOfUnits.some(
+            (unit) => unit.scope === "DESCENDANTS" && unit.hasChildUnits,
+          )
+        );
       }
       if (tab.key === "rewards") {
         return scope.hasApprovalAuthority || scope.isTenantAdmin;
@@ -289,7 +193,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
   }, [periods, requestedPeriodId]);
 
   const activePeriod = periods.find((period) => period.id === selectedPeriodId) ?? null;
-  const activeParentUnitId = unitTrail[unitTrail.length - 1]?.id;
 
   useEffect(() => {
     let ignore = false;
@@ -340,11 +243,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
   }, [activeTab, pathname, periods.length, requestedTab, router, searchParamString, selectedPeriodId]);
 
   useEffect(() => {
-    setUnitTrail([]);
-    setSelectedBottleneck(null);
-    setBottleneck(null);
-    setSelectedReview(null);
-    setReviewFeedback(null);
   }, [selectedPeriodId]);
 
   useEffect(() => {
@@ -470,99 +368,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
     };
   }, [activeTab]);
 
-  useEffect(() => {
-    if (!selectedPeriodId || activeTab !== "org") return;
-    let ignore = false;
-
-    async function loadOrgData() {
-      setOrgLoading(true);
-
-      try {
-        const [overviewResponse, attentionResponse, orgResponse] = await Promise.all([
-          fetch(`/api/tenant/kra-kpi/dashboard/overview?periodId=${selectedPeriodId}`),
-          fetch(`/api/tenant/kra-kpi/dashboard/attention?periodId=${selectedPeriodId}`),
-          fetch(
-            `/api/tenant/kra-kpi/dashboard/org-hierarchy?periodId=${selectedPeriodId}${
-              activeParentUnitId ? `&parentUnitId=${activeParentUnitId}` : ""
-            }`,
-          ),
-        ]);
-
-        if (!ignore && overviewResponse.ok) {
-          setOverview((await overviewResponse.json()) as OverviewStats);
-        }
-        if (!ignore && attentionResponse.ok) {
-          setAttention((await attentionResponse.json()) as AttentionItems);
-        }
-        if (!ignore && orgResponse.ok) {
-          const data = (await orgResponse.json()) as { units?: OrgUnit[] };
-          setOrgUnits(data.units ?? []);
-        }
-      } finally {
-        if (!ignore) setOrgLoading(false);
-      }
-    }
-
-    void loadOrgData();
-
-    return () => {
-      ignore = true;
-    };
-  }, [activeParentUnitId, activeTab, selectedPeriodId]);
-
-  useEffect(() => {
-    if (activeTab !== "org" || !selectedPeriodId || !selectedBottleneck) return;
-    let ignore = false;
-    const bottleneckId = selectedBottleneck.id;
-
-    async function loadBottleneck() {
-      setBottleneckLoading(true);
-
-      try {
-        const response = await fetch(
-          `/api/tenant/kra-kpi/dashboard/stage-bottleneck?periodId=${selectedPeriodId}&kpiId=${bottleneckId}`,
-        );
-        if (!ignore && response.ok) {
-          setBottleneck((await response.json()) as StageBottleneck);
-        }
-      } finally {
-        if (!ignore) setBottleneckLoading(false);
-      }
-    }
-
-    void loadBottleneck();
-
-    return () => {
-      ignore = true;
-    };
-  }, [activeTab, selectedBottleneck, selectedPeriodId]);
-
-  const filteredReviewQueue = useMemo(() => {
-    const query = deferredReviewSearch.trim().toLowerCase();
-
-    return [...reviewQueue]
-      .filter((item) => {
-        if (reviewFilters.stage && item.reviewLevel !== reviewFilters.stage) return false;
-        if (reviewFilters.state && item.achievementState !== reviewFilters.state) return false;
-        if (
-          query &&
-          ![
-            item.facultyName,
-            item.kpiTitle,
-            getScopedUnitLabel(scope, item.startingUnitId),
-          ]
-            .filter(Boolean)
-            .some((value) => value.toLowerCase().includes(query))
-        ) {
-          return false;
-        }
-        return true;
-      })
-      .sort(
-        (left, right) => daysWaiting(right.reportingDate) - daysWaiting(left.reportingDate),
-      );
-  }, [deferredReviewSearch, reviewFilters.stage, reviewFilters.state, reviewQueue, scope]);
-
   const filteredNotifications = useMemo(() => {
     const query = deferredNotificationSearch.trim().toLowerCase();
 
@@ -593,16 +398,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
     });
   }, [deferredNotificationSearch, notificationFilters, notifications]);
 
-  const reviewSummary = useMemo(
-    () => ({
-      pending: reviewQueue.length,
-      recommend: reviewQueue.filter((item) => item.reviewLevel === "RECOMMEND").length,
-      verify: reviewQueue.filter((item) => item.reviewLevel === "VERIFY").length,
-      stale: reviewQueue.filter((item) => daysWaiting(item.reportingDate) > 7).length,
-    }),
-    [reviewQueue],
-  );
-
   const notificationSummary = useMemo(
     () => ({
       unread: notifications.filter((notification) => !notification.isRead).length,
@@ -619,60 +414,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
         .sort()
         .map((type) => ({ value: type, label: formatStateLabel(type) })),
     [notifications],
-  );
-
-  const reviewColumns = useMemo<ColumnDef<ReviewQueueItem>[]>(
-    () => [
-      {
-        header: "Contributor",
-        cell: ({ row }) => (
-          <div>
-            <div className="font-semibold text-slate-900">{row.original.facultyName}</div>
-            <div className="text-xs text-slate-500">
-              {row.original.facultyDesignation ?? "Contributor"}
-            </div>
-          </div>
-        ),
-      },
-      {
-        header: "KPI",
-        cell: ({ row }) => (
-          <div>
-            <div className="font-medium text-slate-900">{row.original.kpiTitle}</div>
-            <div className="text-xs text-slate-500">
-              {getScopedUnitLabel(scope, row.original.startingUnitId)}
-            </div>
-          </div>
-        ),
-      },
-      {
-        header: "State",
-        cell: ({ row }) => <StatusPill state={row.original.achievementState} />,
-      },
-      {
-        header: "Step",
-        cell: ({ row }) => (
-          <StatusPill
-            label={row.original.reviewLevel === "RECOMMEND" ? "Recommend" : "Verify"}
-            tone="blue"
-          />
-        ),
-      },
-      {
-        header: "Waiting",
-        cell: ({ row }) => <WaitingPill days={daysWaiting(row.original.reportingDate)} />,
-      },
-      {
-        header: "Score",
-        cell: ({ row }) => (
-          <ScoreBadge
-            score={row.original.effectiveScore ?? row.original.stageCompletionScore ?? null}
-            size="sm"
-          />
-        ),
-      },
-    ],
-    [scope],
   );
 
   const notificationColumns = useMemo<ColumnDef<NotificationItem>[]>(
@@ -724,46 +465,7 @@ export function DashboardHub({ scope }: DashboardHubProps) {
     [],
   );
 
-  const hierarchyColumns = useMemo<ColumnDef<OrgUnit>[]>(
-    () => [
-      {
-        header: "Unit",
-        cell: ({ row }) => (
-          <div>
-            <div className="font-semibold text-slate-900">{row.original.unitName}</div>
-            <div className="text-xs text-slate-500">
-              {row.original.unitCode} | {row.original.category}
-            </div>
-          </div>
-        ),
-      },
-      {
-        header: "Allocations",
-        cell: ({ row }) => row.original.totalAllocations,
-      },
-      {
-        header: "Completion",
-        cell: ({ row }) => (
-          <div className="min-w-[160px]">
-            <CompletionBar percent={row.original.completionPercent} />
-          </div>
-        ),
-      },
-      {
-        header: "Avg Score",
-        cell: ({ row }) => <ScoreBadge score={row.original.averageScore} size="sm" />,
-      },
-      {
-        header: "Children",
-        cell: ({ row }) => row.original.childUnitCount,
-      },
-    ],
-    [],
-  );
-
   async function handleReviewCompleted() {
-    setSelectedReview(null);
-    setReviewFeedback("Review queue updated.");
     if (!selectedPeriodId) return;
 
     const [queueResponse, countResponse] = await Promise.all([
@@ -830,29 +532,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
       router.replace(`${pathname}?${params.toString()}`, { scroll: false });
     });
   }
-
-  const statusChartData =
-    summary == null
-      ? []
-      : Object.entries(summary.statusCounts)
-          .filter(([, count]) => count > 0)
-          .map(([key, value]) => ({
-            label: STATUS_LABELS[key] ?? formatStateLabel(key),
-            value,
-          }));
-
-  const kraChartData =
-    summary?.kraBreakdown.map((item) => ({
-      label: item.kraTitle,
-      score: Math.round(item.avgScore),
-      verified: item.verifiedCount,
-    })) ?? [];
-
-  const hierarchyChartData = orgUnits.map((unit) => ({
-    label: unit.unitCode,
-    completion: unit.completionPercent,
-    score: unit.averageScore,
-  }));
 
   return (
     <div className="space-y-6">
@@ -1153,238 +832,7 @@ export function DashboardHub({ scope }: DashboardHubProps) {
       ) : null}
 
       {!periodLoading && activeTab === "org" && selectedPeriodId ? (
-        <div className="space-y-6">
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <MetricCard
-              label="Active KPIs"
-              value={overview?.totalKpis ?? "--"}
-              description="KPIs visible within your current scope."
-              tone="blue"
-              loading={orgLoading}
-              icon={<Target className="h-4 w-4" />}
-            />
-            <MetricCard
-              label="Allocations"
-              value={overview?.totalAllocations ?? "--"}
-              description="Total allocations across the visible hierarchy slice."
-              tone="brand"
-              loading={orgLoading}
-              icon={<Users2 className="h-4 w-4" />}
-            />
-            <MetricCard
-              label="Pending Review"
-              value={overview?.pendingReviewCount ?? "--"}
-              description="Achievements waiting in a review stage."
-              tone="amber"
-              loading={orgLoading}
-              icon={<CheckCircle2 className="h-4 w-4" />}
-            />
-            <MetricCard
-              label="Overdue"
-              value={overview?.overdueCount ?? "--"}
-              description="Items currently past the expected completion date."
-              tone={(overview?.overdueCount ?? 0) > 0 ? "rose" : "amber"}
-              loading={orgLoading}
-              icon={<AlertTriangle className="h-4 w-4" />}
-            />
-          </section>
-
-          <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <ChartContainer
-              title="Organization completion and score"
-              loading={orgLoading}
-              fallbackData={{
-                headers: ["Unit", "Completion %", "Average Score"],
-                rows: hierarchyChartData.map((item) => [item.label, item.completion, item.score]),
-              }}
-            >
-              {hierarchyChartData.length === 0 ? (
-                <EmptyState
-                  icon={<Building2 className="h-8 w-8" />}
-                  title="No hierarchy data for this slice"
-                  description="Move to a different period or wait for KPI activity in this hierarchy branch."
-                />
-              ) : (
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={hierarchyChartData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="completion" fill="var(--blue)" radius={[10, 10, 0, 0]} />
-                    <Bar dataKey="score" fill="var(--brand)" radius={[10, 10, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-            </ChartContainer>
-
-            <div className="glass-panel rounded-[1.75rem] border border-slate-200/80 p-5">
-              <div className="section-title text-xs text-slate-400">Attention</div>
-              <h3 className="mt-3 text-lg font-semibold text-slate-900">
-                What needs intervention first
-              </h3>
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                <AttentionStat label="Overdue" value={attention?.overdueAchievements ?? 0} />
-                <AttentionStat label="Zero Progress" value={attention?.zeroProgressEmployees ?? 0} />
-                <AttentionStat label="Stale Reviews" value={attention?.stalePendingReviews ?? 0} />
-              </div>
-              {activeTab === "org" && attention && attention.lowCompletionKpis.length > 0 ? (
-                <div className="mt-5 space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                    Low completion KPIs
-                  </div>
-                  {attention.lowCompletionKpis.slice(0, 5).map((item) => (
-                    <button
-                      key={item.kpiId}
-                      type="button"
-                      onClick={() => setSelectedBottleneck({ id: item.kpiId, title: item.kpiTitle })}
-                      className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-left text-sm transition hover:border-slate-300"
-                    >
-                      <span className="font-medium text-slate-900">{item.kpiTitle}</span>
-                      <span className="text-rose-600">{item.completionPercent}%</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="glass-panel rounded-[1.75rem] border border-slate-200/80 p-5">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-semibold text-slate-900">Hierarchy drill-down</h3>
-                <p className="text-sm text-slate-500">
-                  Click a row with child units to move deeper into the visible branch.
-                </p>
-              </div>
-              <ExportButton
-                onClick={() =>
-                  exportCsv("hierarchy.csv", [
-                    ["Unit", "Code", "Category", "Allocations", "Completion %", "Average Score", "Children"],
-                    ...orgUnits.map((unit) => [
-                      unit.unitName,
-                      unit.unitCode,
-                      unit.category,
-                      unit.totalAllocations,
-                      unit.completionPercent,
-                      unit.averageScore,
-                      unit.childUnitCount,
-                    ]),
-                  ])
-                }
-              />
-            </div>
-
-            <Breadcrumb
-              items={[
-                { label: "All visible units", onClick: unitTrail.length > 0 ? () => setUnitTrail([]) : undefined },
-                ...unitTrail.map((item, index) => ({
-                  label: item.name,
-                  onClick:
-                    index < unitTrail.length - 1
-                      ? () => setUnitTrail(unitTrail.slice(0, index + 1))
-                      : undefined,
-                })),
-              ]}
-            />
-
-            <div className="mt-4">
-              <DataTable
-                columns={hierarchyColumns}
-                data={orgUnits}
-                loading={orgLoading}
-                emptyState={{
-                  title: "No hierarchy data available",
-                  description: "The current hierarchy branch has no KPI activity yet.",
-                }}
-                onRowClick={(row) => {
-                  if (row.childUnitCount > 0) {
-                    setUnitTrail((current) => [...current, { id: row.unitId, name: row.unitName }]);
-                  }
-                }}
-                rowClassName={(row) => (row.childUnitCount > 0 ? "" : "cursor-default")}
-                mobileCardRenderer={(row) => (
-                  <button
-                    type="button"
-                    disabled={row.childUnitCount === 0}
-                    onClick={() => {
-                      if (row.childUnitCount > 0) {
-                        setUnitTrail((current) => [...current, { id: row.unitId, name: row.unitName }]);
-                      }
-                    }}
-                    className="w-full rounded-[1.5rem] border border-slate-200/80 bg-white/75 p-4 text-left disabled:cursor-default"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-semibold text-slate-900">{row.unitName}</div>
-                        <div className="text-sm text-slate-500">
-                          {row.unitCode} | {row.category}
-                        </div>
-                      </div>
-                      {row.childUnitCount > 0 ? <ChevronRight className="h-4 w-4 text-slate-400" /> : null}
-                    </div>
-                    <div className="mt-4 space-y-2">
-                      <CompletionBar percent={row.completionPercent} />
-                      <div className="flex flex-wrap gap-2">
-                        <ScoreBadge score={row.averageScore} size="sm" />
-                        <StatusPill label={`${row.totalAllocations} allocations`} tone="slate" />
-                      </div>
-                    </div>
-                  </button>
-                )}
-              />
-            </div>
-          </div>
-
-          {activeTab === "org" && selectedBottleneck ? (
-            <ChartContainer
-              title={`Stage bottleneck | ${selectedBottleneck.title}`}
-              loading={bottleneckLoading}
-              fallbackData={{
-                headers: ["Stage", "Completion %", "Completed", "Assigned", "Avg Days"],
-                rows:
-                  bottleneck?.stages.map((stage) => [
-                    stage.title,
-                    stage.completionPercent,
-                    stage.completedCount,
-                    stage.totalAssigned,
-                    stage.averageDaysToComplete ?? "-",
-                  ]) ?? [],
-              }}
-            >
-              {bottleneck?.stages.length ? (
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart
-                    data={bottleneck.stages.map((stage) => ({
-                      label: stage.title,
-                      completion: stage.completionPercent,
-                    }))}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fontSize: 12 }}
-                      interval={0}
-                      angle={-20}
-                      textAnchor="end"
-                      height={64}
-                    />
-                    <YAxis tick={{ fontSize: 12 }} />
-                    <Tooltip />
-                    <Bar dataKey="completion" fill="var(--accent)" radius={[10, 10, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <EmptyState
-                  icon={<AlertTriangle className="h-8 w-8" />}
-                  title="No stage bottleneck selected"
-                  description="Choose a low-completion KPI from the attention panel to inspect stage progress."
-                />
-              )}
-            </ChartContainer>
-          ) : null}
-        </div>
+        <OrgPanel scope={scope} periodId={selectedPeriodId} />
       ) : null}
 
       {activeTab === "rewards" ? (
@@ -1411,34 +859,6 @@ export function DashboardHub({ scope }: DashboardHubProps) {
         loading={markAllLoading}
       />
     </div>
-  );
-}
-
-function AttentionStat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-[1.25rem] border border-slate-200/80 bg-white/75 px-4 py-3">
-      <div className="text-2xl font-bold tabular-nums text-slate-900">{value}</div>
-      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{label}</div>
-    </div>
-  );
-}
-
-function WaitingPill({ days }: { days: number }) {
-  if (days > 14) {
-    return <StatusPill label={`${days} days`} tone="rose" />;
-  }
-  if (days > 7) {
-    return <StatusPill label={`${days} days`} tone="amber" />;
-  }
-  return <StatusPill label={`${days} days`} tone="blue" />;
-}
-
-function getScopedUnitLabel(scope: UserDashboardScope, unitId: string) {
-  return (
-    scope.rootScopeUnits.find((unit) => unit.unitId === unitId)?.unitName ??
-    scope.headOfUnits.find((unit) => unit.unitId === unitId)?.unitName ??
-    scope.memberOfUnits.find((unit) => unit.unitId === unitId)?.unitName ??
-    "Assigned unit"
   );
 }
 

@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { getAttentionItems } from "@/lib/kra-kpi/dashboard-service";
+import { getKpiPeriodComparison } from "@/lib/kra-kpi/dashboard-service";
 import {
   DashboardOrgSelectionError,
   resolveDashboardOrgNodeSelection,
@@ -18,11 +18,21 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const periodId = searchParams.get("periodId");
+  const sourceKpiId = searchParams.get("sourceKpiId");
+  const periodIds = (searchParams.get("periodIds") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
   const orgUnitId = searchParams.get("orgUnitId") ?? undefined;
-  if (!periodId) {
+  if (!sourceKpiId || periodIds.length === 0) {
     return NextResponse.json(
-      { status: "error", message: "periodId is required." },
+      { status: "error", message: "sourceKpiId and periodIds are required." },
+      { status: 400 },
+    );
+  }
+  if (periodIds.length > 5) {
+    return NextResponse.json(
+      { status: "error", message: "You can compare up to 5 periods at a time." },
       { status: 400 },
     );
   }
@@ -54,8 +64,19 @@ export async function GET(request: Request) {
         ).visibleUnitIds;
       }
     }
-    const items = await getAttentionItems(session.user.tenantId, periodId, scopeUnitIds);
-    return NextResponse.json(items);
+    const result = await getKpiPeriodComparison(
+      session.user.tenantId,
+      sourceKpiId,
+      periodIds,
+      scopeUnitIds,
+    );
+    if (!result) {
+      return NextResponse.json(
+        { status: "error", message: "KPI not found." },
+        { status: 404 },
+      );
+    }
+    return NextResponse.json(result);
   } catch (error) {
     if (error instanceof DashboardOrgSelectionError) {
       return NextResponse.json(
