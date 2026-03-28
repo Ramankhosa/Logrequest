@@ -8,6 +8,9 @@ import {
 import { BASE_EXTERNAL_CONTRIBUTOR_FIELDS } from "@/lib/kra-kpi/external-contrib-shared";
 
 const baseFieldKeys = new Set(BASE_EXTERNAL_CONTRIBUTOR_FIELDS.map((field) => field.key));
+const EXTERNAL_TEMPLATE_FIELD_TYPES = ACHIEVEMENT_FIELD_TYPES.filter(
+  (type) => type !== "DECLARATION",
+);
 
 const emptyField = (index: number): AchievementFieldConfig => ({
   key: `field${index + 1}`,
@@ -200,7 +203,7 @@ export function ExternalTemplateFieldBuilder({
                     }
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand/30 disabled:bg-slate-50 disabled:text-slate-400"
                   >
-                    {ACHIEVEMENT_FIELD_TYPES.map((type) => (
+                    {EXTERNAL_TEMPLATE_FIELD_TYPES.map((type) => (
                       <option key={type} value={type}>
                         {type}
                       </option>

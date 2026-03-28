@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ArrowRightLeft } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
@@ -37,13 +37,22 @@ export default async function PersonnelDetailPage({
       navigationGroups={tenantNavigationGroups}
       userSummary={getShellIdentity(context)}
       headerActions={
-        <Link
-          href="/tenant-admin/personnel"
-          className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Personnel
-        </Link>
+        <>
+          <Link
+            href={`/tenant-admin/personnel/transfers?membershipId=${summary.membershipId}`}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400"
+          >
+            <ArrowRightLeft className="h-4 w-4" />
+            Transfers
+          </Link>
+          <Link
+            href="/tenant-admin/personnel"
+            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to Personnel
+          </Link>
+        </>
       }
     >
       {/* Profile header */}

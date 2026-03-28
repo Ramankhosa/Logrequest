@@ -502,6 +502,10 @@ function resolveRuleSourceValue(rule: RewardTierRuleRow, input: RewardPreviewInp
       return input.contributors.length;
     case "MANUAL_SELECTION":
       return input.manualTierCode;
+    case "CONTRIBUTOR_TAG":
+      return [...new Set(input.contributors.flatMap((contributor) => contributor.selectorTags ?? []))];
+    case "CONTRIBUTOR_COUNT":
+      return input.contributors.filter((contributor) => !contributor.isExcludedFromReward).length;
     default:
       return undefined;
   }

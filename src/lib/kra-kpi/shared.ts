@@ -9,7 +9,6 @@ import type {
   KpiAllocationType,
   TargetAllocationState,
   AchievementState,
-  AchievementFieldType,
   ScoringMethod,
   ScoringDirection,
   MilestoneStatus,
@@ -805,10 +804,10 @@ export const MILESTONE_SCORE_MAP: Record<MilestoneStatus, number> = {
 
 // ── Achievement Form Field / Template Config (R1.1a) ─────────────────────────
 
-export const ACHIEVEMENT_FIELD_TYPES: AchievementFieldType[] = [
+export const ACHIEVEMENT_FIELD_TYPES = [
   "TEXT", "TEXTAREA", "NUMBER", "DATE", "URL", "EMAIL",
-  "SELECT", "MULTI_SELECT", "BOOLEAN", "FILE_LINK",
-];
+  "SELECT", "MULTI_SELECT", "BOOLEAN", "DECLARATION", "FILE_LINK",
+] as const;
 
 export const achievementFieldMarkerSchema = z.enum([
   "VALUE_FIELD",
@@ -863,7 +862,7 @@ export const achievementFieldSchema = z.object({
   label: z.string().min(1).max(100),
   type: z.enum([
     "TEXT", "TEXTAREA", "NUMBER", "DATE", "URL", "EMAIL",
-    "SELECT", "MULTI_SELECT", "BOOLEAN", "FILE_LINK",
+    "SELECT", "MULTI_SELECT", "BOOLEAN", "DECLARATION", "FILE_LINK",
   ]),
   required: z.boolean().default(false),
   options: z.array(z.string()).optional(),
@@ -924,6 +923,9 @@ export function buildFormDataValidator(
         break;
       case "BOOLEAN":
         fieldSchema = f.required ? z.boolean() : z.boolean().optional().nullable();
+        break;
+      case "DECLARATION":
+        fieldSchema = z.boolean().optional().nullable();
         break;
       case "DATE":
         fieldSchema = f.required
@@ -1028,13 +1030,26 @@ export function buildFormDataValidator(
 
   return baseSchema.superRefine((data, ctx) => {
     for (const field of fields) {
+      const value = data[field.key];
       const requiredByRule =
         field.requiredRules && field.requiredRules.length > 0
           ? evaluateFieldConditions(field.requiredRules, data)
           : false;
+      const isVisible = isAchievementFieldVisible(field, data);
+
+      if (field.type === "DECLARATION") {
+        if (isVisible && (field.required || requiredByRule) && value !== true) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${field.label} must be acknowledged`,
+            path: [field.key],
+          });
+        }
+        continue;
+      }
+
       if (!requiredByRule) continue;
 
-      const value = data[field.key];
       if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

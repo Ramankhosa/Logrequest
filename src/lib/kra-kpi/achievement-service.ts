@@ -1885,6 +1885,13 @@ export async function submitForVerification(
 
   const kpi = achievement.kpiDefinition;
   const stageCount = kpi.stages.length;
+  const formValidationError = validateAchievementFormData(
+    (kpi.achievementFormConfig as AchievementFormConfig | null) ?? null,
+    (achievement.achievementFormData as Record<string, unknown> | null) ?? undefined,
+  );
+  if (formValidationError) {
+    return { status: "error", message: formValidationError };
+  }
 
   if (stageCount > 0) {
     const progresses = await prisma.kpiStageProgress.findMany({

@@ -280,6 +280,69 @@ describe("R4.2 builder foundation integration", () => {
     ]);
   });
 
+  test("saveKpiBuilder round-trips declaration fields and contributor-based reward rules", async () => {
+    const fixture = await createBuilderFixture();
+    const payload = buildPayload({
+      kraDefinitionId: fixture.kra.id,
+      startingUnitId: fixture.unit.id,
+      leadRoleId: fixture.leadRoleId,
+      coRoleId: fixture.coRoleId,
+    });
+
+    payload.definition.achievementFormConfig?.fields.push({
+      key: "attestation",
+      label: "I certify this achievement submission is accurate",
+      type: "DECLARATION",
+      required: true,
+      sortOrder: 3,
+    });
+    payload.rewardTiers = [
+      {
+        refKey: "TEAM_LEAD",
+        tierSetKey: "PRIMARY",
+        code: "TEAM_LEAD",
+        name: "Lead Team Tier",
+        priority: 0,
+        matchMode: "HIGHEST_MATCH",
+        effectiveFrom: null,
+        effectiveTo: null,
+        isActive: true,
+        rules: [
+          {
+            source: "CONTRIBUTOR_TAG",
+            operator: "has_any",
+            value: ["FIRST_AUTHOR"],
+            sortOrder: 0,
+          },
+          {
+            source: "CONTRIBUTOR_COUNT",
+            operator: "gte",
+            value: 2,
+            sortOrder: 1,
+          },
+        ],
+      },
+    ];
+
+    const createResult = await saveKpiBuilder(
+      fixture.tenant.id,
+      payload,
+      fixture.actor.id,
+      "TENANT_OWNER",
+    );
+
+    expect(createResult.status).toBe("success");
+
+    const saved = await getKpiBuilder(createResult.id!, fixture.tenant.id);
+    expect(
+      saved?.definition.achievementFormConfig?.fields.find((field) => field.key === "attestation")?.type,
+    ).toBe("DECLARATION");
+    expect(saved?.rewardTiers[0]?.rules.map((rule) => rule.source)).toEqual([
+      "CONTRIBUTOR_TAG",
+      "CONTRIBUTOR_COUNT",
+    ]);
+  });
+
   test("saveKpiBuilder updates builder-managed sections without breaking round-trip integrity", async () => {
     const fixture = await createBuilderFixture();
     const payload = buildPayload({

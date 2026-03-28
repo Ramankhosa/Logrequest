@@ -223,6 +223,7 @@ enum AchievementFieldType {
   SELECT
   MULTI_SELECT
   BOOLEAN
+  DECLARATION
   FILE_LINK
 }
 
@@ -389,6 +390,28 @@ enum TransferStatus {
   COMPLETED
   CANCELLED
   REJECTED
+}
+
+enum TransferKpiPolicy {
+  CARRY_ALL
+  LEAVE_ALL
+  SELECTIVE
+}
+
+enum TransferTargetActionType {
+  CARRIED
+  LEFT_BEHIND
+  LOCKED_SOURCE_ONLY
+  REASSIGNED_AFTER_TRANSFER
+}
+
+enum TransferStatusEventType {
+  INITIATED
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXECUTED
+  CONFIGURED
 }
 
 enum ResignationStatus {
@@ -1091,6 +1114,7 @@ model TargetAllocation {
   childAllocations   TargetAllocation[]    @relation("CascadeParent")
   achievements       Achievement[]
   stageProgress      KpiStageProgress[]
+  transferActions    TransferTargetAction[]
 
   @@index([tenantId, periodId, kpiDefinitionId])
   @@index([assignedToUnitId, periodId])
@@ -1591,6 +1615,9 @@ model TransferRecord {
   initiatedByUserId    String?
   approvedByUserId     String?
   completedAt          DateTime?
+  kpiTransferPolicy    TransferKpiPolicy?
+  kpiTransferDetails   Json?
+  completionNotes      String?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
   tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1598,9 +1625,40 @@ model TransferRecord {
   sourceUnit           OrgUnit            @relation("TransferSource", fields: [sourceUnitId], references: [id], onDelete: Restrict)
   targetUnit           OrgUnit            @relation("TransferTarget", fields: [targetUnitId], references: [id], onDelete: Restrict)
   actingAssignments    ActingAssignment[] @relation("TransferActing")
+  targetActions        TransferTargetAction[]
+  statusEvents         TransferStatusEvent[]
 
   @@index([tenantId, status])
   @@index([membershipId, status])
+}
+
+model TransferTargetAction {
+  id                 String                   @id @default(cuid())
+  transferRecordId   String
+  targetAllocationId String
+  action             TransferTargetActionType
+  previousUnitId     String?
+  newUnitId          String?
+  notes              String?
+  createdAt          DateTime                 @default(now())
+  transferRecord     TransferRecord           @relation(fields: [transferRecordId], references: [id], onDelete: Cascade)
+  targetAllocation   TargetAllocation         @relation(fields: [targetAllocationId], references: [id], onDelete: Cascade)
+
+  @@index([transferRecordId])
+  @@index([targetAllocationId])
+}
+
+model TransferStatusEvent {
+  id               String                  @id @default(cuid())
+  transferRecordId String
+  eventType        TransferStatusEventType
+  actorUserId      String?
+  note             String?
+  metadata         Json?
+  createdAt        DateTime                @default(now())
+  transferRecord   TransferRecord          @relation(fields: [transferRecordId], references: [id], onDelete: Cascade)
+
+  @@index([transferRecordId, createdAt])
 }
 
 model ResignationRecord {

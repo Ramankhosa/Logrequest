@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Plus, Upload, Users, UserCheck, Clock, AlertTriangle, UserX, UserPlus } from "lucide-react";
+import { ArrowRightLeft, Plus, Upload, Users, UserCheck, Clock, AlertTriangle, UserX, UserPlus } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { MetricCard } from "@/components/metric-card";
 import { Panel } from "@/components/panel";
@@ -34,6 +34,13 @@ export default async function PersonnelPage({
       userSummary={getShellIdentity(context)}
       headerActions={
         <>
+          <Link
+            className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400"
+            href="/tenant-admin/personnel/transfers"
+          >
+            <ArrowRightLeft className="h-4 w-4" />
+            Transfers
+          </Link>
           <Link
             className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400"
             href="/tenant-admin/personnel/onboard/bulk"

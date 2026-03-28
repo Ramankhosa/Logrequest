@@ -302,6 +302,92 @@ async function createFullFixture(options?: {
 }
 
 // ---------------------------------------------------------------------------
+// Declaration Validation
+// ---------------------------------------------------------------------------
+
+describe("Declaration validation", () => {
+  test("required declaration fields are enforced on save and submit", async () => {
+    const f = await createFullFixture({
+      formFields: [
+        { key: "paperTitle", label: "Paper Title", type: "TEXT", required: true, sortOrder: 0 },
+        {
+          key: "attestation",
+          label: "I certify this paper submission is accurate",
+          type: "DECLARATION",
+          required: true,
+          sortOrder: 1,
+        },
+      ],
+    });
+
+    const rejectedSave = await recordAchievement(
+      f.tenant.id,
+      {
+        periodId: f.period.id,
+        kpiDefinitionId: f.kpi.id,
+        targetAllocationId: f.allocation.id,
+        actualValue: 8,
+        evidenceLinks: ["https://example.com/paper.pdf"],
+        achievementFormData: {
+          paperTitle: "Declaration Missing",
+          attestation: false,
+        },
+        contributors: [
+          { type: "INTERNAL", userId: f.faculty.id, contributorRoleId: f.roles.firstAuthor.id },
+        ],
+      },
+      f.faculty.id,
+      "TENANT_USER",
+    );
+
+    expect(rejectedSave.status).toBe("error");
+    expect(rejectedSave.message).toContain("must be acknowledged");
+
+    const created = await recordAchievement(
+      f.tenant.id,
+      {
+        periodId: f.period.id,
+        kpiDefinitionId: f.kpi.id,
+        targetAllocationId: f.allocation.id,
+        actualValue: 8,
+        evidenceLinks: ["https://example.com/paper.pdf"],
+        achievementFormData: {
+          paperTitle: "Declaration Accepted",
+          attestation: true,
+        },
+        contributors: [
+          { type: "INTERNAL", userId: f.faculty.id, contributorRoleId: f.roles.firstAuthor.id },
+        ],
+      },
+      f.faculty.id,
+      "TENANT_USER",
+    );
+
+    expect(created.status).toBe("success");
+
+    await prisma.achievement.update({
+      where: { id: created.id! },
+      data: {
+        achievementFormData: {
+          paperTitle: "Declaration Accepted",
+          attestation: false,
+        },
+      },
+    });
+
+    const submitResult = await submitForVerification(
+      created.id!,
+      f.tenant.id,
+      f.faculty.id,
+      "TENANT_USER",
+    );
+
+    expect(submitResult.status).toBe("error");
+    expect(submitResult.message).toContain("must be acknowledged");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SECTION 1: Credit Distribution & Normalization (12 tests)
 // ---------------------------------------------------------------------------
 

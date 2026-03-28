@@ -255,6 +255,34 @@ describe("R4.1b external contributors and templates", () => {
     );
     expect(duplicateKey.status).toBe("error");
     expect(duplicateKey.message).toContain('Duplicate field key "name"');
+
+    const declarationField = await createTemplate(
+      tenant.id,
+      {
+        name: "Declaration Template",
+        fields: [
+          { key: "name", label: "Full Name", type: "TEXT", required: true, sortOrder: 0 },
+          {
+            key: "affiliation",
+            label: "Institution / Organization",
+            type: "TEXT",
+            required: true,
+            sortOrder: 1,
+          },
+          {
+            key: "attestation",
+            label: "I confirm the external profile is correct",
+            type: "DECLARATION",
+            required: true,
+            sortOrder: 2,
+          },
+        ],
+      },
+      actor.id,
+      "TENANT_OWNER",
+    );
+    expect(declarationField.status).toBe("error");
+    expect(declarationField.message).toContain("not supported");
   });
 
   test("templates can be updated and default reassigned", async () => {

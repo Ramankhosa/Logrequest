@@ -1,0 +1,1 @@
+ALTER TYPE "AchievementFieldType" ADD VALUE 'DECLARATION';

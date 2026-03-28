@@ -68,6 +68,8 @@ export const rewardRuleSourceSchema = z.enum([
   "SYSTEM_METRIC",
   "TEAM_SIZE",
   "MANUAL_SELECTION",
+  "CONTRIBUTOR_TAG",
+  "CONTRIBUTOR_COUNT",
 ]);
 
 export const rewardRuleOperatorSchema = fieldConditionOperatorSchema;

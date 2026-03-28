@@ -31,6 +31,62 @@ describe("R4.2 builder foundation schemas", () => {
     expect(parsed.data?.definition.rewardRecurrencePolicy).toBe("RECURRING");
   });
 
+  test("accepts contributor-based reward rules and declaration form fields", () => {
+    const parsed = kpiBuilderPayloadSchema.safeParse({
+      definition: {
+        kraDefinitionId: "kra-1",
+        title: "Attested Team KPI",
+        measurementType: "NUMERIC",
+        weightage: 15,
+        allocationType: "BOTH",
+        startingUnitId: "unit-1",
+        achievementFormConfig: {
+          fields: [
+            {
+              key: "attestation",
+              label: "I confirm this submission is accurate",
+              type: "DECLARATION",
+              required: true,
+              sortOrder: 0,
+            },
+          ],
+        },
+      },
+      rewardTiers: [
+        {
+          code: "TEAM_LEAD",
+          name: "Lead Team Tier",
+          tierSetKey: "PRIMARY",
+          priority: 0,
+          matchMode: "HIGHEST_MATCH",
+          isActive: true,
+          rules: [
+            {
+              source: "CONTRIBUTOR_TAG",
+              operator: "has_any",
+              value: ["FIRST_AUTHOR"],
+              sortOrder: 0,
+            },
+            {
+              source: "CONTRIBUTOR_COUNT",
+              operator: "gte",
+              value: 2,
+              sortOrder: 1,
+            },
+          ],
+        },
+      ],
+      rewardComponents: [],
+    });
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.definition.achievementFormConfig?.fields[0]?.type).toBe("DECLARATION");
+    expect(parsed.data?.rewardTiers[0]?.rules.map((rule) => rule.source)).toEqual([
+      "CONTRIBUTOR_TAG",
+      "CONTRIBUTOR_COUNT",
+    ]);
+  });
+
   test("supports template-style fields with bindings, visibility rules, and required rules", () => {
     const parsed = kpiBuilderPayloadSchema.safeParse({
       definition: {
@@ -163,6 +219,53 @@ describe("R4.2 dynamic validator extensions", () => {
       pages: 20,
     });
     expect(valid.success).toBe(true);
+  });
+
+  test("requires visible declaration acknowledgements and ignores hidden declarations", () => {
+    const fields: AchievementFieldConfig[] = [
+      {
+        key: "publicationType",
+        label: "Publication Type",
+        type: "SELECT",
+        required: true,
+        options: ["JOURNAL", "CONFERENCE"],
+        sortOrder: 0,
+      },
+      {
+        key: "attestation",
+        label: "I confirm the journal details are accurate",
+        type: "DECLARATION",
+        required: true,
+        sortOrder: 1,
+        visibilityRules: [
+          {
+            fieldKey: "publicationType",
+            operator: "eq",
+            value: "JOURNAL",
+          },
+        ],
+      },
+    ];
+
+    const hidden = validate(fields, {
+      publicationType: "CONFERENCE",
+    });
+    expect(hidden.success).toBe(true);
+
+    const unchecked = validate(fields, {
+      publicationType: "JOURNAL",
+      attestation: false,
+    });
+    expect(unchecked.success).toBe(false);
+    expect(unchecked.error?.issues.map((issue) => issue.message)).toContain(
+      "I confirm the journal details are accurate must be acknowledged",
+    );
+
+    const checked = validate(fields, {
+      publicationType: "JOURNAL",
+      attestation: true,
+    });
+    expect(checked.success).toBe(true);
   });
 });
 

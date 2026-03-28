@@ -71,6 +71,10 @@ function validateTemplateFields(fields: AchievementFieldConfig[]): string | null
       return `${field.label} must define at least one option.`;
     }
 
+    if (field.type === "DECLARATION") {
+      return "Declaration fields are not supported in external contributor templates.";
+    }
+
     if (field.pattern) {
       try {
         void new RegExp(field.pattern);

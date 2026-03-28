@@ -653,6 +653,147 @@ describe("R4.2 reward engine", () => {
     ).toBe(true);
   });
 
+  test("reward tiers can match contributor tags and eligible contributor counts", async () => {
+    const fixture = await createBuilderFixture();
+    const lead = await createTestUser(tracker!);
+    const collaborator = await createTestUser(tracker!);
+
+    const builderResult = await saveKpiBuilder(
+      fixture.tenant.id,
+      {
+        definition: {
+          kraDefinitionId: fixture.kra.id,
+          title: "Contributor Rule KPI",
+          description: "Tests contributor-based reward rule sources.",
+          measurementType: "NUMERIC",
+          unitLabel: "items",
+          weightage: 10,
+          defaultTarget: null,
+          measurementConfig: null,
+          scoringMethod: "LINEAR",
+          scoringDirection: "ASCENDING",
+          scoringConfig: null,
+          isPerCapita: false,
+          allocationType: "BOTH",
+          startingUnitId: fixture.unit.id,
+          achievementTemplateKey: null,
+          achievementFormConfig: null,
+          guidanceNotes: null,
+          sortOrder: 0,
+          keyUnitId: null,
+          finalUnitId: null,
+          sopDescription: null,
+          evidenceRequired: false,
+          evidenceTypes: ["NONE"],
+          evidenceInstructions: null,
+          isTeamKpi: true,
+          teamCreditMethod: "WEIGHTED_SPLIT",
+          allowPartialCompletion: true,
+          participantMode: "OPTIONAL_TEAM",
+          rewardRecurrencePolicy: "RECURRING",
+          policyDateFieldKey: null,
+          contributionRoles: null,
+        },
+        applicableRoles: [{ roleCode: "MEMBER", isDefault: true, sortOrder: 0 }],
+        contributorConfig: {
+          allowExternalContributors: false,
+          duplicateCheckFields: [],
+          creditSumMode: "MUST_EQUAL_100",
+        },
+        stages: [],
+        rewardTiers: [
+          {
+            refKey: "TEAM_LEAD",
+            tierSetKey: "PRIMARY",
+            code: "TEAM_LEAD",
+            name: "Lead Team Tier",
+            priority: 0,
+            matchMode: "HIGHEST_MATCH",
+            effectiveFrom: null,
+            effectiveTo: null,
+            isActive: true,
+            rules: [
+              {
+                source: "CONTRIBUTOR_TAG",
+                operator: "has_any",
+                value: ["FIRST_AUTHOR"],
+                sortOrder: 0,
+              },
+              {
+                source: "CONTRIBUTOR_COUNT",
+                operator: "gte",
+                value: 2,
+                sortOrder: 1,
+              },
+            ],
+          },
+        ],
+        rewardComponents: [
+          {
+            rewardTierRef: "TEAM_LEAD",
+            benefitTypeCode: "MONETARY",
+            code: "TEAM_BONUS",
+            name: "Team Bonus",
+            trigger: "FINAL_VERIFY",
+            amountMode: "FIXED_VALUE",
+            amountValue: 100,
+            distributionMode: "EQUAL_SPLIT",
+            distributions: [],
+          },
+        ],
+      },
+      fixture.actor.id,
+      "TENANT_OWNER",
+    );
+    expect(builderResult.status).toBe("success");
+
+    const excludedPreview = await previewKpiRewards(builderResult.id!, fixture.tenant.id, {
+      reportingDate: new Date("2026-05-01T00:00:00.000Z"),
+      contributors: [
+        previewContributor({
+          userId: lead.id,
+          contributorRoleId: null,
+          creditPercent: 100,
+          selectorTags: ["FIRST_AUTHOR"],
+        }),
+        previewContributor({
+          userId: collaborator.id,
+          contributorRoleId: null,
+          creditPercent: 0,
+          isExcludedFromReward: true,
+        }),
+      ],
+      achievementFormData: {},
+      systemMetrics: {},
+    });
+
+    expect(excludedPreview?.components).toHaveLength(0);
+
+    const eligiblePreview = await previewKpiRewards(builderResult.id!, fixture.tenant.id, {
+      reportingDate: new Date("2026-05-01T00:00:00.000Z"),
+      contributors: [
+        previewContributor({
+          userId: lead.id,
+          contributorRoleId: null,
+          creditPercent: 50,
+          selectorTags: ["FIRST_AUTHOR"],
+        }),
+        previewContributor({
+          userId: collaborator.id,
+          contributorRoleId: null,
+          creditPercent: 50,
+        }),
+      ],
+      achievementFormData: {},
+      systemMetrics: {},
+    });
+
+    expect(eligiblePreview?.components).toHaveLength(1);
+    expect(eligiblePreview?.components[0]?.componentCode).toBe("TEAM_BONUS");
+    expect(eligiblePreview?.components[0]?.totalAmount).toBe(100);
+    expect(eligiblePreview?.components[0]?.contributors.map((contributor) => contributor.amount)).toEqual([50, 50]);
+  });
+
   test("reward engine supports effective windows, amount modes, and distribution modes", async () => {
     const fixture = await createBuilderFixture();
     const owner = await createTestUser(tracker!);
