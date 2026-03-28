@@ -254,6 +254,7 @@ function normalizeContributorComparisonValue(
     externalData?: Record<string, unknown> | null;
     contributorRoleId?: string | null;
     selectorTags?: string[] | null;
+    creditPercent?: number | null;
     isExcludedFromReward?: boolean | null;
     note?: string | null;
   },
@@ -267,6 +268,7 @@ function normalizeContributorComparisonValue(
     externalData: contributor.externalData ?? null,
     contributorRoleId: contributor.contributorRoleId ?? null,
     selectorTags: [...new Set((contributor.selectorTags ?? []).filter(Boolean))].sort(),
+    creditPercent: contributor.creditPercent ?? null,
     isExcludedFromReward: contributor.isExcludedFromReward ?? false,
     note: contributor.note ?? null,
   };
@@ -1349,6 +1351,7 @@ export async function correctVerifiedAchievement(
       externalData: (contributor.externalData as Record<string, unknown> | null) ?? null,
       contributorRoleId: contributor.contributorRoleId,
       selectorTags: contributor.selectorTags,
+      creditPercent: contributor.creditPercent,
       isExcludedFromReward: contributor.isExcludedFromReward,
       note: contributor.note,
     }),
@@ -1365,6 +1368,7 @@ export async function correctVerifiedAchievement(
             externalData: (contributor.externalData as Record<string, unknown> | null) ?? null,
             contributorRoleId: contributor.contributorRoleId,
             selectorTags: contributor.selectorTags,
+            creditPercent: contributor.creditPercent,
             isExcludedFromReward: contributor.isExcludedFromReward,
             note: contributor.note,
           }),
@@ -1421,6 +1425,20 @@ export async function correctVerifiedAchievement(
       (nextSummary.achievementFormData as Record<string, unknown> | null) ?? null,
     formConfig:
       (achievement.kpiDefinition.achievementFormConfig as AchievementFormConfig | null) ?? null,
+    contributorUserIds:
+      data.contributors !== undefined
+        ? data.contributors
+            .filter(
+              (contributor): contributor is typeof contributor & { userId: string } =>
+                contributor.type === "INTERNAL" && typeof contributor.userId === "string",
+            )
+            .map((contributor) => contributor.userId)
+        : achievement.contributors
+            .filter(
+              (contributor): contributor is typeof contributor & { userId: string } =>
+                contributor.type === "INTERNAL" && typeof contributor.userId === "string",
+            )
+            .map((contributor) => contributor.userId),
   });
 
   const actor = await prisma.user.findUnique({
@@ -1940,6 +1958,12 @@ export async function submitForVerification(
       (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
     formConfig:
       (kpi.achievementFormConfig as AchievementFormConfig | null) ?? null,
+    contributorUserIds: achievement.contributors
+      .filter(
+        (contributor): contributor is typeof contributor & { userId: string } =>
+          contributor.type === "INTERNAL" && typeof contributor.userId === "string",
+      )
+      .map((contributor) => contributor.userId),
   });
 
   const actor = await prisma.user.findUnique({

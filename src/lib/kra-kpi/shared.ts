@@ -601,6 +601,7 @@ export type AchievementSubmissionConfig = {
   creditSumMode: "MUST_EQUAL_100" | "MAX_100" | "UNCAPPED";
   externalContributorFields: AchievementFieldConfig[] | null;
   contributorSelectorTags: string[];
+  manualCreditEntryEnabled: boolean;
 };
 
 export type AchievementView = {
@@ -674,6 +675,9 @@ export type DuplicateMatch = {
   periodId: string;
   samePeriod: boolean;
   similarity: "EXACT" | "FUZZY";
+  matchType?: "DUPLICATE" | "POLICY_WARNING";
+  note?: string | null;
+  relatedKpiTitle?: string | null;
 };
 
 export type DuplicateCheckResult = {
@@ -1271,6 +1275,132 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
       { key: "certificateLink", label: "Certificate", type: "URL", required: true, sortOrder: 6 },
     ],
   },
+  BOOK: {
+    label: "Book / Book Chapter",
+    fields: [
+      { key: "bookTitle", label: "Book Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "publisher", label: "Publisher", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "isbn", label: "ISBN", type: "TEXT", required: true, sortOrder: 2, marker: "UNIQUE_CHECK" },
+      {
+        key: "publicationYear",
+        label: "Publication Year",
+        type: "NUMBER",
+        required: true,
+        sortOrder: 3,
+        validation: { min: 1900, max: 2100 },
+      },
+      { key: "scopusIndexed", label: "Scopus Indexed", type: "BOOLEAN", required: true, sortOrder: 4 },
+      { key: "publisherLink", label: "Publisher Page / Proof", type: "URL", required: true, sortOrder: 5 },
+    ],
+  },
+  PHD_SUPERVISION: {
+    label: "PhD Supervision",
+    fields: [
+      { key: "scholarName", label: "Scholar Name", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "thesisTitle", label: "Thesis Title", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "university", label: "University", type: "TEXT", required: true, sortOrder: 2 },
+      {
+        key: "enrollmentNumber",
+        label: "Enrollment / Registration Number",
+        type: "TEXT",
+        required: true,
+        sortOrder: 3,
+        marker: "UNIQUE_CHECK",
+      },
+      {
+        key: "awardDate",
+        label: "PhD Award Date",
+        type: "DATE",
+        required: true,
+        sortOrder: 4,
+        marker: "POLICY_DATE_FIELD",
+      },
+      {
+        key: "degreeCertificateLink",
+        label: "Degree Certificate / Notification",
+        type: "URL",
+        required: true,
+        sortOrder: 5,
+      },
+    ],
+  },
+  CONSULTANCY: {
+    label: "Consultancy / EDP / MDP",
+    fields: [
+      { key: "projectTitle", label: "Project / Program Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "clientOrg", label: "Client Organization", type: "TEXT", required: true, sortOrder: 1 },
+      {
+        key: "projectValue",
+        label: "Total Project Value (INR)",
+        type: "NUMBER",
+        required: true,
+        sortOrder: 2,
+        marker: "VALUE_FIELD",
+      },
+      { key: "totalExpenditure", label: "Total Expenditure (INR)", type: "NUMBER", required: true, sortOrder: 3 },
+      { key: "savings", label: "Savings (Revenue - Expenditure) (INR)", type: "NUMBER", required: true, sortOrder: 4 },
+      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 5 },
+      { key: "endDate", label: "End Date", type: "DATE", required: true, sortOrder: 6 },
+      {
+        key: "referenceNumber",
+        label: "Reference / Agreement Number",
+        type: "TEXT",
+        required: false,
+        sortOrder: 7,
+        marker: "UNIQUE_CHECK",
+      },
+      { key: "approvalLink", label: "Approval / Agreement Document", type: "URL", required: true, sortOrder: 8 },
+    ],
+  },
+  FDP_WORKSHOP: {
+    label: "FDP / STC / VAC / Training / Hands-on Workshop (Convenor)",
+    fields: [
+      { key: "programName", label: "Program Name", type: "TEXT", required: true, sortOrder: 0 },
+      {
+        key: "programType",
+        label: "Program Type",
+        type: "SELECT",
+        required: true,
+        options: ["FDP", "STC", "VAC", "Training Program", "Hands-on Workshop"],
+        sortOrder: 1,
+      },
+      { key: "sponsoringAgency", label: "Sponsoring / Funding Agency", type: "TEXT", required: true, sortOrder: 2 },
+      {
+        key: "isSponsored",
+        label: "Is this program sponsored by an external funding agency (not GU)?",
+        type: "BOOLEAN",
+        required: true,
+        sortOrder: 3,
+      },
+      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 4 },
+      { key: "endDate", label: "End Date", type: "DATE", required: true, sortOrder: 5 },
+      {
+        key: "totalHours",
+        label: "Total Hours",
+        type: "NUMBER",
+        required: true,
+        sortOrder: 6,
+        marker: "UNIT_FIELD",
+        validation: { min: 1 },
+      },
+      { key: "participantCount", label: "Number of Participants", type: "NUMBER", required: false, sortOrder: 7 },
+      {
+        key: "referenceNumber",
+        label: "Sponsorship Reference Number",
+        type: "TEXT",
+        required: false,
+        sortOrder: 8,
+        marker: "UNIQUE_CHECK",
+      },
+      {
+        key: "certificateLink",
+        label: "Completion Certificate / Report",
+        type: "URL",
+        required: true,
+        sortOrder: 9,
+      },
+    ],
+  },
   CERTIFICATION: {
     label: "Certification / Accreditation",
     fields: [
@@ -1392,6 +1522,7 @@ export type ReviewQueueItem = {
   creditPercent: number | null;
   contributors: AchievementContributorView[];
   duplicateCheckResult: DuplicateCheckResult | null;
+  guidanceNotes: string | null;
   stageCompletionScore: number | null;
   effectiveScore: number | null;
   stagesComplete: number;

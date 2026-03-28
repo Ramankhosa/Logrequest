@@ -73,6 +73,17 @@ const DEFAULT_CONTRIBUTOR_ROLES: Array<{
   { code: "SUPPORT", name: "Support Staff", defaultCreditPercent: 10, sortOrder: 9 },
   { code: "CONSULTANT", name: "Consultant", defaultCreditPercent: 40, sortOrder: 10 },
   { code: "MEMBER", name: "Team Member", defaultCreditPercent: 20, sortOrder: 11 },
+  { code: "FIRST_AUTHOR", name: "First Author", defaultCreditPercent: 35, sortOrder: 12 },
+  { code: "CORRESPONDING_AUTHOR", name: "Corresponding Author", defaultCreditPercent: 35, sortOrder: 13 },
+  { code: "AUTHOR", name: "Author", defaultCreditPercent: 15, sortOrder: 14 },
+  { code: "CHIEF_EDITOR", name: "Chief Editor", defaultCreditPercent: 50, sortOrder: 15 },
+  { code: "CO_EDITOR", name: "Co-Editor", defaultCreditPercent: 50, sortOrder: 16 },
+  { code: "SUPERVISOR", name: "Supervisor", defaultCreditPercent: 60, sortOrder: 17 },
+  { code: "CO_SUPERVISOR", name: "Co-Supervisor", defaultCreditPercent: 20, sortOrder: 18 },
+  { code: "INVENTOR", name: "Inventor", defaultCreditPercent: 100, sortOrder: 19 },
+  { code: "CONVENOR", name: "Convenor", defaultCreditPercent: 100, sortOrder: 20 },
+  { code: "LEAD_CONSULTANT", name: "Lead Consultant", defaultCreditPercent: 40, sortOrder: 21 },
+  { code: "TEAM_MEMBER", name: "Team Member", defaultCreditPercent: 20, sortOrder: 22 },
 ];
 
 function buildLastApplicableRoleMessage(kpiCount: number): string {

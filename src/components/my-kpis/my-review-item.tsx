@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import type { ReviewQueueItem } from "@/lib/kra-kpi/shared";
 import { MyAchievementTrail } from "./my-achievement-trail";
 import { DynamicFormRenderer } from "./dynamic-form-renderer";
@@ -20,6 +20,8 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
   const isRecommend = item.reviewLevel === "RECOMMEND";
   const approveLabel = isRecommend ? "Recommend" : "Verify";
   const rejectLabel = isRecommend ? "Send Back" : "Reject";
+  const duplicateMatches = item.duplicateCheckResult?.matches ?? [];
+  const policyWarnings = duplicateMatches.filter((match) => match.matchType === "POLICY_WARNING");
 
   const handleAction = async (approved: boolean) => {
     if (!approved && !note.trim()) {
@@ -91,6 +93,39 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
           </div>
         ) : null}
 
+        {item.guidanceNotes ? (
+          <div className="rounded bg-amber-50 p-2 text-xs text-amber-800">
+            <span className="font-medium">Guidance:</span> {item.guidanceNotes}
+          </div>
+        ) : null}
+
+        {duplicateMatches.length > 0 ? (
+          <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+            <div className="mb-2 flex items-center gap-2 font-semibold">
+              <AlertTriangle className="h-4 w-4" />
+              Duplicate and policy checks
+            </div>
+            <div className="space-y-2">
+              {duplicateMatches.map((match) => (
+                <div key={`${match.achievementId}-${match.matchedField}-${match.matchType ?? match.similarity}`}>
+                  <div>
+                    {match.matchType === "POLICY_WARNING" ? "Policy warning" : "Possible duplicate"}:
+                    {" "}
+                    {match.achievementTitle ?? "Untitled achievement"}
+                    {match.relatedKpiTitle ? ` (${match.relatedKpiTitle})` : ""}
+                  </div>
+                  <div className="text-amber-800/80">
+                    Field: {match.matchedField} | Value: {match.matchedValue || "--"} | Reporter: {match.reportedByName}
+                  </div>
+                  {match.note ? (
+                    <div className="text-amber-800/80">{match.note}</div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         {item.evidenceLinks.length > 0 ? (
           <div className="flex flex-wrap gap-2">
             {item.evidenceLinks.map((link, index) => (
@@ -126,6 +161,12 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
                   onChange={() => {}}
                   readOnly
                 />
+              </div>
+            ) : null}
+
+            {policyWarnings.length > 0 ? (
+              <div className="rounded bg-orange-50 p-2 text-xs text-orange-800">
+                Reviewer action required: check the related claim history before approval.
               </div>
             ) : null}
 

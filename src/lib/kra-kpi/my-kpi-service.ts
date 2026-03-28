@@ -6,6 +6,7 @@ import {
   computeReviewCycles,
   isDateWithinInclusiveUtcRange,
 } from "./period-service";
+import { GALGOTIA_MANUAL_CREDIT_TEMPLATE_KEYS } from "./galgotia-template-constants";
 import { seedDefaultTemplates } from "./external-contrib-template-service";
 import {
   achievementContributorInclude,
@@ -406,6 +407,7 @@ function parseExternalContributorFields(
 
 function buildSubmissionConfig(
   kpi: {
+    achievementTemplateKey?: string | null;
     participantMode: "SINGLE_OWNER" | "OPTIONAL_TEAM" | "REQUIRED_TEAM";
     evidenceRequired: boolean;
     evidenceTypes: string[];
@@ -456,6 +458,9 @@ function buildSubmissionConfig(
         component.distributions.map((distribution) => distribution.selectorTag),
       ),
     ),
+    manualCreditEntryEnabled:
+      typeof kpi.achievementTemplateKey === "string" &&
+      GALGOTIA_MANUAL_CREDIT_TEMPLATE_KEYS.has(kpi.achievementTemplateKey),
   };
 }
 
@@ -861,6 +866,7 @@ export async function getMyReviewQueue(
           title: true,
           measurementType: true,
           unitLabel: true,
+          guidanceNotes: true,
           startingUnitId: true,
           keyUnitId: true,
           finalUnitId: true,
@@ -968,6 +974,7 @@ export async function getMyReviewQueue(
           : [],
       duplicateCheckResult:
         (achievement.duplicateCheckResult as ReviewQueueItem["duplicateCheckResult"]) ?? null,
+      guidanceNotes: achievement.kpiDefinition.guidanceNotes,
       stageCompletionScore: achievement.stageCompletionScore ?? null,
       effectiveScore: achievement.effectiveScore ?? null,
       stagesComplete,

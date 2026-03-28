@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { ensureApplicableRolesBaseline } from "./contributor-role-service";
 import { validateExternalData } from "./external-contrib-template-service";
 import { getEffectiveConfig } from "./kpi-contributor-config-service";
+import { GALGOTIA_AUTO_EXCLUDE_EXTERNAL_TEMPLATE_KEYS } from "./galgotia-template-constants";
 import type { AchievementContributorView, KraKpiActionResult } from "./shared";
 
 const JOURNAL_ARTICLE_TEMPLATE_KEY = "JOURNAL_ARTICLE_TEMPLATE";
@@ -17,6 +18,7 @@ export const achievementContributorInputSchema = z.object({
   externalData: z.record(z.string(), z.unknown()).optional(),
   contributorRoleId: z.string().trim().min(1),
   selectorTags: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
+  creditPercent: z.number().min(0).max(100).optional(),
   isExcludedFromReward: z.boolean().default(false),
   note: z.string().trim().max(1000).optional(),
 });
@@ -268,7 +270,7 @@ async function getContributorCreditPolicy(
   kpiDefinitionId: string,
   tenantId: string,
   tx: DbClient,
-): Promise<"DEFAULT" | "JOURNAL_ARTICLE"> {
+): Promise<{ templateKey: string | null; creditPolicy: "DEFAULT" | "JOURNAL_ARTICLE" }> {
   const kpi = await tx.kpiDefinition.findFirst({
     where: { id: kpiDefinitionId, kraDefinition: { tenantId } },
     select: {
@@ -283,9 +285,55 @@ async function getContributorCreditPolicy(
       ? kpi.achievementFormConfig.templateKey
       : null;
 
-  return templateKey === JOURNAL_ARTICLE_TEMPLATE_KEY
-    ? "JOURNAL_ARTICLE"
-    : "DEFAULT";
+  return {
+    templateKey,
+    creditPolicy:
+      templateKey === JOURNAL_ARTICLE_TEMPLATE_KEY
+        ? "JOURNAL_ARTICLE"
+        : "DEFAULT",
+  };
+}
+
+function resolveManualCredits(
+  contributors: Array<{
+    isExcludedFromReward: boolean;
+    providedCreditPercent: number | null;
+  }>,
+  creditSumMode: "MUST_EQUAL_100" | "MAX_100" | "UNCAPPED",
+): { ok: true; credits: number[] } | { ok: false; message: string } | null {
+  const hasExplicitCredits = contributors.some((contributor) => contributor.providedCreditPercent != null);
+  if (!hasExplicitCredits) {
+    return null;
+  }
+
+  const included = contributors
+    .map((contributor, index) => ({ contributor, index }))
+    .filter((entry) => !entry.contributor.isExcludedFromReward);
+
+  if (included.length === 0) {
+    return { ok: true, credits: contributors.map(() => 0) };
+  }
+
+  const credits = contributors.map((contributor) =>
+    contributor.isExcludedFromReward ? 0 : (contributor.providedCreditPercent ?? Number.NaN),
+  );
+
+  if (included.some((entry) => Number.isNaN(credits[entry.index] ?? Number.NaN))) {
+    return {
+      ok: false,
+      message: "Enter a credit percent for every contributor who should share the reward.",
+    };
+  }
+
+  const total = included.reduce((sum, entry) => sum + (credits[entry.index] ?? 0), 0);
+  if (creditSumMode === "MUST_EQUAL_100" && Math.abs(total - 100) > 0.01) {
+    return { ok: false, message: "Contributor credit percentages must add up to exactly 100." };
+  }
+  if (creditSumMode === "MAX_100" && total > 100.01) {
+    return { ok: false, message: "Contributor credit percentages cannot exceed 100." };
+  }
+
+  return { ok: true, credits: credits.map((value) => round2(value)) };
 }
 
 async function getApplicableRoleMap(
@@ -417,7 +465,7 @@ async function prepareContributors(input: {
     input.tx,
   );
   const effectiveConfig = await getEffectiveConfig(input.kpiDefinitionId, input.tenantId);
-  const creditPolicy = await getContributorCreditPolicy(
+  const contributorPolicy = await getContributorCreditPolicy(
     input.kpiDefinitionId,
     input.tenantId,
     input.tx,
@@ -432,7 +480,10 @@ async function prepareContributors(input: {
 
   const seenInternalUserIds = new Set<string>();
   const preparedBase: Array<
-    Omit<PreparedContributor, "creditPercent"> & { defaultCreditPercent: number }
+    Omit<PreparedContributor, "creditPercent"> & {
+      defaultCreditPercent: number;
+      providedCreditPercent: number | null;
+    }
   > = [];
 
   for (const contributor of contributors) {
@@ -489,6 +540,7 @@ async function prepareContributors(input: {
         roleName: applicableRole.contributorRole.name,
         roleCode: applicableRole.contributorRole.code,
         defaultCreditPercent: applicableRole.contributorRole.defaultCreditPercent,
+        providedCreditPercent: contributor.creditPercent ?? null,
       });
       continue;
     }
@@ -540,16 +592,20 @@ async function prepareContributors(input: {
       externalData: (contributor.externalData as Record<string, unknown> | undefined) ?? null,
       contributorRoleId: contributor.contributorRoleId,
       selectorTags: contributor.selectorTags ?? [],
-      isExcludedFromReward: contributor.isExcludedFromReward,
+      isExcludedFromReward:
+        contributor.isExcludedFromReward
+        || (contributorPolicy.templateKey != null
+          && GALGOTIA_AUTO_EXCLUDE_EXTERNAL_TEMPLATE_KEYS.has(contributorPolicy.templateKey)),
       note: contributor.note ?? null,
       roleName: applicableRole.contributorRole.name,
       roleCode: applicableRole.contributorRole.code,
       defaultCreditPercent: applicableRole.contributorRole.defaultCreditPercent,
+      providedCreditPercent: contributor.creditPercent ?? null,
     });
   }
 
   const journalCredits =
-    creditPolicy === "JOURNAL_ARTICLE"
+    contributorPolicy.creditPolicy === "JOURNAL_ARTICLE"
       ? computeJournalArticleCredits(
           preparedBase.map((row) => ({
             type: row.type,
@@ -559,9 +615,27 @@ async function prepareContributors(input: {
           })),
         )
       : null;
+  const manualCredits =
+    journalCredits == null
+      ? resolveManualCredits(
+          preparedBase.map((row) => ({
+            isExcludedFromReward: row.isExcludedFromReward,
+            providedCreditPercent: row.providedCreditPercent,
+          })),
+          effectiveConfig.creditSumMode,
+        )
+      : null;
+  if (manualCredits && !manualCredits.ok) {
+    return {
+      ok: false,
+      message: manualCredits.message,
+      code: "CONTRIBUTOR_NOT_FOUND",
+    };
+  }
   const credits =
-    journalCredits?.credits ??
-    computeCredits(
+    journalCredits?.credits
+    ?? manualCredits?.credits
+    ?? computeCredits(
       preparedBase.map((row) => ({
         isExcludedFromReward: row.isExcludedFromReward,
         contributorRoleId: row.contributorRoleId,

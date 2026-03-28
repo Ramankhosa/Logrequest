@@ -4,6 +4,7 @@ import type { KraKpiActionResult } from "./shared";
 import type { KpiBuilderPayload } from "./builder-shared";
 import { kpiTemplateWriteSchema, type KpiTemplateWriteInput } from "./builder-shared";
 import { ACHIEVEMENT_TEMPLATES } from "./shared";
+import { GALGOTIA_KPI_TEMPLATES } from "./galgotia-kpi-templates";
 import { saveKpiBuilder } from "./kpi-builder-service";
 import { seedDefaultBenefitTypes } from "./benefit-type-service";
 import { seedDefaultContributorRoles } from "./contributor-role-service";
@@ -560,6 +561,7 @@ const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
       rewardComponents: [],
     },
   },
+  ...GALGOTIA_KPI_TEMPLATES,
 ];
 
 export async function seedSystemKpiTemplates(): Promise<void> {

@@ -256,6 +256,33 @@ export function MyAllocationCard({
               </div>
             )}
 
+            {ach?.duplicateCheckResult?.matches?.length ? (
+              <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                <div className="mb-2 flex items-center gap-2 font-semibold">
+                  <AlertTriangle className="h-4 w-4" />
+                  Duplicate and policy checks
+                </div>
+                <div className="space-y-2">
+                  {ach.duplicateCheckResult.matches.map((match) => (
+                    <div key={`${match.achievementId}-${match.matchedField}-${match.matchType ?? match.similarity}`}>
+                      <div>
+                        {match.matchType === "POLICY_WARNING" ? "Policy warning" : "Possible duplicate"}:
+                        {" "}
+                        {match.achievementTitle ?? "Untitled achievement"}
+                        {match.relatedKpiTitle ? ` (${match.relatedKpiTitle})` : ""}
+                      </div>
+                      <div className="text-amber-800/80">
+                        Field: {match.matchedField} | Value: {match.matchedValue || "--"} | Reporter: {match.reportedByName}
+                      </div>
+                      {match.note ? (
+                        <div className="text-amber-800/80">{match.note}</div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             {/* Achievement trail */}
             {ach && (ach.submissionTrail.length > 0 || ach.verificationLog.length > 0) && (
               <MyAchievementTrail trail={ach.submissionTrail} log={ach.verificationLog} />

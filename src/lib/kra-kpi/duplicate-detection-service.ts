@@ -1,4 +1,8 @@
 import { prisma } from "@/lib/prisma";
+import {
+  GALGOTIA_BOOK_CHAPTER_TEMPLATE_KEY,
+  GALGOTIA_EDITED_BOOK_TEMPLATE_KEY,
+} from "./galgotia-template-constants";
 import { getEffectiveConfig } from "./kpi-contributor-config-service";
 import type { AchievementFormConfig, DuplicateCheckResult, DuplicateMatch } from "./shared";
 
@@ -75,6 +79,7 @@ export async function runDuplicateDetection(input: {
   achievementTitle?: string | null;
   achievementFormData?: Record<string, unknown> | null;
   formConfig?: AchievementFormConfig | null;
+  contributorUserIds?: string[];
 }): Promise<DuplicateCheckResult> {
   const effectiveConfig = await getEffectiveConfig(input.kpiDefinitionId, input.tenantId);
   const duplicateFieldKeys = extractConfiguredFieldKeys(
@@ -180,9 +185,101 @@ export async function runDuplicateDetection(input: {
     }
   }
 
+  const templateKey = input.formConfig?.templateKey ?? null;
+  const pairedTemplateKey =
+    templateKey === GALGOTIA_EDITED_BOOK_TEMPLATE_KEY
+      ? GALGOTIA_BOOK_CHAPTER_TEMPLATE_KEY
+      : templateKey === GALGOTIA_BOOK_CHAPTER_TEMPLATE_KEY
+        ? GALGOTIA_EDITED_BOOK_TEMPLATE_KEY
+        : null;
+  const normalizedIsbn = normalizeText(
+    stringifyMatchValue(input.achievementFormData?.isbn) ?? "",
+  );
+  const contributorUserIds = [...new Set((input.contributorUserIds ?? []).filter(Boolean))];
+
+  if (pairedTemplateKey && normalizedIsbn && contributorUserIds.length > 0) {
+    const crossTemplateAchievements = await prisma.achievement.findMany({
+      where: {
+        tenantId: input.tenantId,
+        ...(input.achievementId ? { id: { not: input.achievementId } } : {}),
+        contributors: {
+          some: {
+            type: "INTERNAL",
+            userId: { in: contributorUserIds },
+          },
+        },
+      },
+      select: {
+        id: true,
+        periodId: true,
+        state: true,
+        title: true,
+        reportedByUserId: true,
+        achievementFormData: true,
+        kpiDefinition: {
+          select: {
+            title: true,
+            achievementFormConfig: true,
+          },
+        },
+        contributors: {
+          select: {
+            type: true,
+            userId: true,
+          },
+        },
+      },
+    });
+
+    for (const achievement of crossTemplateAchievements) {
+      const otherTemplateKey =
+        achievement.kpiDefinition.achievementFormConfig &&
+        typeof achievement.kpiDefinition.achievementFormConfig === "object" &&
+        "templateKey" in achievement.kpiDefinition.achievementFormConfig &&
+        typeof achievement.kpiDefinition.achievementFormConfig.templateKey === "string"
+          ? achievement.kpiDefinition.achievementFormConfig.templateKey
+          : null;
+      if (otherTemplateKey !== pairedTemplateKey) continue;
+
+      const otherFormData =
+        (achievement.achievementFormData as Record<string, unknown> | null) ?? {};
+      const otherIsbn = normalizeText(stringifyMatchValue(otherFormData.isbn) ?? "");
+      if (!otherIsbn || otherIsbn !== normalizedIsbn) continue;
+
+      const overlappingUserIds = achievement.contributors
+        .filter(
+          (contributor) =>
+            contributor.type === "INTERNAL"
+            && contributor.userId != null
+            && contributorUserIds.includes(contributor.userId),
+        )
+        .map((contributor) => contributor.userId!)
+        .sort();
+      if (overlappingUserIds.length === 0) continue;
+
+      matches.push({
+        achievementId: achievement.id,
+        matchedField: "isbn",
+        matchedValue: stringifyMatchValue(input.achievementFormData?.isbn) ?? "",
+        reportedByName: reporterNameMap.get(achievement.reportedByUserId) ?? "Unknown",
+        reportedByUserId: achievement.reportedByUserId,
+        sameReporter: false,
+        achievementState: achievement.state,
+        achievementTitle: achievement.title,
+        periodId: achievement.periodId,
+        samePeriod: achievement.periodId === input.periodId,
+        similarity: "EXACT",
+        matchType: "POLICY_WARNING",
+        note:
+          "Same contributor already has a related edited-book or chapter claim for this ISBN. Reviewer must enforce the Rs. 20,000 same-book combined limit manually.",
+        relatedKpiTitle: achievement.kpiDefinition.title,
+      });
+    }
+  }
+
   const deduped = new Map<string, DuplicateMatch>();
   for (const match of matches) {
-    const key = `${match.achievementId}:${match.matchedField}:${match.similarity}`;
+    const key = `${match.achievementId}:${match.matchedField}:${match.similarity}:${match.matchType ?? "DUPLICATE"}`;
     if (!deduped.has(key)) {
       deduped.set(key, match);
     }

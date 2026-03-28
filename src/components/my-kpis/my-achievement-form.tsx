@@ -14,6 +14,7 @@ import {
   applyAchievementFieldDefaults,
   buildFormDataValidator,
 } from "@/lib/kra-kpi/shared";
+import { GALGOTIA_AUTO_EXCLUDE_EXTERNAL_TEMPLATE_KEYS } from "@/lib/kra-kpi/galgotia-template-constants";
 import { DynamicFormRenderer } from "./dynamic-form-renderer";
 
 export type AdditionalAchievementFormContext = {
@@ -79,6 +80,7 @@ type ContributorDraft = {
   type: "INTERNAL" | "EXTERNAL";
   userId: string | null;
   contributorRoleId: string;
+  creditPercent: string;
   selectorTags: string[];
   note: string;
   externalData: Record<string, unknown>;
@@ -139,6 +141,13 @@ function makeContributorId() {
   return `draft-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function autoExcludesExternalContributors(subject: FormSubject): boolean {
+  return (
+    typeof subject.achievementTemplateKey === "string"
+    && GALGOTIA_AUTO_EXCLUDE_EXTERNAL_TEMPLATE_KEYS.has(subject.achievementTemplateKey)
+  );
+}
+
 function emptyContributor(
   subject: FormSubject,
   type: "INTERNAL" | "EXTERNAL",
@@ -157,6 +166,10 @@ function emptyContributor(
     type,
     userId: type === "INTERNAL" ? subject.assignedToUserId ?? null : null,
     contributorRoleId: defaultRole?.id ?? "",
+    creditPercent:
+      subject.submissionConfig.manualCreditEntryEnabled
+        ? String(defaultRole?.defaultCreditPercent ?? "")
+        : "",
     selectorTags: [],
     note: "",
     externalData: type === "EXTERNAL" ? externalDefaults : {},
@@ -173,6 +186,10 @@ function mapAchievementContributorToDraft(
     type: contributor.type,
     userId: contributor.userId,
     contributorRoleId: contributor.contributorRoleId,
+    creditPercent:
+      subject.submissionConfig.manualCreditEntryEnabled && contributor.creditPercent != null
+        ? String(contributor.creditPercent)
+        : "",
     selectorTags: contributor.selectorTags ?? [],
     note: contributor.note ?? "",
     externalData:
@@ -200,13 +217,27 @@ function hasEvidence(description: string, links: string[]) {
   return Boolean(description.trim()) || links.some((link) => link.trim().length > 0);
 }
 
-function mapContributorDraftsForSave(contributors: ContributorDraft[]) {
+function mapContributorDraftsForSave(
+  subject: FormSubject,
+  contributors: ContributorDraft[],
+) {
+  const autoExcludeExternal = autoExcludesExternalContributors(subject);
+
   return contributors.map((contributor) => {
+    const parsedCreditPercent =
+      subject.submissionConfig.manualCreditEntryEnabled
+        && contributor.creditPercent.trim().length > 0
+        ? Number(contributor.creditPercent)
+        : undefined;
+
     if (contributor.type === "INTERNAL") {
       return {
         type: "INTERNAL" as const,
         userId: contributor.userId ?? undefined,
         contributorRoleId: contributor.contributorRoleId,
+        ...(parsedCreditPercent != null && Number.isFinite(parsedCreditPercent)
+          ? { creditPercent: parsedCreditPercent }
+          : {}),
         selectorTags: contributor.selectorTags,
         note: contributor.note || undefined,
       };
@@ -223,6 +254,10 @@ function mapContributorDraftsForSave(contributors: ContributorDraft[]) {
     return {
       type: "EXTERNAL" as const,
       contributorRoleId: contributor.contributorRoleId,
+      ...(parsedCreditPercent != null && Number.isFinite(parsedCreditPercent)
+        ? { creditPercent: parsedCreditPercent }
+        : {}),
+      ...(autoExcludeExternal ? { isExcludedFromReward: true } : {}),
       selectorTags: contributor.selectorTags,
       note: contributor.note || undefined,
       externalName:
@@ -251,6 +286,7 @@ function validateContributors(input: {
   const contributorRoles = new Set(
     input.subject.submissionConfig.applicableRoles.map((role) => role.id),
   );
+  const autoExcludeExternal = autoExcludesExternalContributors(input.subject);
   const externalValidator = input.subject.submissionConfig.externalContributorFields
     ? buildFormDataValidator(input.subject.submissionConfig.externalContributorFields)
     : null;
@@ -286,6 +322,39 @@ function validateContributors(input: {
       externalData.affiliation.trim().length === 0
     ) {
       return "External contributors require name and affiliation.";
+    }
+  }
+
+  if (input.subject.submissionConfig.manualCreditEntryEnabled) {
+    let total = 0;
+
+    for (const contributor of input.contributors) {
+      if (contributor.type === "EXTERNAL" && autoExcludeExternal) {
+        continue;
+      }
+
+      const trimmed = contributor.creditPercent.trim();
+      if (!trimmed.length) {
+        return "Enter a credit percent for every contributor who should share the reward.";
+      }
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        return "Contributor credit percent must be between 0 and 100.";
+      }
+      total += parsed;
+    }
+
+    if (
+      input.subject.submissionConfig.creditSumMode === "MUST_EQUAL_100"
+      && Math.abs(total - 100) > 0.01
+    ) {
+      return "Contributor credit percentages must add up to exactly 100.";
+    }
+    if (
+      input.subject.submissionConfig.creditSumMode === "MAX_100"
+      && total > 100.01
+    ) {
+      return "Contributor credit percentages cannot exceed 100.";
     }
   }
 
@@ -479,7 +548,7 @@ export function MyAchievementForm({
       evidenceDescription: derivedDescription,
       evidenceLinks: mergedLinks,
       achievementFormData: Object.keys(formData).length > 0 ? formData : undefined,
-      ...(contributors.length > 0 ? { contributors: mapContributorDraftsForSave(contributors) } : {}),
+      ...(contributors.length > 0 ? { contributors: mapContributorDraftsForSave(subject, contributors) } : {}),
     };
 
     try {
@@ -498,7 +567,7 @@ export function MyAchievementForm({
             evidenceDescription: derivedDescription,
             evidenceLinks: mergedLinks,
             achievementFormData: Object.keys(formData).length > 0 ? formData : undefined,
-            ...(contributors.length > 0 ? { contributors: mapContributorDraftsForSave(contributors) } : {}),
+            ...(contributors.length > 0 ? { contributors: mapContributorDraftsForSave(subject, contributors) } : {}),
           }),
         });
       } else {
@@ -752,6 +821,11 @@ export function MyAchievementForm({
                   Participant mode: {subject.submissionConfig.participantMode.replace(/_/g, " ").toLowerCase()}.
                   {" "}Credit policy: {subject.submissionConfig.creditSumMode.replace(/_/g, " ").toLowerCase()}.
                 </p>
+                {subject.submissionConfig.manualCreditEntryEnabled && (
+                  <p className="mt-1 text-xs text-amber-700">
+                    Enter the exact contributor credit percentages that should drive reward distribution for this template.
+                  </p>
+                )}
               </div>
               <div className="flex gap-2">
                 <button
@@ -893,6 +967,38 @@ export function MyAchievementForm({
                             )
                           }
                         />
+                      </div>
+                    )}
+
+                    {subject.submissionConfig.manualCreditEntryEnabled && (
+                      <div className="mt-3">
+                        <label className="mb-1 block text-sm font-medium text-gray-700">
+                          Credit Percent
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step="0.01"
+                          disabled={contributor.type === "EXTERNAL" && autoExcludesExternalContributors(subject)}
+                          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
+                          value={contributor.creditPercent}
+                          onChange={(event) =>
+                            setContributors((prev) =>
+                              prev.map((row) =>
+                                row.id === contributor.id
+                                  ? { ...row, creditPercent: event.target.value }
+                                  : row,
+                              ),
+                            )
+                          }
+                          placeholder="e.g. 35"
+                        />
+                        {contributor.type === "EXTERNAL" && autoExcludesExternalContributors(subject) && (
+                          <p className="mt-1 text-xs text-amber-700">
+                            External contributors are recorded for authorship history but excluded from payout for this template.
+                          </p>
+                        )}
                       </div>
                     )}
 
