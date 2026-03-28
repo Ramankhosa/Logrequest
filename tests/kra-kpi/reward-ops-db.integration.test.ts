@@ -6,6 +6,9 @@ import {
   verifyAchievement,
 } from "@/lib/kra-kpi/achievement-service";
 import {
+  exportRewardsCsv,
+  getRewardConsoleAccessScope,
+  getRewardReconciliation,
   listContributorRewards,
   listContributorRewardsForActor,
   transitionContributorRewards,
@@ -317,6 +320,17 @@ describe("database-first reward and correction scenarios", () => {
       );
 
       const draftRewards = await loadActiveRewards(created.id!);
+      const pendingResult = await transitionContributorRewards(
+        fixture.tenant.id,
+        draftRewards.map((row) => row.id),
+        "PENDING",
+        fixture.actor.id,
+        "TENANT_OWNER",
+        { note: "Ready for batch release DB-001." },
+      );
+      expect(pendingResult.updatedCount).toBe(draftRewards.length);
+      expect(pendingResult.failed).toHaveLength(0);
+
       const releaseResult = await transitionContributorRewards(
         fixture.tenant.id,
         draftRewards.map((row) => row.id),
@@ -427,6 +441,39 @@ describe("database-first reward and correction scenarios", () => {
       );
 
       const targetRewardId = initialRewards[0]!.id;
+      const directRelease = await transitionContributorRewards(
+        fixture.tenant.id,
+        [targetRewardId],
+        "RELEASED",
+        fixture.actor.id,
+        "TENANT_OWNER",
+        { note: "Should fail", releaseReference: "RACE-DIRECT" },
+      );
+      expect(directRelease.updatedCount).toBe(0);
+      expect(directRelease.failed[0]?.message).toContain("Cannot move reward");
+
+      const pendingTransition = await transitionContributorRewards(
+        fixture.tenant.id,
+        [targetRewardId],
+        "PENDING",
+        fixture.actor.id,
+        "TENANT_OWNER",
+        { note: "Ready for release" },
+      );
+      expect(pendingTransition.updatedCount).toBe(1);
+      expect(pendingTransition.failed).toHaveLength(0);
+
+      const releaseWithoutReference = await transitionContributorRewards(
+        fixture.tenant.id,
+        [targetRewardId],
+        "RELEASED",
+        fixture.actor.id,
+        "TENANT_OWNER",
+        {},
+      );
+      expect(releaseWithoutReference.updatedCount).toBe(0);
+      expect(releaseWithoutReference.failed[0]?.message).toContain("release reference");
+
       const concurrentRelease = await Promise.allSettled([
         transitionContributorRewards(
           fixture.tenant.id,
@@ -610,6 +657,88 @@ describe("database-first reward and correction scenarios", () => {
         select: { state: true },
       });
       expect(pendingReward.state).toBe("PENDING");
+    });
+  });
+
+  test("reconciliation and csv export stay reward-scope-aware and keep mixed-unit totals separate", async () => {
+    await withKraKpiScenarioDb(async (tracker) => {
+      const fixture = await createPublicationRewardFixture(tracker);
+      const created = await recordPublicationAchievement({
+        fixture,
+        allocationId: fixture.publication.allocation.id,
+        reporterUserId: fixture.users.facultyCse.id,
+        doi: "10.1000/db-reconciliation",
+        tier: "Q1",
+        contributors: [
+          {
+            type: "INTERNAL",
+            userId: fixture.users.facultyCse.id,
+            contributorRoleId: fixture.publication.roles.leadAuthor.id,
+            selectorTags: ["FIRST_AUTHOR"],
+          },
+        ],
+      });
+      expect(created.status).toBe("success");
+      await submitForVerification(
+        created.id!,
+        fixture.tenant.id,
+        fixture.users.facultyCse.id,
+        "TENANT_USER",
+        "Submitting for reward reconciliation coverage.",
+      );
+      await verifyAchievement(
+        created.id!,
+        fixture.tenant.id,
+        true,
+        "Verified for reward reconciliation coverage.",
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+
+      const scopedAccess = await getRewardConsoleAccessScope(
+        fixture.tenant.id,
+        fixture.users.cseHead.id,
+        "TENANT_USER",
+      );
+
+      const byBenefit = await getRewardReconciliation(
+        fixture.tenant.id,
+        fixture.period.id,
+        "benefitType",
+        scopedAccess,
+      );
+      expect(byBenefit.rows).toHaveLength(2);
+      expect(byBenefit.rows.every((row) => row.isMixedUnits === false)).toBe(true);
+      expect(byBenefit.totals.isMixedUnits).toBe(true);
+
+      const byUnit = await getRewardReconciliation(
+        fixture.tenant.id,
+        fixture.period.id,
+        "unit",
+        scopedAccess,
+      );
+      expect(byUnit.rows).toHaveLength(1);
+      expect(byUnit.rows[0]!.isMixedUnits).toBe(true);
+      expect(byUnit.rows[0]!.amountBuckets).toHaveLength(2);
+
+      const byKra = await getRewardReconciliation(
+        fixture.tenant.id,
+        fixture.period.id,
+        "kra",
+        scopedAccess,
+      );
+      expect(byKra.rows).toHaveLength(1);
+      expect(byKra.rows[0]!.label).toBe(fixture.kra.title);
+
+      const csv = await exportRewardsCsv(
+        fixture.tenant.id,
+        { periodId: fixture.period.id },
+        scopedAccess,
+      );
+      expect(csv.content).toContain("Reward ID,Achievement ID,KRA,KPI,State");
+      expect(csv.content).toContain(fixture.kra.title);
+      expect(csv.content).toContain(fixture.publication.kpi.title);
+      expect(csv.content).toContain("DRAFT");
     });
   });
 });

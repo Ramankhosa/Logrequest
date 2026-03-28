@@ -6,7 +6,11 @@ import type {
   ContributorRewardView,
   MyRewardsView,
   RewardConsoleListResult,
+  RewardConsoleFilterOptions,
   RewardConsoleTotals,
+  RewardReconciliationGroupBy,
+  RewardReconciliationResult,
+  RewardReconciliationRow,
   RewardStateTotalsView,
 } from "./shared";
 import { createNotification } from "@/lib/notifications/notification-service";
@@ -49,6 +53,22 @@ type RewardAccessRecord = {
     startingUnitId: string;
     keyUnitId: string | null;
     finalUnitId: string | null;
+  };
+};
+
+type RewardSummaryRow = {
+  state: ContributorRewardStateView;
+  finalAmount: number;
+  benefitType: { code: string; name: string; unit: string };
+  rewardOwnerUnitId: string | null;
+  rewardOwnerUnitName: string | null;
+  reporterUnitId: string | null;
+  reporterUnitName: string | null;
+  kpiDefinition: {
+    kraDefinitionId: string;
+    kraDefinition: {
+      title: string;
+    };
   };
 };
 
@@ -237,7 +257,13 @@ function mapRewardRow(row: {
   achievement: {
     reportedByUserId: string;
     reportedByUserName: string;
-    kpiDefinition: { title: string };
+    kpiDefinition: {
+      title: string;
+      kraDefinitionId: string;
+      kraDefinition: {
+        title: string;
+      };
+    };
   };
   contributorUser: { firstName: string; lastName: string } | null;
   releasedByUser: { firstName: string; lastName: string } | null;
@@ -263,6 +289,8 @@ function mapRewardRow(row: {
     id: row.id,
     achievementId: row.achievementId,
     kpiDefinitionId: row.kpiDefinitionId,
+    kraDefinitionId: row.achievement.kpiDefinition.kraDefinitionId,
+    kraTitle: row.achievement.kpiDefinition.kraDefinition.title,
     kpiTitle: row.achievement.kpiDefinition.title,
     reportedByUserId: row.achievement.reportedByUserId,
     reportedByUserName,
@@ -394,6 +422,49 @@ function summarizeRewards(
   );
 }
 
+function buildRewardFilterOptions(rows: RewardSummaryRow[]): RewardConsoleFilterOptions {
+  const benefitTypes = new Map<
+    string,
+    { benefitTypeCode: string; benefitTypeName: string; unit: string }
+  >();
+  const units = new Map<string, { value: string; label: string }>();
+  const kras = new Map<string, { value: string; label: string }>();
+
+  for (const row of rows) {
+    benefitTypes.set(row.benefitType.code, {
+      benefitTypeCode: row.benefitType.code,
+      benefitTypeName: row.benefitType.name,
+      unit: row.benefitType.unit,
+    });
+
+    if (row.rewardOwnerUnitId) {
+      units.set(row.rewardOwnerUnitId, {
+        value: row.rewardOwnerUnitId,
+        label: row.rewardOwnerUnitName ?? row.rewardOwnerUnitId,
+      });
+    }
+    if (row.reporterUnitId) {
+      units.set(row.reporterUnitId, {
+        value: row.reporterUnitId,
+        label: row.reporterUnitName ?? row.reporterUnitId,
+      });
+    }
+
+    kras.set(row.kpiDefinition.kraDefinitionId, {
+      value: row.kpiDefinition.kraDefinitionId,
+      label: row.kpiDefinition.kraDefinition.title,
+    });
+  }
+
+  return {
+    benefitTypes: [...benefitTypes.values()].sort((left, right) =>
+      left.benefitTypeName.localeCompare(right.benefitTypeName),
+    ),
+    units: [...units.values()].sort((left, right) => left.label.localeCompare(right.label)),
+    kras: [...kras.values()].sort((left, right) => left.label.localeCompare(right.label)),
+  };
+}
+
 function buildEmptyRewardStateTotals(): Record<ContributorRewardStateView, RewardStateTotalsView[]> {
   return {
     DRAFT: [],
@@ -445,10 +516,88 @@ function summarizeRewardsByState(
   return totalsByState;
 }
 
+function buildReconciliationRow(
+  groupKey: string,
+  label: string,
+  code: string | null,
+  rows: RewardSummaryRow[],
+): RewardReconciliationRow {
+  const amountBuckets = new Map<
+    string,
+    {
+      unit: string;
+      totalAmount: number;
+      draftAmount: number;
+      pendingAmount: number;
+      releasedAmount: number;
+      revokedAmount: number;
+    }
+  >();
+
+  let draftCount = 0;
+  let pendingCount = 0;
+  let releasedCount = 0;
+  let revokedCount = 0;
+
+  for (const row of rows) {
+    const bucket =
+      amountBuckets.get(row.benefitType.unit) ??
+      {
+        unit: row.benefitType.unit,
+        totalAmount: 0,
+        draftAmount: 0,
+        pendingAmount: 0,
+        releasedAmount: 0,
+        revokedAmount: 0,
+      };
+
+    if (row.state === "DRAFT") {
+      draftCount += 1;
+      bucket.draftAmount += row.finalAmount;
+      bucket.totalAmount += row.finalAmount;
+    } else if (row.state === "PENDING") {
+      pendingCount += 1;
+      bucket.pendingAmount += row.finalAmount;
+      bucket.totalAmount += row.finalAmount;
+    } else if (row.state === "RELEASED") {
+      releasedCount += 1;
+      bucket.releasedAmount += row.finalAmount;
+      bucket.totalAmount += row.finalAmount;
+    } else {
+      revokedCount += 1;
+      bucket.revokedAmount += row.finalAmount;
+    }
+
+    amountBuckets.set(row.benefitType.unit, bucket);
+  }
+
+  const resolvedBuckets = [...amountBuckets.values()].sort((left, right) =>
+    left.unit.localeCompare(right.unit),
+  );
+  const activeAmountBuckets = resolvedBuckets.filter((bucket) => bucket.totalAmount > 0);
+  const displayBuckets = activeAmountBuckets.length > 0 ? activeAmountBuckets : resolvedBuckets;
+  const isMixedUnits = activeAmountBuckets.length > 1;
+
+  return {
+    groupKey,
+    label,
+    code,
+    totalCount: rows.length,
+    draftCount,
+    pendingCount,
+    releasedCount,
+    revokedCount,
+    totalAmount: isMixedUnits ? null : (displayBuckets[0]?.totalAmount ?? 0),
+    unit: isMixedUnits ? null : (displayBuckets[0]?.unit ?? null),
+    isMixedUnits,
+    amountBuckets: displayBuckets,
+  };
+}
+
 async function loadRewardViews(
   where: Prisma.ContributorRewardWhereInput,
-  take: number,
-  skip: number,
+  take?: number,
+  skip?: number,
 ): Promise<ContributorRewardView[]> {
   const rewardRows = await prisma.contributorReward.findMany({
     where,
@@ -459,7 +608,17 @@ async function loadRewardViews(
       achievement: {
         select: {
           reportedByUserId: true,
-          kpiDefinition: { select: { title: true } },
+          kpiDefinition: {
+            select: {
+              title: true,
+              kraDefinitionId: true,
+              kraDefinition: {
+                select: {
+                  title: true,
+                },
+              },
+            },
+          },
         },
       },
       contributorUser: { select: { firstName: true, lastName: true } },
@@ -471,8 +630,8 @@ async function loadRewardViews(
       },
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take,
-    skip,
+    ...(typeof take === "number" ? { take } : {}),
+    ...(typeof skip === "number" ? { skip } : {}),
   });
 
   const userIds = [
@@ -524,8 +683,22 @@ export async function listContributorRewards(
       select: {
         state: true,
         finalAmount: true,
+        rewardOwnerUnitId: true,
+        rewardOwnerUnitName: true,
+        reporterUnitId: true,
+        reporterUnitName: true,
         benefitType: {
           select: { code: true, name: true, unit: true },
+        },
+        kpiDefinition: {
+          select: {
+            kraDefinitionId: true,
+            kraDefinition: {
+              select: {
+                title: true,
+              },
+            },
+          },
         },
       },
     }),
@@ -536,6 +709,7 @@ export async function listContributorRewards(
     rewards: rewardRows,
     totals: summarizeRewards(summaryRows),
     totalRows,
+    filterOptions: buildRewardFilterOptions(summaryRows),
   };
 }
 
@@ -616,8 +790,22 @@ export async function listScopedPersonRewards(
       select: {
         state: true,
         finalAmount: true,
+        rewardOwnerUnitId: true,
+        rewardOwnerUnitName: true,
+        reporterUnitId: true,
+        reporterUnitName: true,
         benefitType: {
           select: { code: true, name: true, unit: true },
+        },
+        kpiDefinition: {
+          select: {
+            kraDefinitionId: true,
+            kraDefinition: {
+              select: {
+                title: true,
+              },
+            },
+          },
         },
       },
     }),
@@ -628,6 +816,164 @@ export async function listScopedPersonRewards(
     rewards: rewardRows,
     totals: summarizeRewards(summaryRows),
     totalRows,
+    filterOptions: buildRewardFilterOptions(summaryRows),
+  };
+}
+
+export async function getRewardReconciliation(
+  tenantId: string,
+  periodId: string,
+  groupBy: RewardReconciliationGroupBy,
+  accessScope: RewardAccessScope,
+  filters: Omit<RewardListFilters, "periodId" | "limit" | "offset"> = {},
+): Promise<RewardReconciliationResult> {
+  const where = mergeRewardWhere(
+    { tenantId, periodId },
+    buildRewardWhere(filters),
+    buildRewardAccessWhere(accessScope),
+  );
+  const rows = await prisma.contributorReward.findMany({
+    where,
+    select: {
+      state: true,
+      finalAmount: true,
+      rewardOwnerUnitId: true,
+      rewardOwnerUnitName: true,
+      reporterUnitId: true,
+      reporterUnitName: true,
+      benefitType: {
+        select: { code: true, name: true, unit: true },
+      },
+      kpiDefinition: {
+        select: {
+          kraDefinitionId: true,
+          kraDefinition: {
+            select: {
+              title: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const grouped = new Map<string, { label: string; code: string | null; rows: RewardSummaryRow[] }>();
+
+  for (const row of rows) {
+    let key: string;
+    let label: string;
+    let code: string | null;
+
+    if (groupBy === "benefitType") {
+      key = `benefit:${row.benefitType.code}`;
+      label = row.benefitType.name;
+      code = row.benefitType.code;
+    } else if (groupBy === "unit") {
+      code = row.rewardOwnerUnitId ?? row.reporterUnitId ?? null;
+      key = `unit:${code ?? "unassigned"}`;
+      label = row.rewardOwnerUnitName ?? row.reporterUnitName ?? "Unassigned";
+    } else {
+      key = `kra:${row.kpiDefinition.kraDefinitionId}`;
+      label = row.kpiDefinition.kraDefinition.title;
+      code = row.kpiDefinition.kraDefinitionId;
+    }
+
+    const bucket = grouped.get(key) ?? { label, code, rows: [] };
+    bucket.rows.push(row);
+    grouped.set(key, bucket);
+  }
+
+  const reconciliationRows = [...grouped.entries()]
+    .map(([key, value]) => buildReconciliationRow(key, value.label, value.code, value.rows))
+    .sort((left, right) => left.label.localeCompare(right.label));
+
+  return {
+    groupBy,
+    rows: reconciliationRows,
+    totals: buildReconciliationRow("TOTAL", "All matching rewards", null, rows),
+  };
+}
+
+function escapeCsvValue(value: string | number | null | undefined) {
+  if (value == null) return "";
+  const text = String(value);
+  if (!/[",\r\n]/.test(text)) {
+    return text;
+  }
+  return `"${text.replaceAll("\"", "\"\"")}"`;
+}
+
+function formatCsvDate(value: Date | null) {
+  return value ? value.toISOString() : "";
+}
+
+export async function exportRewardsCsv(
+  tenantId: string,
+  filters: Omit<RewardListFilters, "limit" | "offset">,
+  accessScope: RewardAccessScope,
+): Promise<{ filename: string; content: string }> {
+  const where = mergeRewardWhere(
+    { tenantId },
+    buildRewardWhere(filters),
+    buildRewardAccessWhere(accessScope),
+  );
+  const rewards = await loadRewardViews(where);
+
+  const headers = [
+    "Reward ID",
+    "Achievement ID",
+    "KRA",
+    "KPI",
+    "State",
+    "Contributor",
+    "Reported By",
+    "Benefit Type",
+    "Benefit Unit",
+    "Base Amount",
+    "Final Amount",
+    "Reward Tier",
+    "Reward Component",
+    "Owner Unit",
+    "Reporter Unit",
+    "Created At",
+    "Released At",
+    "Release Reference",
+    "Revoked At",
+    "Revocation Reason",
+  ];
+
+  const lines = [
+    headers.join(","),
+    ...rewards.map((reward) =>
+      [
+        reward.id,
+        reward.achievementId,
+        reward.kraTitle,
+        reward.kpiTitle,
+        reward.state,
+        reward.contributorDisplayName,
+        reward.reportedByUserName,
+        reward.benefitTypeName,
+        reward.benefitUnit,
+        reward.baseAmount,
+        reward.finalAmount,
+        reward.rewardTierName ?? reward.rewardTierCode ?? "",
+        reward.rewardComponentName,
+        reward.rewardOwnerUnitName ?? "",
+        reward.reporterUnitName ?? "",
+        formatCsvDate(reward.createdAt),
+        formatCsvDate(reward.releasedAt),
+        reward.releaseReference ?? "",
+        formatCsvDate(reward.revokedAt),
+        reward.revocationReason ?? "",
+      ].map(escapeCsvValue).join(","),
+    ),
+  ];
+
+  const periodToken = filters.periodId ?? "all-periods";
+  return {
+    filename: `rewards-${periodToken}-${new Date().toISOString().slice(0, 10)}.csv`,
+    content: lines.join("\r\n"),
   };
 }
 
@@ -694,6 +1040,7 @@ export async function transitionContributorRewards(
     accessScope.mode === "scoped" ? new Set(accessScope.accessibleUnitIds) : null;
 
   const note = options?.note?.trim() || null;
+  const releaseReference = options?.releaseReference?.trim() || null;
 
   const { updatedCount, failed, successfulTransitions } = await prisma.$transaction(async (tx) => {
     const rewards = await tx.contributorReward.findMany({
@@ -737,7 +1084,7 @@ export async function transitionContributorRewards(
       const allowed =
         (nextState === "DRAFT" && reward.state === "PENDING") ||
         (nextState === "PENDING" && reward.state === "DRAFT") ||
-        (nextState === "RELEASED" && (reward.state === "DRAFT" || reward.state === "PENDING")) ||
+        (nextState === "RELEASED" && reward.state === "PENDING") ||
         (nextState === "REVOKED" && reward.state !== "REVOKED");
 
       if (!allowed) {
@@ -745,6 +1092,11 @@ export async function transitionContributorRewards(
           id: rewardId,
           message: `Cannot move reward from ${reward.state} to ${nextState}.`,
         });
+        continue;
+      }
+
+      if (nextState === "RELEASED" && !releaseReference) {
+        txFailed.push({ id: rewardId, message: "Release requires a release reference." });
         continue;
       }
 
@@ -762,7 +1114,7 @@ export async function transitionContributorRewards(
             ? {
                 releasedAt: new Date(),
                 releasedById: actorUserId,
-                releaseReference: options?.releaseReference?.trim() || null,
+                releaseReference,
               }
             : {}),
           ...(nextState === "REVOKED"
@@ -791,8 +1143,8 @@ export async function transitionContributorRewards(
           toState: nextState,
           note,
           metadata:
-            nextState === "RELEASED" && options?.releaseReference
-              ? ({ releaseReference: options.releaseReference } satisfies Prisma.InputJsonValue)
+            nextState === "RELEASED" && releaseReference
+              ? ({ releaseReference } satisfies Prisma.InputJsonValue)
               : undefined,
         },
       });

@@ -22,9 +22,9 @@ import {
   Search,
   Wallet,
 } from "lucide-react";
-import { RewardOpsConsole } from "@/components/tenant/kra-kpi/reward-ops-console";
 import { ContributorPanel } from "@/components/dashboard/contributor/contributor-panel";
 import { OrgPanel } from "@/components/dashboard/org/org-panel";
+import { RewardPanel } from "@/components/dashboard/rewards/reward-panel";
 import { ReviewerPanel } from "@/components/dashboard/reviewer/reviewer-panel";
 import { UnitPanel } from "@/components/dashboard/unit/unit-panel";
 import {
@@ -845,7 +845,13 @@ export function DashboardHub({ scope }: DashboardHubProps) {
                 : "Your reward actions are limited to units covered by your approval-authority assignments, including descendant units when your hierarchy scope allows it."}
             </p>
           </div>
-          <RewardOpsConsole periodId={selectedPeriodId} />
+          {selectedPeriodId ? <RewardPanel scope={scope} periodId={selectedPeriodId} /> : (
+            <EmptyState
+              icon={<Wallet className="h-8 w-8" />}
+              title="Select a period to open reward operations"
+              description="Pipeline actions and reconciliation stay period-specific so reward rows, totals, and exports remain auditable."
+            />
+          )}
         </div>
       ) : null}
 

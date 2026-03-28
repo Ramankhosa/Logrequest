@@ -497,6 +497,16 @@ describe("R5.2 dashboard database coverage", () => {
         data: { contributorUserId: null },
       });
 
+      const pendingFirstReward = await transitionContributorRewards(
+        fixture.tenant.id,
+        [rewards[0]!.id],
+        "PENDING",
+        fixture.actor.id,
+        "TENANT_OWNER",
+        { note: "Queue first reward for release" },
+      );
+      expect(pendingFirstReward.updatedCount).toBe(1);
+
       const releaseResult = await transitionContributorRewards(
         fixture.tenant.id,
         [rewards[0]!.id],

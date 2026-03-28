@@ -53,6 +53,18 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  if (body.nextState === "RELEASED" && !body.releaseReference?.trim()) {
+    return NextResponse.json(
+      { status: "error", message: "releaseReference is required when releasing rewards." },
+      { status: 400 },
+    );
+  }
+  if (body.nextState === "REVOKED" && !body.note?.trim()) {
+    return NextResponse.json(
+      { status: "error", message: "note is required when revoking rewards." },
+      { status: 400 },
+    );
+  }
 
   const result = await transitionContributorRewards(
     session.user.tenantId,

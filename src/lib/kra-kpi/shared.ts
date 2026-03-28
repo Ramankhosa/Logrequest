@@ -429,6 +429,8 @@ export type ContributorRewardView = {
   id: string;
   achievementId: string;
   kpiDefinitionId: string;
+  kraDefinitionId: string;
+  kraTitle: string;
   kpiTitle: string;
   reportedByUserId: string;
   reportedByUserName: string;
@@ -467,6 +469,21 @@ export type ContributorRewardView = {
   events: ContributorRewardEventView[];
 };
 
+export type RewardConsoleFilterOption = {
+  value: string;
+  label: string;
+};
+
+export type RewardConsoleFilterOptions = {
+  benefitTypes: Array<{
+    benefitTypeCode: string;
+    benefitTypeName: string;
+    unit: string;
+  }>;
+  units: RewardConsoleFilterOption[];
+  kras: RewardConsoleFilterOption[];
+};
+
 export type RewardConsoleTotals = {
   benefitTypeCode: string;
   benefitTypeName: string;
@@ -487,6 +504,39 @@ export type RewardConsoleListResult = {
   rewards: ContributorRewardView[];
   totals: RewardConsoleTotals[];
   totalRows: number;
+  filterOptions: RewardConsoleFilterOptions;
+};
+
+export type RewardReconciliationGroupBy = "benefitType" | "unit" | "kra";
+
+export type RewardReconciliationAmountBucket = {
+  unit: string;
+  totalAmount: number;
+  draftAmount: number;
+  pendingAmount: number;
+  releasedAmount: number;
+  revokedAmount: number;
+};
+
+export type RewardReconciliationRow = {
+  groupKey: string;
+  label: string;
+  code: string | null;
+  totalCount: number;
+  draftCount: number;
+  pendingCount: number;
+  releasedCount: number;
+  revokedCount: number;
+  totalAmount: number | null;
+  unit: string | null;
+  isMixedUnits: boolean;
+  amountBuckets: RewardReconciliationAmountBucket[];
+};
+
+export type RewardReconciliationResult = {
+  groupBy: RewardReconciliationGroupBy;
+  rows: RewardReconciliationRow[];
+  totals: RewardReconciliationRow;
 };
 
 export type RewardStateTotalsView = {

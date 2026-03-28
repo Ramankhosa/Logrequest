@@ -296,6 +296,17 @@ describe("R4.3 workflow remarks and reward operations", () => {
     });
     expect(initialRewards.length).toBeGreaterThan(0);
 
+    const pendingResult = await transitionContributorRewards(
+      fixture.tenant.id,
+      initialRewards.map((reward) => reward.id),
+      "PENDING",
+      fixture.actor.id,
+      "TENANT_OWNER",
+      { note: "Ready for payout release" },
+    );
+    expect(pendingResult.updatedCount).toBe(initialRewards.length);
+    expect(pendingResult.failed).toHaveLength(0);
+
     const releaseResult = await transitionContributorRewards(
       fixture.tenant.id,
       initialRewards.map((reward) => reward.id),
