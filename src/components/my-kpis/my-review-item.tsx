@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import type { ReviewQueueItem } from "@/lib/kra-kpi/shared";
+import { PublicationLookupSummary } from "./publication-lookup-summary";
 import { MyAchievementTrail } from "./my-achievement-trail";
 import { DynamicFormRenderer } from "./dynamic-form-renderer";
 
@@ -155,6 +156,13 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
             {item.achievementFormData && item.achievementFormConfig ? (
               <div>
                 <h4 className="mb-2 text-xs font-semibold uppercase text-gray-500">Form Data</h4>
+                <PublicationLookupSummary
+                  formData={item.achievementFormData}
+                  hasPublicationDateField={item.achievementFormConfig.fields.some(
+                    (field) => field.key === "publicationDate",
+                  )}
+                  className="mb-3"
+                />
                 <DynamicFormRenderer
                   fields={item.achievementFormConfig.fields}
                   values={item.achievementFormData}

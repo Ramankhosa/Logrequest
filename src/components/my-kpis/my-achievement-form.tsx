@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import type {
   AchievementFieldConfig,
   AchievementFormConfig,
@@ -14,7 +14,21 @@ import {
   applyAchievementFieldDefaults,
   buildFormDataValidator,
 } from "@/lib/kra-kpi/shared";
+import {
+  applyPublicationLookupToFormData,
+  buildPublicationContributorPrefill,
+  buildPublicationLookupFeedbackMessage,
+  getPublicationAuthorPreview,
+  isPublicationLikeAchievementForm,
+} from "@/lib/kra-kpi/publication-doi-client";
 import { GALGOTIA_AUTO_EXCLUDE_EXTERNAL_TEMPLATE_KEYS } from "@/lib/kra-kpi/galgotia-template-constants";
+import {
+  getPublicationLookupStoredData,
+  isFullPublicationDate,
+  type PublicationLookupAuthor,
+  type PublicationLookupMeta,
+  type PublicationLookupResult,
+} from "@/lib/kra-kpi/publication-doi-shared";
 import { DynamicFormRenderer } from "./dynamic-form-renderer";
 
 export type AdditionalAchievementFormContext = {
@@ -69,6 +83,8 @@ type FormSubject = {
 
 type UserOption = {
   id: string;
+  firstName: string | null;
+  lastName: string | null;
   name: string;
   email: string | null;
   designation: string | null;
@@ -84,6 +100,18 @@ type ContributorDraft = {
   selectorTags: string[];
   note: string;
   externalData: Record<string, unknown>;
+};
+
+type PublicationLookupApiResponse = {
+  status: "success" | "error";
+  message: string;
+  normalizedDoi?: string;
+  fields?: Record<string, string | number>;
+  authors?: PublicationLookupAuthor[];
+  meta?: PublicationLookupMeta;
+  filledFieldKeys?: string[];
+  missingFieldKeys?: string[];
+  warnings?: string[];
 };
 
 function buildSubject(
@@ -381,6 +409,10 @@ export function MyAchievementForm({
     subject.submissionConfig.allowExternalContributors ||
     subject.submissionConfig.contributorSelectorTags.length > 0 ||
     (ach?.contributors.length ?? 0) > 0;
+  const isPublicationLikeForm = useMemo(
+    () => isPublicationLikeAchievementForm(fields),
+    [fields],
+  );
   const formValidator = useMemo(() => buildFormDataValidator(fields), [fields]);
 
   const initialFormData =
@@ -413,9 +445,28 @@ export function MyAchievementForm({
   );
   const [submissionNote, setSubmissionNote] = useState("");
   const [loadingUsers, setLoadingUsers] = useState(showContributorSection);
+  const [doiLookupLoading, setDoiLookupLoading] = useState(false);
+  const [doiLookupFeedback, setDoiLookupFeedback] = useState<{
+    type: "success" | "error" | "warning";
+    message: string;
+    details: string[];
+  } | null>(null);
+  const [showAllPublicationAuthors, setShowAllPublicationAuthors] = useState(false);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const publicationLookup = useMemo(
+    () => getPublicationLookupStoredData(formData),
+    [formData],
+  );
+  const publicationDateFieldInfo = publicationLookup?.rawPublicationDate
+    && !isFullPublicationDate(publicationLookup.rawPublicationDate)
+    ? "Publication year/month found from DOI; enter the exact date manually."
+    : null;
+  const publicationAuthorPreview = useMemo(
+    () => getPublicationAuthorPreview(publicationLookup?.authors ?? [], showAllPublicationAuthors),
+    [publicationLookup, showAllPublicationAuthors],
+  );
 
   useEffect(() => {
     if (!showContributorSection) {
@@ -455,6 +506,153 @@ export function MyAchievementForm({
         return next;
       });
     }
+  };
+
+  const handleFetchByDoi = async () => {
+    const doiValue =
+      typeof formData.doi === "string"
+        ? formData.doi.trim()
+        : "";
+
+    if (!doiValue) {
+      setDoiLookupFeedback({
+        type: "error",
+        message: "Enter a DOI before fetching metadata.",
+        details: [],
+      });
+      return;
+    }
+
+    setDoiLookupLoading(true);
+    setDoiLookupFeedback(null);
+
+    try {
+      const response = await fetch("/api/tenant/kra-kpi/publication-doi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doi: doiValue }),
+      });
+      const payload = (await response.json()) as PublicationLookupApiResponse;
+
+      if (!response.ok || payload.status === "error" || !payload.meta) {
+        setDoiLookupFeedback({
+          type: "error",
+          message: payload.message || "DOI metadata lookup failed.",
+          details: [],
+        });
+        return;
+      }
+
+      const lookupResult: PublicationLookupResult = {
+        normalizedDoi: payload.normalizedDoi ?? payload.meta.normalizedDoi,
+        fields: (payload.fields ?? {}) as PublicationLookupResult["fields"],
+        authors: Array.isArray(payload.authors) ? payload.authors : [],
+        meta: payload.meta,
+        filledFieldKeys: (payload.filledFieldKeys ?? payload.meta.filledFieldKeys) as PublicationLookupResult["filledFieldKeys"],
+        missingFieldKeys: (payload.missingFieldKeys ?? payload.meta.missingFieldKeys) as PublicationLookupResult["missingFieldKeys"],
+        warnings: payload.warnings ?? payload.meta.warnings,
+      };
+
+      const applied = applyPublicationLookupToFormData({
+        fields,
+        currentValues: formData,
+        lookup: lookupResult,
+      });
+
+      setFormData(applied.formData);
+      setShowAllPublicationAuthors(false);
+      setFormErrors((prev) => {
+        const next = { ...prev };
+        for (const key of applied.visibleFilledFieldKeys) {
+          delete next[key];
+        }
+        return next;
+      });
+
+      const feedbackType =
+        applied.visibleMissingFieldKeys.length > 0 || lookupResult.warnings.length > 0
+          ? "warning"
+          : "success";
+      const details = [
+        ...lookupResult.warnings,
+        ...(
+          applied.visibleMissingFieldKeys.length > 0
+            ? [`Manual entry still required for: ${applied.visibleMissingFieldKeys.join(", ")}`]
+            : []
+        ),
+      ];
+
+      setDoiLookupFeedback({
+        type: feedbackType,
+        message: buildPublicationLookupFeedbackMessage({
+          filledCount: applied.visibleFilledFieldKeys.length,
+          missingCount: applied.visibleMissingFieldKeys.length,
+        }),
+        details,
+      });
+    } catch (lookupError) {
+      setDoiLookupFeedback({
+        type: "error",
+        message:
+          lookupError instanceof Error && lookupError.message
+            ? lookupError.message
+            : "DOI metadata lookup failed.",
+        details: [],
+      });
+    } finally {
+      setDoiLookupLoading(false);
+    }
+  };
+
+  const handlePrefillContributors = () => {
+    if (!publicationLookup || publicationLookup.authors.length === 0) {
+      setDoiLookupFeedback({
+        type: "error",
+        message: "Fetch DOI metadata first to pre-fill contributors.",
+        details: [],
+      });
+      return;
+    }
+
+    if (contributors.length > 0) {
+      const shouldReplace = window.confirm(
+        "Replace the current draft contributor list with authors from the DOI record?",
+      );
+      if (!shouldReplace) {
+        return;
+      }
+    }
+
+    const prefill = buildPublicationContributorPrefill({
+      authors: publicationLookup.authors,
+      users,
+      submissionConfig: subject.submissionConfig,
+    });
+
+    if (prefill.contributors.length === 0) {
+      setDoiLookupFeedback({
+        type: "warning",
+        message: "No contributors could be pre-filled from the DOI record.",
+        details: prefill.warnings,
+      });
+      return;
+    }
+
+    setContributors(prefill.contributors);
+    setDoiLookupFeedback({
+      type: prefill.warnings.length > 0 || prefill.skippedExternalCount > 0
+        ? "warning"
+        : "success",
+      message: `Prepared ${prefill.contributors.length} contributor drafts from the DOI record.`,
+      details: [
+        `Matched internal users: ${prefill.matchedInternalCount}`,
+        `Prepared external drafts: ${prefill.externalCount}`,
+        ...(prefill.skippedExternalCount > 0
+          ? [`Skipped authors because external contributors are disabled: ${prefill.skippedExternalCount}`]
+          : []),
+        ...prefill.warnings,
+      ],
+    });
   };
 
   const validateActualInput = () => {
@@ -784,12 +982,54 @@ export function MyAchievementForm({
         )}
 
         <div className="border-t border-gray-200 pt-4">
-          <h3 className="mb-3 text-sm font-semibold text-gray-700">{templateLabel}</h3>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-gray-700">{templateLabel}</h3>
+            {isPublicationLikeForm && (
+              <button
+                type="button"
+                onClick={() => { void handleFetchByDoi(); }}
+                disabled={doiLookupLoading}
+                className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {doiLookupLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : null}
+                Fetch by DOI
+              </button>
+            )}
+          </div>
+
+          {doiLookupFeedback ? (
+            <div
+              className={`mb-3 rounded-md border p-3 text-xs ${
+                doiLookupFeedback.type === "error"
+                  ? "border-red-200 bg-red-50 text-red-700"
+                  : doiLookupFeedback.type === "warning"
+                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700"
+              }`}
+            >
+              <div className="font-medium">{doiLookupFeedback.message}</div>
+              {doiLookupFeedback.details.length > 0 && (
+                <div className="mt-1 space-y-1">
+                  {doiLookupFeedback.details.map((detail) => (
+                    <div key={detail}>{detail}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
+
           <DynamicFormRenderer
             fields={fields}
             values={formData}
             onChange={handleFormFieldChange}
             errors={formErrors}
+            fieldInfo={
+              publicationDateFieldInfo
+                ? { publicationDate: publicationDateFieldInfo }
+                : undefined
+            }
           />
         </div>
 
@@ -827,7 +1067,17 @@ export function MyAchievementForm({
                   </p>
                 )}
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                {publicationLookup?.authors.length ? (
+                  <button
+                    type="button"
+                    onClick={handlePrefillContributors}
+                    disabled={loadingUsers}
+                    className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Pre-fill Contributors from DOI
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setContributors((prev) => [...prev, emptyContributor(subject, "INTERNAL")])}
@@ -846,6 +1096,59 @@ export function MyAchievementForm({
                 )}
               </div>
             </div>
+
+            {publicationLookup?.authors.length ? (
+              <div className="mb-3 rounded-md border border-blue-100 bg-blue-50/70 p-3 text-xs text-blue-900">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-semibold">
+                    {publicationLookup.authors.length} author
+                    {publicationLookup.authors.length === 1 ? "" : "s"} found in this DOI record
+                  </div>
+                  {publicationAuthorPreview.isTruncated ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllPublicationAuthors((prev) => !prev)}
+                      className="text-xs font-medium text-blue-700 hover:text-blue-800"
+                    >
+                      {showAllPublicationAuthors ? "Collapse" : "Show all authors"}
+                    </button>
+                  ) : null}
+                </div>
+
+                {publicationAuthorPreview.isTruncated && !showAllPublicationAuthors ? (
+                  <div className="mt-1 text-blue-800">
+                    Showing first 20 of {publicationLookup.authors.length} authors.
+                  </div>
+                ) : null}
+
+                <div
+                  className={`mt-2 space-y-2 ${
+                    showAllPublicationAuthors && publicationLookup.authors.length > 20
+                      ? "max-h-72 overflow-y-auto pr-1"
+                      : ""
+                  }`}
+                >
+                  {publicationAuthorPreview.visibleAuthors.map((author, index) => (
+                    <div key={`${author.name}-${index}`} className="rounded bg-white/70 px-2 py-1.5">
+                      <div className="font-medium text-blue-950">{author.name}</div>
+                      <div className="text-blue-800">
+                        Suggested:{" "}
+                        {author.isCorresponding
+                          ? "corresponding author"
+                          : author.position === "first" || author.sequence === "first"
+                            ? "first author"
+                            : "co-author"}
+                        {" | "}
+                        {author.affiliationMatchesTenantName ? "possible internal affiliation" : "external affiliation"}
+                      </div>
+                      {author.affiliations[0] ? (
+                        <div className="text-blue-800">{author.affiliations[0]}</div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {loadingUsers ? (
               <div className="text-xs text-gray-500">Loading contributor directory...</div>

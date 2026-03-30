@@ -12,8 +12,15 @@ import {
   Pencil,
   XCircle,
 } from "lucide-react";
+import { PublicationLookupSummary } from "@/components/my-kpis/publication-lookup-summary";
 import { StatusBadge } from "@/components/status-badge";
 import { MyAchievementTrail } from "@/components/my-kpis/my-achievement-trail";
+import {
+  PUBLICATION_LOOKUP_HIDDEN_KEY,
+  getPublicationLookupStoredData,
+  getVisibleAchievementFormEntries,
+  stripPublicationLookupMetadata,
+} from "@/lib/kra-kpi/publication-doi-shared";
 import type { SubmissionTrailView, VerificationLogEntry } from "@/lib/kra-kpi/shared";
 
 type AchievementView = {
@@ -96,7 +103,11 @@ function makeCorrectionDraft(achievement: AchievementView): CorrectionDraft {
     actualRating: achievement.actualRating != null ? String(achievement.actualRating) : "",
     evidenceDescription: achievement.evidenceDescription ?? "",
     evidenceLinks: achievement.evidenceLinks.join("\n"),
-    achievementFormDataJson: JSON.stringify(achievement.achievementFormData ?? {}, null, 2),
+    achievementFormDataJson: JSON.stringify(
+      stripPublicationLookupMetadata(achievement.achievementFormData ?? {}) ?? {},
+      null,
+      2,
+    ),
     note: "",
   };
 }
@@ -188,6 +199,12 @@ export function AchievementReviewList({
         showFeedback("error", "Achievement form data must be valid JSON.");
         return;
       }
+    }
+
+    const originalAchievement = achievements.find((achievement) => achievement.id === achievementId) ?? null;
+    const originalLookup = getPublicationLookupStoredData(originalAchievement?.achievementFormData);
+    if (achievementFormData && originalLookup) {
+      achievementFormData[PUBLICATION_LOOKUP_HIDDEN_KEY] = originalLookup;
     }
 
     setActionId(achievementId);
@@ -386,16 +403,24 @@ export function AchievementReviewList({
                     )}
 
                     {achievement.achievementFormData && Object.keys(achievement.achievementFormData).length > 0 && (
-                      <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
-                        <div className="mb-2 font-semibold uppercase tracking-wide text-slate-500">
-                          Form Details
-                        </div>
-                        <div className="grid gap-2 md:grid-cols-2">
-                          {Object.entries(achievement.achievementFormData).map(([key, value]) => (
-                            <div key={key}>
-                              <span className="font-medium text-slate-700">{key}:</span> {formatFormValue(value)}
-                            </div>
-                          ))}
+                      <div className="space-y-3">
+                        <PublicationLookupSummary
+                          formData={achievement.achievementFormData}
+                          hasPublicationDateField={
+                            getPublicationLookupStoredData(achievement.achievementFormData) != null
+                          }
+                        />
+                        <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                          <div className="mb-2 font-semibold uppercase tracking-wide text-slate-500">
+                            Form Details
+                          </div>
+                          <div className="grid gap-2 md:grid-cols-2">
+                            {getVisibleAchievementFormEntries(achievement.achievementFormData).map(([key, value]) => (
+                              <div key={key}>
+                                <span className="font-medium text-slate-700">{key}:</span> {formatFormValue(value)}
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       </div>
                     )}

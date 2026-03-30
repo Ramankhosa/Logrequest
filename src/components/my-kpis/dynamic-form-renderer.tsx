@@ -11,10 +11,18 @@ type Props = {
   values: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
   errors?: Record<string, string>;
+  fieldInfo?: Record<string, string | null | undefined>;
   readOnly?: boolean;
 };
 
-export function DynamicFormRenderer({ fields, values, onChange, errors, readOnly }: Props) {
+export function DynamicFormRenderer({
+  fields,
+  values,
+  onChange,
+  errors,
+  fieldInfo,
+  readOnly,
+}: Props) {
   const renderable = getRenderableAchievementFields(fields, values, {
     readOnly,
     showHiddenWithValue: true,
@@ -42,6 +50,10 @@ export function DynamicFormRenderer({ fields, values, onChange, errors, readOnly
             ) : null}
 
             {renderField(field, values[field.key], (v) => onChange(field.key, v), readOnly, values)}
+
+            {fieldInfo?.[field.key] && !errors?.[field.key] ? (
+              <p className="mt-1 text-xs text-amber-700">{fieldInfo[field.key]}</p>
+            ) : null}
 
             {errors?.[field.key] && (
               <p className="mt-1 text-xs text-red-600">{errors[field.key]}</p>

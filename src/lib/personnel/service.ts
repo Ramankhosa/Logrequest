@@ -844,6 +844,8 @@ export async function updatePersonnelStatus(input: {
 export type PersonnelDirectoryRow = {
   membershipId: string;
   userId: string;
+  firstName: string;
+  lastName: string;
   name: string;
   email: string;
   employeeId: string | null;
@@ -887,6 +889,8 @@ export async function getPersonnelDirectory(
     return {
       membershipId: m.id,
       userId: m.userId,
+      firstName: m.user.firstName,
+      lastName: m.user.lastName,
       name: `${m.user.firstName} ${m.user.lastName}`,
       email: m.user.officialEmail,
       employeeId: m.employeeId,

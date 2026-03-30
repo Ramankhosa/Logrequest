@@ -26,6 +26,8 @@ export async function GET() {
     .filter((row) => row.membershipStatus !== "REVOKED" && row.membershipStatus !== "ARCHIVED")
     .map((row) => ({
       id: row.userId,
+      firstName: row.firstName,
+      lastName: row.lastName,
       name: row.name,
       email: row.email,
       employeeId: row.employeeId,
