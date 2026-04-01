@@ -80,6 +80,7 @@ type KpiFormProps = {
     sopDescription?: string | null;
     isTeamKpi?: boolean;
     teamCreditMethod?: string;
+    allowMultipleAchievementsPerAllocation?: boolean;
   };
   onDone: () => void;
   onCancel: () => void;
@@ -177,6 +178,8 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   const [keyUnitId, setKeyUnitId] = useState(initial?.keyUnitId ?? "");
   const [finalUnitId, setFinalUnitId] = useState(initial?.finalUnitId ?? "");
   const [evidenceRequired, setEvidenceRequired] = useState(initial?.evidenceRequired ?? true);
+  const [allowMultipleAchievementsPerAllocation, setAllowMultipleAchievementsPerAllocation] =
+    useState(initial?.allowMultipleAchievementsPerAllocation ?? false);
   const [evidenceTypes, setEvidenceTypes] = useState<string[]>(initial?.evidenceTypes ?? []);
   const [evidenceInstructions, setEvidenceInstructions] = useState(initial?.evidenceInstructions ?? "");
   const [sopDescription, setSopDescription] = useState(initial?.sopDescription ?? "");
@@ -310,6 +313,7 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         keyUnitId: keyUnitId || (mode === "edit" ? null : undefined),
         finalUnitId: finalUnitId || (mode === "edit" ? null : undefined),
         evidenceRequired,
+        allowMultipleAchievementsPerAllocation,
         evidenceTypes,
         evidenceInstructions: evidenceInstructions.trim() || (mode === "edit" ? null : undefined),
         sopDescription: sopDescription.trim() || (mode === "edit" ? null : undefined),
@@ -659,6 +663,24 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
                   className={`${inputCls} resize-none`}
                 />
               </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+              <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={allowMultipleAchievementsPerAllocation}
+                  disabled={measurementType !== "NUMERIC"}
+                  onChange={(e) => setAllowMultipleAchievementsPerAllocation(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/30"
+                />
+                Allow parallel achievement requests per allocation
+              </label>
+              <p className="mt-1 text-[10px] text-slate-400">
+                {measurementType === "NUMERIC"
+                  ? "Best for item-count KPIs like papers. Each verified request contributes 1 toward the official target."
+                  : "Available only for numeric KPIs."}
+              </p>
             </div>
           </div>
         )}

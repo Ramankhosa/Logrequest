@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   Building2,
   Layers3,
+  Search,
   Network,
   Target,
   Users2,
@@ -43,6 +44,7 @@ import { CrossUnitHeatmap } from "./cross-unit-heatmap";
 import { KraDetailTable } from "./kra-detail-table";
 import { PeriodComparisonChart } from "./period-comparison-chart";
 import { UnitChildrenTable } from "./unit-children-table";
+import { matchesDashboardSearch } from "@/lib/kra-kpi/dashboard-search";
 
 type OrgPanelProps = {
   scope: UserDashboardScope;
@@ -174,6 +176,7 @@ export function OrgPanel({ scope, periodId }: OrgPanelProps) {
   const [comparisonError, setComparisonError] = useState<string | null>(null);
 
   const [selectedStageKpiId, setSelectedStageKpiId] = useState<string | null>(null);
+  const [stageKpiSearch, setStageKpiSearch] = useState("");
   const [stageAnalysis, setStageAnalysis] = useState<StageBottleneck | null>(null);
   const [stageLoading, setStageLoading] = useState(false);
   const [stageError, setStageError] = useState<string | null>(null);
@@ -534,6 +537,23 @@ export function OrgPanel({ scope, periodId }: OrgPanelProps) {
       ) ?? [],
     [summary],
   );
+  const filteredStageKpiOptions = useMemo(
+    () =>
+      (summary?.node.stageKpiOptions ?? []).filter((option) =>
+        matchesDashboardSearch(stageKpiSearch, option.kraTitle, option.kpiTitle),
+      ),
+    [stageKpiSearch, summary],
+  );
+  const stageSelectOptions = useMemo(() => {
+    const selected =
+      summary?.node.stageKpiOptions.find((option) => option.kpiId === selectedStageKpiId) ?? null;
+    if (!selected) {
+      return filteredStageKpiOptions;
+    }
+    return filteredStageKpiOptions.some((option) => option.kpiId === selected.kpiId)
+      ? filteredStageKpiOptions
+      : [selected, ...filteredStageKpiOptions];
+  }, [filteredStageKpiOptions, selectedStageKpiId, summary]);
 
   useEffect(() => {
     if (resolvedView !== "compare-periods") return;
@@ -728,17 +748,32 @@ export function OrgPanel({ scope, periodId }: OrgPanelProps) {
               />
             ) : (
               <div className="space-y-3">
+                <label className="flex items-center gap-3 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-500">
+                  <Search className="h-4 w-4 text-slate-400" />
+                  <input
+                    type="search"
+                    value={stageKpiSearch}
+                    onChange={(event) => setStageKpiSearch(event.target.value)}
+                    placeholder="Search KRA or KPI"
+                    className="w-full bg-transparent text-sm text-slate-700 outline-none"
+                  />
+                </label>
                 <select
                   value={selectedStageKpiId ?? ""}
                   onChange={(event) => setSelectedStageKpiId(event.target.value)}
                   className="w-full rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-700 outline-none transition focus:border-brand focus:ring-2 focus:ring-brand/15"
                 >
-                  {summary.node.stageKpiOptions.map((option) => (
+                  {stageSelectOptions.map((option) => (
                     <option key={option.kpiId} value={option.kpiId}>
                       {option.kraTitle} | {option.kpiTitle}
                     </option>
                   ))}
                 </select>
+                {filteredStageKpiOptions.length === 0 ? (
+                  <div className="rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                    No staged KPI matches the current search.
+                  </div>
+                ) : null}
                 {stageError ? (
                   <div className="rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
                     {stageError}

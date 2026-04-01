@@ -203,6 +203,7 @@ function buildPayload(input: {
       isTeamKpi: true,
       teamCreditMethod: "WEIGHTED_SPLIT",
       allowPartialCompletion: true,
+      allowMultipleAchievementsPerAllocation: false,
       participantMode: "OPTIONAL_TEAM",
       rewardRecurrencePolicy: "ONCE_PER_UNIQUE_KEY",
       policyDateFieldKey: "publicationDate",

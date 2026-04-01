@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import type { KpiBuilderPayload } from "@/lib/kra-kpi/builder-shared";
 import { saveKpiBuilder } from "@/lib/kra-kpi/kpi-builder-service";
 import { createKra } from "@/lib/kra-kpi/kra-service";
+import { createKpi } from "@/lib/kra-kpi/kpi-service";
 import { getMyAllocations } from "@/lib/kra-kpi/my-kpi-service";
 import { createPeriod } from "@/lib/kra-kpi/period-service";
 import { seedDefaultBenefitTypes } from "@/lib/kra-kpi/benefit-type-service";
@@ -198,6 +199,7 @@ describe("R4.2 application submission config", () => {
         isTeamKpi: true,
         teamCreditMethod: "WEIGHTED_SPLIT",
         allowPartialCompletion: true,
+        allowMultipleAchievementsPerAllocation: false,
         participantMode: "OPTIONAL_TEAM",
         rewardRecurrencePolicy: "ONCE_PER_UNIQUE_KEY",
         policyDateFieldKey: "publicationDate",
@@ -290,6 +292,164 @@ describe("R4.2 application submission config", () => {
     ).toBe(true);
     expect(allocations[0]?.submissionConfig.contributorSelectorTags).toEqual([
       "FIRST_AUTHOR",
+    ]);
+  });
+
+  test("getMyAllocations rehydrates publication applicable roles when old KPI links are missing", async () => {
+    tracker ??= newDbTracker();
+    const { tenant, actor } = await createTenantActor(tracker, "TENANT_OWNER");
+    const faculty = await createTestUser(tracker, {
+      firstName: "Publication",
+      lastName: "Faculty",
+    });
+    await createTestMembership({
+      tenantId: tenant.id,
+      userId: faculty.id,
+      role: "TENANT_USER",
+      createdByUserId: actor.id,
+    });
+
+    const version = await prisma.orgStructureVersion.create({
+      data: {
+        tenantId: tenant.id,
+        name: rand("VERSION"),
+        versionNumber: 1,
+        state: "PUBLISHED",
+      },
+    });
+
+    const unitType = await prisma.orgUnitType.create({
+      data: {
+        versionId: version.id,
+        typeKey: rand("DEPT"),
+        internalCategory: "DEPARTMENT_LIKE_UNIT",
+        displayLabel: "Department",
+      },
+    });
+
+    const unit = await prisma.orgUnit.create({
+      data: {
+        tenantId: tenant.id,
+        versionId: version.id,
+        typeId: unitType.id,
+        code: rand("UNIT"),
+        name: "Publication Department",
+        state: "ACTIVE",
+      },
+    });
+
+    const periodCode = rand("PERIOD");
+    const periodResult = await createPeriod(
+      tenant.id,
+      {
+        name: "Publication Roles Period",
+        code: periodCode,
+        periodType: "SPECIFIC_RANGE",
+        startDate: new Date("2026-01-01T00:00:00.000Z"),
+        endDate: new Date("2026-12-31T00:00:00.000Z"),
+        reviewFrequency: "ANNUAL",
+      },
+      actor.id,
+      "TENANT_OWNER",
+    );
+    expect(periodResult.status).toBe("success");
+
+    const period = await prisma.assessmentPeriod.findUnique({
+      where: {
+        tenantId_code: {
+          tenantId: tenant.id,
+          code: periodCode,
+        },
+      },
+    });
+    expect(period).toBeTruthy();
+
+    const kraResult = await createKra(
+      tenant.id,
+      {
+        periodId: period!.id,
+        title: rand("KRA"),
+        weightage: 100,
+      },
+      actor.id,
+      "TENANT_OWNER",
+    );
+    expect(kraResult.status).toBe("success");
+
+    const kra = await prisma.kraDefinition.findFirst({
+      where: { tenantId: tenant.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(kra).toBeTruthy();
+
+    await prisma.kraDefinition.update({
+      where: { id: kra!.id },
+      data: { state: "ACTIVE" },
+    });
+
+    await seedDefaultContributorRoles(tenant.id);
+
+    const createResult = await createKpi(
+      tenant.id,
+      {
+        kraDefinitionId: kra!.id,
+        title: "Legacy Publication KPI",
+        measurementType: "NUMERIC",
+        unitLabel: "papers",
+        weightage: 40,
+        defaultTarget: 1,
+        allocationType: "INDIVIDUAL",
+        startingUnitId: unit.id,
+        achievementTemplateKey: "PUBLICATION",
+        evidenceRequired: true,
+        evidenceTypes: ["DOCUMENT", "URL"],
+        isTeamKpi: true,
+        teamCreditMethod: "WEIGHTED_SPLIT",
+      },
+      actor.id,
+      "TENANT_OWNER",
+    );
+    expect(createResult.status).toBe("success");
+    expect(createResult.id).toBeTruthy();
+
+    await prisma.kpiDefinition.update({
+      where: { id: createResult.id! },
+      data: { state: "ACTIVE" },
+    });
+
+    await prisma.targetAllocation.create({
+      data: {
+        tenantId: tenant.id,
+        periodId: period!.id,
+        kpiDefinitionId: createResult.id!,
+        assignedToUserId: faculty.id,
+        allocatedByUserId: actor.id,
+        targetValue: 1,
+        state: "ACTIVE",
+      },
+    });
+
+    await prisma.kpiApplicableRole.deleteMany({
+      where: { kpiDefinitionId: createResult.id! },
+    });
+
+    const allocations = await getMyAllocations(tenant.id, faculty.id, period!.id);
+    expect(allocations).toHaveLength(1);
+    expect(allocations[0]?.submissionConfig.applicableRoles.map((role) => role.code)).toEqual([
+      "LEAD_AUTHOR",
+      "CO_AUTHOR",
+      "CORRESPONDING",
+    ]);
+
+    const persistedRoles = await prisma.kpiApplicableRole.findMany({
+      where: { kpiDefinitionId: createResult.id! },
+      include: { contributorRole: { select: { code: true } } },
+      orderBy: { sortOrder: "asc" },
+    });
+    expect(persistedRoles.map((role) => role.contributorRole.code)).toEqual([
+      "LEAD_AUTHOR",
+      "CO_AUTHOR",
+      "CORRESPONDING",
     ]);
   });
 });

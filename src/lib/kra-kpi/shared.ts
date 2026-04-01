@@ -342,6 +342,7 @@ export type KpiDefinitionView = {
   isTeamKpi: boolean;
   teamCreditMethod: string;
   allowPartialCompletion: boolean;
+  allowMultipleAchievementsPerAllocation: boolean;
   contributionRoles: ContributionRoleDefinition[] | null;
   createdAt: Date;
 };
@@ -602,6 +603,22 @@ export type AchievementSubmissionConfig = {
   externalContributorFields: AchievementFieldConfig[] | null;
   contributorSelectorTags: string[];
   manualCreditEntryEnabled: boolean;
+};
+
+export type AllocationAchievementStateCounts = {
+  draft: number;
+  submitted: number;
+  recommended: number;
+  verified: number;
+  rejected: number;
+};
+
+export type AllocationAchievementAggregateView = {
+  isMultiRequestEnabled: boolean;
+  officialActualValue: number;
+  officialScore: number | null;
+  totalRequests: number;
+  countsByState: AllocationAchievementStateCounts;
 };
 
 export type AchievementView = {
@@ -1207,7 +1224,7 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
       { key: "issue", label: "Issue", type: "TEXT", required: false, sortOrder: 4 },
       { key: "doi", label: "DOI", type: "TEXT", required: false, placeholder: "10.xxxx/...", sortOrder: 5, marker: "UNIQUE_CHECK" },
       { key: "indexing", label: "Indexing", type: "MULTI_SELECT", required: true,
-        options: ["Scopus", "Web of Science", "UGC CARE List", "PubMed", "IEEE Xplore", "Other"], sortOrder: 6, marker: "CATEGORY_FIELD" },
+        options: ["Scopus", "Web of Science", "UGC CARE List"], sortOrder: 6, marker: "CATEGORY_FIELD" },
       { key: "publicationDate", label: "Publication Date", type: "DATE", required: true, sortOrder: 7 },
       { key: "pdfLink", label: "Paper PDF / URL", type: "URL", required: true, sortOrder: 8 },
       { key: "coAuthors", label: "Co-Authors", type: "TEXTAREA", required: false, sortOrder: 9 },
@@ -1464,6 +1481,7 @@ export type MyAllocationView = TargetAllocationView & {
   guidanceNotes: string | null;
   achievementTemplateKey: string | null;
   achievementFormConfig: AchievementFormConfig | null;
+  allowMultipleAchievementsPerAllocation: boolean;
   periodState: AssessmentPeriodState;
   periodName: string;
   periodStartDate: Date;
@@ -1473,6 +1491,7 @@ export type MyAllocationView = TargetAllocationView & {
   achievement: AchievementView | null;
   /** All achievement instances for this allocation (R2.2 multi-target); newest first */
   achievements: AchievementView[];
+  achievementAggregate: AllocationAchievementAggregateView;
   allowPartialCompletion: boolean;
   stagesDefinedCount: number;
   parentTargetValue: number | null;
@@ -1498,6 +1517,7 @@ export type ReviewQueueItem = {
   facultyUserId: string;
   facultyName: string;
   facultyDesignation: string | null;
+  kraTitle: string;
   kpiTitle: string;
   kpiDefinitionId: string;
   achievementTitle: string | null;
@@ -1515,6 +1535,7 @@ export type ReviewQueueItem = {
   reportingDate: Date;
   reviewLevel: "RECOMMEND" | "VERIFY";
   startingUnitId: string;
+  startingUnitName: string;
   reviewUnitId: string | null;
   reviewUnitName: string | null;
   waitingDays: number;
@@ -1529,6 +1550,8 @@ export type ReviewQueueItem = {
   stagesTotal: number;
   targetDisplay: string;
   actualDisplay: string;
+  allowMultipleAchievementsPerAllocation: boolean;
+  allocationAchievementAggregate: AllocationAchievementAggregateView | null;
 };
 
 export type MyDashboardSummary = {

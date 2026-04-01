@@ -40,6 +40,8 @@ import { runDuplicateDetection } from "./duplicate-detection-service";
 import { ensureApplicableRolesBaseline } from "./contributor-role-service";
 import { syncContributorRewardsForAchievement } from "./reward-service";
 import { correctAchievementAndRefreshRewards } from "./reward-ops-service";
+import { deriveAchievementTitle } from "./allocation-achievement-utils";
+import { enrichPublicationJournalFormData } from "./publication-journal-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1022,8 +1024,26 @@ export async function recordAchievement(
     }
   }
 
+  const isMultiRequestAllocation = Boolean(
+    allocation && kpi.allowMultipleAchievementsPerAllocation,
+  );
+  const actualValueForWrite =
+    isMultiRequestAllocation ? 1 : data.actualValue;
+  const titleForWrite = isMultiRequestAllocation
+    ? deriveAchievementTitle({
+        explicitTitle: data.title ?? null,
+        formData: data.achievementFormData,
+        kpiTitle: kpi.title,
+        reportingDate,
+      })
+    : data.title ?? null;
+
   // Duplicate prevention (R1 / KPIs without stages): one achievement per allocation per review cycle
-  if (data.targetAllocationId && kpi._count.stages === 0) {
+  if (
+    data.targetAllocationId &&
+    kpi._count.stages === 0 &&
+    !isMultiRequestAllocation
+  ) {
     const newCycleNumber = findCycleNumberForDate(reportingDate, period);
     const existingAchievements = await prisma.achievement.findMany({
       where: {
@@ -1053,9 +1073,16 @@ export async function recordAchievement(
 
   // Validate achievementFormData against KPI's form config if present
   const formConfig = kpi.achievementFormConfig as AchievementFormConfig | null;
+  const enrichedJournalFormData = await enrichPublicationJournalFormData({
+    tenantId,
+    formData: data.achievementFormData,
+    fields: formConfig?.fields ?? null,
+    mode: "fillMissing",
+  });
+  const achievementFormDataForWrite = enrichedJournalFormData.formData;
   const formValidationError = validateAchievementFormData(
     formConfig,
-    data.achievementFormData,
+    achievementFormDataForWrite,
   );
   if (formValidationError) {
     return {
@@ -1088,7 +1115,7 @@ export async function recordAchievement(
         targetGrade: allocation.targetGrade,
         targetBoolean: allocation.targetBoolean,
         targetRating: allocation.targetRating,
-        actualValue: data.actualValue,
+        actualValue: actualValueForWrite,
         actualDate: data.actualDate,
         actualMilestone: data.actualMilestone,
         actualGrade: data.actualGrade,
@@ -1115,8 +1142,8 @@ export async function recordAchievement(
         reportedByUserId: actorUserId,
         oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
         isOBO: data.isOBO,
-        title: data.title,
-        actualValue: data.actualValue,
+        title: titleForWrite,
+        actualValue: actualValueForWrite,
         actualDate: data.actualDate,
         actualMilestone: data.actualMilestone,
         actualGrade: data.actualGrade,
@@ -1124,7 +1151,7 @@ export async function recordAchievement(
         actualRating: data.actualRating,
         evidenceDescription: data.evidenceDescription,
         evidenceLinks: data.evidenceLinks,
-        achievementFormData: data.achievementFormData as object | undefined,
+        achievementFormData: achievementFormDataForWrite as object | undefined,
         computedScore: computedScoreValue,
         effectiveScore:
           kpi._count.stages > 0
@@ -1170,8 +1197,9 @@ export async function recordAchievement(
         action: "CREATE",
         newState: {
           kpiDefinitionId: data.kpiDefinitionId,
-          actualValue: data.actualValue,
+          actualValue: actualValueForWrite,
           computedScore: computedScoreValue,
+          title: titleForWrite,
           isOBO: data.isOBO,
         },
       },
@@ -1233,6 +1261,7 @@ export async function correctVerifiedAchievement(
           startingUnitId: true,
           keyUnitId: true,
           finalUnitId: true,
+          allowMultipleAchievementsPerAllocation: true,
           measurementType: true,
           scoringMethod: true,
           scoringDirection: true,
@@ -1290,9 +1319,18 @@ export async function correctVerifiedAchievement(
     (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
     data.achievementFormData,
   );
+  const correctedJournalFormData = await enrichPublicationJournalFormData({
+    tenantId,
+    formData: mergedFormData,
+    fields:
+      (achievement.kpiDefinition.achievementFormConfig as AchievementFormConfig | null)
+        ?.fields ?? null,
+    mode: "fillMissing",
+  });
+  const correctedFormData = correctedJournalFormData.formData;
   const formValidationError = validateAchievementFormData(
     (achievement.kpiDefinition.achievementFormConfig as AchievementFormConfig | null) ?? null,
-    mergedFormData,
+    correctedFormData,
   );
   if (formValidationError) {
     return { status: "error", message: formValidationError };
@@ -1307,6 +1345,23 @@ export async function correctVerifiedAchievement(
   }
 
   let newScore = achievement.computedScore;
+  const isMultiRequestAllocation = Boolean(
+    achievement.targetAllocationId &&
+    achievement.kpiDefinition.allowMultipleAchievementsPerAllocation,
+  );
+  const nextActualValue = isMultiRequestAllocation
+    ? 1
+    : data.actualValue ?? achievement.actualValue;
+  const nextTitle = isMultiRequestAllocation
+    ? deriveAchievementTitle({
+        explicitTitle: data.title !== undefined ? data.title : achievement.title,
+        formData: correctedFormData,
+        kpiTitle: achievement.kpiDefinition.title,
+        reportingDate: achievement.reportingDate,
+      })
+    : data.title !== undefined
+      ? data.title
+      : achievement.title;
   if (achievement.targetAllocationId) {
     const allocation = await prisma.targetAllocation.findFirst({
       where: { id: achievement.targetAllocationId, tenantId },
@@ -1325,7 +1380,7 @@ export async function correctVerifiedAchievement(
           targetGrade: allocation.targetGrade,
           targetBoolean: allocation.targetBoolean,
           targetRating: allocation.targetRating,
-          actualValue: data.actualValue ?? achievement.actualValue,
+          actualValue: nextActualValue,
           actualDate: data.actualDate ?? achievement.actualDate,
           actualMilestone: data.actualMilestone ?? achievement.actualMilestone,
           actualGrade: data.actualGrade ?? achievement.actualGrade,
@@ -1392,7 +1447,7 @@ export async function correctVerifiedAchievement(
   } satisfies Record<string, unknown>;
 
   const nextSummary = {
-    actualValue: data.actualValue ?? achievement.actualValue,
+    actualValue: nextActualValue,
     actualDate: (data.actualDate ?? achievement.actualDate)?.toISOString() ?? null,
     actualMilestone: data.actualMilestone ?? achievement.actualMilestone,
     actualGrade: data.actualGrade ?? achievement.actualGrade,
@@ -1403,8 +1458,8 @@ export async function correctVerifiedAchievement(
         ? data.evidenceDescription
         : achievement.evidenceDescription,
     evidenceLinks: data.evidenceLinks ?? achievement.evidenceLinks,
-    achievementFormData: mergedFormData ?? null,
-    title: data.title !== undefined ? data.title : achievement.title,
+    achievementFormData: correctedFormData ?? null,
+    title: nextTitle,
     contributionRole:
       data.contributionRole !== undefined ? data.contributionRole : achievement.contributionRole,
     contributors: nextContributors,
@@ -1453,7 +1508,7 @@ export async function correctVerifiedAchievement(
     await tx.achievement.update({
       where: { id: achievementId },
       data: {
-        ...(data.actualValue !== undefined && { actualValue: data.actualValue }),
+        actualValue: nextActualValue,
         ...(data.actualDate !== undefined && { actualDate: data.actualDate }),
         ...(data.actualMilestone !== undefined && { actualMilestone: data.actualMilestone }),
         ...(data.actualGrade !== undefined && { actualGrade: data.actualGrade }),
@@ -1464,9 +1519,9 @@ export async function correctVerifiedAchievement(
         }),
         ...(data.evidenceLinks !== undefined && { evidenceLinks: data.evidenceLinks }),
         ...(data.achievementFormData !== undefined && {
-          achievementFormData: mergedFormData as object,
+          achievementFormData: correctedFormData as object,
         }),
-        ...(data.title !== undefined && { title: data.title }),
+        title: nextTitle,
         duplicateCheckResult: duplicateCheckResult as Prisma.InputJsonValue,
         effectiveScore,
         computedScore: newScore,
@@ -1557,6 +1612,8 @@ export async function correctVerifiedAchievement(
         newState: {
           state: achievement.state,
           note: normalizedNote,
+          actualValue: nextActualValue,
+          title: nextTitle,
           changedFieldKeys: changeSummary.changedFieldKeys,
         } satisfies Prisma.InputJsonValue,
       },
@@ -1677,6 +1734,7 @@ export async function updateAchievement(
   const kpi = await prisma.kpiDefinition.findFirst({
     where: { id: achievement.kpiDefinitionId, kraDefinition: { tenantId } },
     select: {
+      title: true,
       measurementType: true,
       scoringMethod: true,
       scoringDirection: true,
@@ -1684,6 +1742,7 @@ export async function updateAchievement(
       measurementConfig: true,
       achievementFormConfig: true,
       contributionRoles: true,
+      allowMultipleAchievementsPerAllocation: true,
       _count: { select: { stages: true } },
     },
   });
@@ -1691,9 +1750,16 @@ export async function updateAchievement(
     (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
     data.achievementFormData,
   );
+  const updatedJournalFormData = await enrichPublicationJournalFormData({
+    tenantId,
+    formData: mergedFormData,
+    fields: (kpi?.achievementFormConfig as AchievementFormConfig | null)?.fields ?? null,
+    mode: "fillMissing",
+  });
+  const updatedFormData = updatedJournalFormData.formData;
   const formValidationError = validateAchievementFormData(
     (kpi?.achievementFormConfig as AchievementFormConfig | null) ?? null,
-    mergedFormData,
+    updatedFormData,
   );
   if (formValidationError) {
     return {
@@ -1712,6 +1778,23 @@ export async function updateAchievement(
 
   // Recompute score if actuals changed and we have a target allocation
   let newScore = achievement.computedScore;
+  const isMultiRequestAllocation = Boolean(
+    achievement.targetAllocationId &&
+    kpi?.allowMultipleAchievementsPerAllocation,
+  );
+  const nextActualValue = isMultiRequestAllocation
+    ? 1
+    : data.actualValue ?? achievement.actualValue;
+  const nextTitle = isMultiRequestAllocation && kpi
+    ? deriveAchievementTitle({
+        explicitTitle: data.title !== undefined ? data.title : achievement.title,
+        formData: updatedFormData,
+        kpiTitle: kpi.title,
+        reportingDate: achievement.reportingDate,
+      })
+    : data.title !== undefined
+      ? data.title
+      : achievement.title;
   if (achievement.targetAllocationId) {
     const allocation = await prisma.targetAllocation.findFirst({
       where: { id: achievement.targetAllocationId, tenantId },
@@ -1730,7 +1813,7 @@ export async function updateAchievement(
           targetGrade: allocation.targetGrade,
           targetBoolean: allocation.targetBoolean,
           targetRating: allocation.targetRating,
-          actualValue: data.actualValue ?? achievement.actualValue,
+          actualValue: nextActualValue,
           actualDate: data.actualDate ?? achievement.actualDate,
           actualMilestone: data.actualMilestone ?? achievement.actualMilestone,
           actualGrade: data.actualGrade ?? achievement.actualGrade,
@@ -1752,7 +1835,7 @@ export async function updateAchievement(
     await tx.achievement.update({
       where: { id: achievementId },
       data: {
-        ...(data.actualValue !== undefined && { actualValue: data.actualValue }),
+        actualValue: nextActualValue,
         ...(data.actualDate !== undefined && { actualDate: data.actualDate }),
         ...(data.actualMilestone !== undefined && { actualMilestone: data.actualMilestone }),
         ...(data.actualGrade !== undefined && { actualGrade: data.actualGrade }),
@@ -1763,9 +1846,9 @@ export async function updateAchievement(
         }),
         ...(data.evidenceLinks !== undefined && { evidenceLinks: data.evidenceLinks }),
         ...(data.achievementFormData !== undefined && {
-          achievementFormData: mergedFormData as object,
+          achievementFormData: updatedFormData as object,
         }),
-        ...(data.title !== undefined && { title: data.title }),
+        title: nextTitle,
         effectiveScore,
         computedScore: newScore,
         state: "DRAFT",
@@ -1836,7 +1919,11 @@ export async function updateAchievement(
         targetType: "Achievement",
         targetId: achievementId,
         action: "UPDATE",
-        newState: data as object,
+        newState: {
+          ...data,
+          actualValue: nextActualValue,
+          title: nextTitle,
+        } as object,
       },
     });
 
@@ -3056,7 +3143,17 @@ export async function recordAdditionalAchievement(
 
   // Validate form data
   const formConfig = kpi.achievementFormConfig as AchievementFormConfig | null;
-  const formValidationError = validateAchievementFormData(formConfig, data.achievementFormData);
+  const enrichedAdditionalFormData = await enrichPublicationJournalFormData({
+    tenantId,
+    formData: data.achievementFormData,
+    fields: formConfig?.fields ?? null,
+    mode: "fillMissing",
+  });
+  const additionalFormData = enrichedAdditionalFormData.formData;
+  const formValidationError = validateAchievementFormData(
+    formConfig,
+    additionalFormData,
+  );
   if (formValidationError) {
     return { status: "error", message: formValidationError };
   }
@@ -3121,7 +3218,7 @@ export async function recordAdditionalAchievement(
         actualRating: data.actualRating,
         evidenceDescription: data.evidenceDescription,
         evidenceLinks: data.evidenceLinks,
-        achievementFormData: data.achievementFormData as object | undefined,
+        achievementFormData: additionalFormData as object | undefined,
         computedScore: computedScoreValue,
         effectiveScore:
           kpi._count.stages > 0

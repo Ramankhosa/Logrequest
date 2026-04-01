@@ -5,6 +5,7 @@ import {
   getPublicationAuthorPreview,
   isPublicationLikeAchievementForm,
 } from "@/lib/kra-kpi/publication-doi-client";
+import { applyPublicationJournalLookupToFormData } from "@/lib/kra-kpi/publication-journal-shared";
 import type { AchievementFieldConfig, AchievementSubmissionConfig } from "@/lib/kra-kpi/shared";
 
 const publicationFields: AchievementFieldConfig[] = [
@@ -12,6 +13,22 @@ const publicationFields: AchievementFieldConfig[] = [
   { key: "doi", label: "DOI", type: "TEXT", required: false, sortOrder: 1 },
   { key: "publicationDate", label: "Publication Date", type: "DATE", required: false, sortOrder: 2 },
   { key: "totalAuthors", label: "Total Authors", type: "NUMBER", required: false, sortOrder: 3 },
+  {
+    key: "journalTier",
+    label: "Journal Tier",
+    type: "SELECT",
+    required: false,
+    sortOrder: 4,
+    options: ["Q1", "Q2", "Q3", "Q4", "UGC_CARE"],
+  },
+  {
+    key: "indexing",
+    label: "Indexing",
+    type: "MULTI_SELECT",
+    required: false,
+    sortOrder: 5,
+    options: ["Scopus", "Web of Science", "UGC CARE List"],
+  },
 ];
 
 const submissionConfig: AchievementSubmissionConfig = {
@@ -172,6 +189,49 @@ describe("publication DOI client helpers", () => {
       affiliation: "University of Oxford",
       scope: "International",
     });
+  });
+
+  test("applies journal catalog lookup fields only when they are supported by the active form", () => {
+    const result = applyPublicationJournalLookupToFormData({
+      fields: publicationFields,
+      currentValues: {
+        doi: "10.1000/example",
+      },
+      lookup: {
+        found: true,
+        fields: {
+          journalTier: "Q1",
+          indexing: ["Scopus"],
+        },
+        meta: {
+          requestedIssn: "1234-5678",
+          requestedSourceYear: 2025,
+          resolvedSourceYear: 2025,
+          matchedExactly: true,
+          resolutionStrategy: "EXACT_YEAR",
+          recordId: "journal-1",
+          title: "Catalog Journal",
+          matchedIssn: "1234-5678",
+          quartile: "Q1",
+          sourceSystem: "SCIMAGO_RAW",
+          effectiveSource: "GLOBAL",
+          policyStatus: "ALLOWED",
+          policyNote: null,
+          categories: null,
+          areas: null,
+          warnings: [],
+        },
+        filledFieldKeys: ["journalTier", "indexing"],
+        missingFieldKeys: ["journalQuartile", "scopusIndexed"],
+        warnings: [],
+      },
+      mode: "overwrite",
+    });
+
+    expect(result.formData.journalTier).toBe("Q1");
+    expect(result.formData.indexing).toEqual(["Scopus"]);
+    expect(result.formData.__journalLookup).toBeTruthy();
+    expect(result.visibleFilledFieldKeys).toEqual(["journalTier", "indexing"]);
   });
 
   test("builds a truncated author preview for large DOI author lists", () => {

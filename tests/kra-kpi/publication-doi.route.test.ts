@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 const getServerSessionMock = vi.fn();
 const lookupPublicationByDoiMock = vi.fn();
 const isPublicationLookupErrorMock = vi.fn();
+const lookupPublicationJournalByFormDataMock = vi.fn();
 
 vi.mock("next-auth", () => ({
   default: vi.fn(() => ({})),
@@ -12,6 +13,10 @@ vi.mock("next-auth", () => ({
 vi.mock("@/lib/kra-kpi/publication-doi-service", () => ({
   lookupPublicationByDoi: lookupPublicationByDoiMock,
   isPublicationLookupError: isPublicationLookupErrorMock,
+}));
+
+vi.mock("@/lib/kra-kpi/publication-journal-service", () => ({
+  lookupPublicationJournalByFormData: lookupPublicationJournalByFormDataMock,
 }));
 
 function tenantSession() {
@@ -28,6 +33,7 @@ function tenantSession() {
 beforeEach(() => {
   vi.clearAllMocks();
   isPublicationLookupErrorMock.mockReturnValue(false);
+  lookupPublicationJournalByFormDataMock.mockResolvedValue(null);
 });
 
 describe("publication DOI route", () => {
@@ -107,12 +113,20 @@ describe("publication DOI route", () => {
       doi: "10.1000/example",
       tenantName: "Galgotias University",
     });
+    expect(lookupPublicationJournalByFormDataMock).toHaveBeenCalledWith({
+      tenantId: "tenant-1",
+      formData: expect.objectContaining({
+        doi: "10.1000/example",
+        paperTitle: "Paper Title",
+      }),
+    });
 
     const body = await response.json();
     expect(body.status).toBe("success");
     expect(body.message).toBe("Auto-filled 2 fields; 1 still need manual entry.");
     expect(body.normalizedDoi).toBe("10.1000/example");
     expect(body.meta.source).toBe("crossref");
+    expect(body.journalLookup).toBeNull();
   });
 
   test("maps publication lookup errors to their service-provided HTTP status", async () => {

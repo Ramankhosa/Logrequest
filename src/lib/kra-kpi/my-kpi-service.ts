@@ -6,8 +6,13 @@ import {
   computeReviewCycles,
   isDateWithinInclusiveUtcRange,
 } from "./period-service";
+import {
+  buildAllocationAchievementAggregate,
+  summarizeAllocationLifecycle,
+} from "./allocation-achievement-utils";
 import { GALGOTIA_MANUAL_CREDIT_TEMPLATE_KEYS } from "./galgotia-template-constants";
 import { seedDefaultTemplates } from "./external-contrib-template-service";
+import { ensureApplicableRolesBaseline } from "./contributor-role-service";
 import {
   achievementContributorInclude,
   mapAchievementContributors,
@@ -25,6 +30,7 @@ import type {
   AchievementFormConfig,
   VerificationLogEntry,
   MeasurementConfig,
+  ScoringConfig,
   SubmissionTrailView,
 } from "./shared";
 import { formatActualDisplay, formatTargetDisplay } from "./measurement-display";
@@ -405,6 +411,60 @@ function parseExternalContributorFields(
   return Array.isArray(fields) ? (fields as AchievementFieldConfig[]) : null;
 }
 
+type SubmissionConfigApplicableRole = {
+  isDefault: boolean;
+  contributorRole: {
+    id: string;
+    code: string;
+    name: string;
+    defaultCreditPercent: number;
+  };
+};
+
+type SubmissionConfigKpiRecord = {
+  id: string;
+  applicableRoles: SubmissionConfigApplicableRole[];
+};
+
+function toSubmissionConfigApplicableRoles(
+  roles: Awaited<ReturnType<typeof ensureApplicableRolesBaseline>>,
+): SubmissionConfigApplicableRole[] {
+  return roles.map((role) => ({
+    isDefault: role.linkIsDefault,
+    contributorRole: {
+      id: role.id,
+      code: role.code,
+      name: role.name,
+      defaultCreditPercent: role.defaultCreditPercent,
+    },
+  }));
+}
+
+async function hydrateMissingApplicableRoles(
+  tenantId: string,
+  records: SubmissionConfigKpiRecord[],
+): Promise<void> {
+  const missing = new Map<string, SubmissionConfigKpiRecord>();
+  for (const record of records) {
+    if (record.applicableRoles.length === 0) {
+      missing.set(record.id, record);
+    }
+  }
+
+  if (missing.size === 0) return;
+
+  await Promise.all(
+    [...missing.values()].map(async (record) => {
+      const hydrated = await ensureApplicableRolesBaseline(
+        record.id,
+        tenantId,
+        null,
+      );
+      record.applicableRoles = toSubmissionConfigApplicableRoles(hydrated);
+    }),
+  );
+}
+
 function buildSubmissionConfig(
   kpi: {
     achievementTemplateKey?: string | null;
@@ -587,6 +647,11 @@ export async function getMyAllocations(
     return true;
   });
 
+  await hydrateMissingApplicableRoles(
+    tenantId,
+    filtered.map((allocation) => allocation.kpiDefinition),
+  );
+
   const reporterIds = filtered
     .flatMap((a) => a.achievements.map((ach) => ach.reportedByUserId))
     .filter(Boolean);
@@ -631,6 +696,24 @@ export async function getMyAllocations(
         reporterMap.get(achievement.reportedByUserId) ?? "Unknown",
       ),
     );
+    const achievementAggregate = buildAllocationAchievementAggregate({
+      allowMultipleAchievementsPerAllocation:
+        kpi.allowMultipleAchievementsPerAllocation ?? false,
+      achievements,
+      measurementType: kpi.measurementType,
+      scoringMethod: kpi.scoringMethod,
+      scoringDirection: kpi.scoringDirection,
+      scoringConfig: kpi.scoringConfig as ScoringConfig | null,
+      measurementConfig: kpi.measurementConfig as MeasurementConfig | null,
+      target: {
+        targetValue: a.targetValue,
+        targetDate: a.targetDate,
+        targetMilestone: a.targetMilestone,
+        targetGrade: a.targetGrade,
+        targetBoolean: a.targetBoolean,
+        targetRating: a.targetRating,
+      },
+    });
 
     return {
       id: a.id,
@@ -677,6 +760,8 @@ export async function getMyAllocations(
       guidanceNotes: kpi.guidanceNotes,
       achievementTemplateKey: kpi.achievementTemplateKey,
       achievementFormConfig: kpi.achievementFormConfig as AchievementFormConfig | null,
+      allowMultipleAchievementsPerAllocation:
+        kpi.allowMultipleAchievementsPerAllocation ?? false,
       periodState: a.period.state,
       periodName: a.period.name,
       periodStartDate: a.period.startDate,
@@ -685,6 +770,7 @@ export async function getMyAllocations(
       reviewFrequency: a.period.reviewFrequency,
       achievement: achievements[0] ?? null,
       achievements,
+      achievementAggregate,
       allowPartialCompletion: kpi.allowPartialCompletion,
       stagesDefinedCount: kpi._count.stages,
       parentTargetValue: a.parentAllocation?.targetValue ?? null,
@@ -719,6 +805,7 @@ async function getMyReviewQueueLegacy(
     include: {
       kpiDefinition: {
         select: {
+          id: true,
           title: true,
           measurementType: true,
           unitLabel: true,
@@ -793,6 +880,7 @@ async function getMyReviewQueueLegacy(
     include: {
       kpiDefinition: {
         select: {
+          id: true,
           title: true,
           measurementType: true,
           unitLabel: true,
@@ -863,11 +951,19 @@ export async function getMyReviewQueue(
     include: {
       kpiDefinition: {
         select: {
+          id: true,
+          kraDefinition: { select: { title: true } },
           title: true,
+          allowMultipleAchievementsPerAllocation: true,
           measurementType: true,
+          scoringMethod: true,
+          scoringDirection: true,
+          scoringConfig: true,
+          measurementConfig: true,
           unitLabel: true,
           guidanceNotes: true,
           startingUnitId: true,
+          startingUnit: { select: { name: true } },
           keyUnitId: true,
           finalUnitId: true,
           achievementFormConfig: true,
@@ -881,6 +977,17 @@ export async function getMyReviewQueue(
           targetGrade: true,
           targetBoolean: true,
           targetRating: true,
+          achievements: {
+            orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
+            select: {
+              state: true,
+              actualValue: true,
+              actualRating: true,
+              effectiveScore: true,
+              stageCompletionScore: true,
+              computedScore: true,
+            },
+          },
         },
       },
       contributors: { include: achievementContributorInclude },
@@ -939,12 +1046,28 @@ export async function getMyReviewQueue(
       achievement,
       achievement.kpiDefinition.unitLabel,
     );
+    const allocationAchievementAggregate = achievement.targetAllocation
+      ? buildAllocationAchievementAggregate({
+          allowMultipleAchievementsPerAllocation:
+            achievement.kpiDefinition.allowMultipleAchievementsPerAllocation ?? false,
+          achievements: achievement.targetAllocation.achievements,
+          measurementType: achievement.kpiDefinition.measurementType,
+          scoringMethod: achievement.kpiDefinition.scoringMethod,
+          scoringDirection: achievement.kpiDefinition.scoringDirection,
+          scoringConfig:
+            achievement.kpiDefinition.scoringConfig as ScoringConfig | null,
+          measurementConfig:
+            achievement.kpiDefinition.measurementConfig as MeasurementConfig | null,
+          target: achievement.targetAllocation,
+        })
+      : null;
 
     return {
       achievementId: achievement.id,
       facultyUserId: achievement.reportedByUserId,
       facultyName: reporterMap.get(achievement.reportedByUserId) ?? "Unknown",
       facultyDesignation: designationMap.get(achievement.reportedByUserId) ?? null,
+      kraTitle: achievement.kpiDefinition.kraDefinition.title,
       kpiTitle: achievement.kpiDefinition.title,
       kpiDefinitionId: achievement.kpiDefinitionId,
       achievementTitle: achievement.title ?? null,
@@ -963,6 +1086,7 @@ export async function getMyReviewQueue(
       reportingDate: achievement.reportingDate,
       reviewLevel,
       startingUnitId: achievement.kpiDefinition.startingUnitId,
+      startingUnitName: achievement.kpiDefinition.startingUnit.name,
       reviewUnitId,
       reviewUnitName: reviewScope.unitNameById.get(reviewUnitId) ?? null,
       waitingDays: daysWaitingSince(achievement.reportingDate),
@@ -981,6 +1105,9 @@ export async function getMyReviewQueue(
       stagesTotal,
       targetDisplay,
       actualDisplay,
+      allowMultipleAchievementsPerAllocation:
+        achievement.kpiDefinition.allowMultipleAchievementsPerAllocation ?? false,
+      allocationAchievementAggregate,
     };
   });
 }
@@ -1017,21 +1144,36 @@ export async function getMyDashboardSummary(
   let pendingReviewCount = 0;
 
   for (const a of allocs) {
-    const ach = a.achievement;
+    const lifecycle = summarizeAllocationLifecycle({
+      allowMultipleAchievementsPerAllocation: a.allowMultipleAchievementsPerAllocation,
+      achievements: a.achievements,
+      aggregate: a.achievementAggregate,
+      targetValue: a.targetValue,
+    });
 
-    if (!ach) {
+    if (lifecycle === "notStarted") {
       if (a.section === "department" && (a.allocationType === "INDIVIDUAL" || a.allocationType === "BOTH") && a.childCount === 0) {
         statusCounts.needsCascade++;
       } else {
         statusCounts.notStarted++;
       }
     } else {
-      switch (ach.state) {
-        case "DRAFT": statusCounts.inProgress++; break;
-        case "SUBMITTED":
-        case "RECOMMENDED": statusCounts.pendingReview++; pendingReviewCount++; break;
-        case "VERIFIED": statusCounts.completed++; break;
-        case "REJECTED": statusCounts.notApproved++; break;
+      switch (lifecycle) {
+        case "inProgress":
+          statusCounts.inProgress++;
+          break;
+        case "pendingReview":
+          statusCounts.pendingReview++;
+          pendingReviewCount++;
+          break;
+        case "completed":
+          statusCounts.completed++;
+          break;
+        case "notApproved":
+          statusCounts.notApproved++;
+          break;
+        default:
+          break;
       }
     }
 
@@ -1047,10 +1189,16 @@ export async function getMyDashboardSummary(
     }
     kraMap.get(kraKey)!.kpis.push({
       weightage: a.kpiWeightage,
-      score: ach?.state === "VERIFIED"
-        ? (ach.effectiveScore ?? ach.stageCompletionScore ?? ach.computedScore)
-        : null,
-      verified: ach?.state === "VERIFIED",
+      score:
+        a.allowMultipleAchievementsPerAllocation
+          ? a.achievementAggregate.officialScore
+          : a.achievement?.state === "VERIFIED"
+            ? (a.achievement.effectiveScore ?? a.achievement.stageCompletionScore ?? a.achievement.computedScore)
+            : null,
+      verified:
+        a.allowMultipleAchievementsPerAllocation
+          ? a.achievementAggregate.countsByState.verified > 0
+          : a.achievement?.state === "VERIFIED",
     });
   }
 
@@ -1127,7 +1275,14 @@ export async function getMyDashboardSummary(
   let overdueCount = 0;
 
   for (const a of allocs) {
-    if (a.achievement?.state === "VERIFIED") continue;
+    const isComplete =
+      summarizeAllocationLifecycle({
+        allowMultipleAchievementsPerAllocation: a.allowMultipleAchievementsPerAllocation,
+        achievements: a.achievements,
+        aggregate: a.achievementAggregate,
+        targetValue: a.targetValue,
+      }) === "completed";
+    if (isComplete) continue;
     if (!a.achievementDeadline) continue;
     const deadline = new Date(a.achievementDeadline);
     if (deadline < today) {
@@ -1442,13 +1597,14 @@ export async function getAvailableKpis(
     ],
   });
 
-  return kpis
-    .filter(
-      (kpi) =>
-        !allocatedKpiIds.has(kpi.id) &&
-        !additionalKpiIds.has(kpi.id),
-    )
-    .map((kpi): AvailableKpiView => ({
+  const availableKpis = kpis.filter(
+    (kpi) =>
+      !allocatedKpiIds.has(kpi.id) &&
+      !additionalKpiIds.has(kpi.id),
+  );
+  await hydrateMissingApplicableRoles(tenantId, availableKpis);
+
+  return availableKpis.map((kpi): AvailableKpiView => ({
     kpiId: kpi.id,
     kpiTitle: kpi.title,
     kpiDescription: kpi.description,
@@ -1487,6 +1643,7 @@ async function listAdditionalAchievementsLegacy(
     include: {
       kpiDefinition: {
         select: {
+          id: true,
           title: true,
           measurementType: true,
           unitLabel: true,
@@ -1579,6 +1736,7 @@ export async function listAdditionalAchievements(
     include: {
       kpiDefinition: {
         select: {
+          id: true,
           title: true,
           measurementType: true,
           unitLabel: true,
@@ -1647,6 +1805,11 @@ export async function listAdditionalAchievements(
     select: { firstName: true, lastName: true },
   });
   const userName = user ? `${user.firstName} ${user.lastName}` : "Unknown";
+
+  await hydrateMissingApplicableRoles(
+    tenantId,
+    achievements.map((achievement) => achievement.kpiDefinition),
+  );
 
   return achievements.map((achievement): AdditionalAchievementView => {
     const stagesTotal = achievement.stageProgress.length;

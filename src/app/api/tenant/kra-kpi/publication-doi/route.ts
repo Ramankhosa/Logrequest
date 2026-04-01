@@ -6,6 +6,8 @@ import {
   isPublicationLookupError,
   lookupPublicationByDoi,
 } from "@/lib/kra-kpi/publication-doi-service";
+import { PUBLICATION_LOOKUP_HIDDEN_KEY } from "@/lib/kra-kpi/publication-doi-shared";
+import { lookupPublicationJournalByFormData } from "@/lib/kra-kpi/publication-journal-service";
 
 const requestSchema = z.object({
   doi: z.string().trim().min(1),
@@ -36,6 +38,16 @@ export async function POST(request: Request) {
       doi: body.doi,
       tenantName: session.user.tenantName ?? null,
     });
+    const journalLookup = await lookupPublicationJournalByFormData({
+      tenantId: session.user.tenantId,
+      formData: {
+        ...result.fields,
+        [PUBLICATION_LOOKUP_HIDDEN_KEY]: {
+          ...result.meta,
+          authors: result.authors,
+        },
+      },
+    });
 
     const message =
       result.missingFieldKeys.length > 0
@@ -46,6 +58,7 @@ export async function POST(request: Request) {
       status: "success",
       message,
       ...result,
+      journalLookup,
     });
   } catch (error) {
     if (isPublicationLookupError(error)) {

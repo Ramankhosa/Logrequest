@@ -49,7 +49,7 @@ const R43_PUBLICATION_FORM_FIELDS = [
     label: "Indexing",
     type: "MULTI_SELECT",
     required: true,
-    options: ["Scopus", "Web of Science", "UGC CARE List", "PubMed", "IEEE Xplore", "Other"],
+    options: ["Scopus", "Web of Science", "UGC CARE List"],
     sortOrder: 3,
     marker: "CATEGORY_FIELD",
   },
@@ -65,11 +65,25 @@ const R43_PUBLICATION_FORM_FIELDS = [
   { key: "publicationDate", label: "Publication Date", type: "DATE", required: true, sortOrder: 5 },
   { key: "pdfLink", label: "Paper PDF / URL", type: "URL", required: true, sortOrder: 6 },
   {
+    key: "coAuthors",
+    label: "Co-Authors",
+    type: "TEXTAREA",
+    required: false,
+    sortOrder: 7,
+  },
+  {
+    key: "totalAuthors",
+    label: "Total Number of Authors",
+    type: "NUMBER",
+    required: false,
+    sortOrder: 8,
+  },
+  {
     key: "ugcCareReference",
     label: "UGC Care Reference",
     type: "TEXT",
     required: false,
-    sortOrder: 7,
+    sortOrder: 9,
     visibilityRules: [{ fieldKey: "indexing", operator: "has_any", value: ["UGC CARE List"] }],
     requiredRules: [{ fieldKey: "indexing", operator: "has_any", value: ["UGC CARE List"] }],
     helpText: "Required when the paper is claimed through UGC CARE indexing.",
@@ -1020,6 +1034,34 @@ async function ensureDemoDataset(
         state: "ACTIVE",
         sortOrder: 1,
         guidanceNotes: "Seeded KPI for Release 1 demo flows.",
+        allowMultipleAchievementsPerAllocation: true,
+      },
+    });
+  } else {
+    kpi = await prisma.kpiDefinition.update({
+      where: { id: kpi.id },
+      data: {
+        description: "Number of indexed publications produced in the period.",
+        measurementType: "NUMERIC",
+        unitLabel: "papers",
+        weightage: 100,
+        defaultTarget: 12,
+        measurementConfig: {
+          type: "NUMERIC",
+          decimalPlaces: 0,
+        },
+        scoringMethod: "LINEAR",
+        scoringDirection: "ASCENDING",
+        scoringConfig: {
+          method: "LINEAR",
+          capAt100: true,
+        },
+        allocationType: "BOTH",
+        startingUnitId: cseUnit.id,
+        state: "ACTIVE",
+        sortOrder: 1,
+        guidanceNotes: "Seeded KPI for Release 1 demo flows.",
+        allowMultipleAchievementsPerAllocation: true,
       },
     });
   }
@@ -1841,6 +1883,7 @@ async function ensureR43RewardKpi({
     isTeamKpi: true,
     teamCreditMethod: "WEIGHTED_SPLIT",
     allowPartialCompletion: true,
+    allowMultipleAchievementsPerAllocation: true,
     participantMode: "OPTIONAL_TEAM",
     rewardRecurrencePolicy: "ONCE_PER_UNIQUE_KEY",
     policyDateFieldKey: "publicationDate",
@@ -1913,6 +1956,14 @@ async function ensureR43KpiConfig({
     select: { id: true },
   });
   if (existingComponents.length > 0) {
+    await prisma.contributorRewardEvent.deleteMany({
+      where: {
+        reward: { rewardComponentId: { in: existingComponents.map((row) => row.id) } },
+      },
+    });
+    await prisma.contributorReward.deleteMany({
+      where: { rewardComponentId: { in: existingComponents.map((row) => row.id) } },
+    });
     await prisma.kpiRewardDistribution.deleteMany({
       where: { rewardComponentId: { in: existingComponents.map((row) => row.id) } },
     });
@@ -2085,6 +2136,37 @@ function buildVerificationLogEntry(level, user, action, note, when) {
   };
 }
 
+function buildSeedCoAuthorList(...names) {
+  return names.filter(Boolean).join(", ");
+}
+
+function buildSeedExternalContributor({
+  name,
+  affiliation,
+  scope,
+  contributorRoleId,
+  orcid = undefined,
+  note = null,
+}) {
+  return {
+    type: "EXTERNAL",
+    externalName: name,
+    externalAffiliation: affiliation,
+    externalScope: scope,
+    contributorRoleId,
+    creditPercent: 0,
+    isExcludedFromReward: true,
+    selectorTags: [],
+    note,
+    externalData: {
+      name,
+      affiliation,
+      scope: scope === "INTERNATIONAL" ? "International" : "National",
+      ...(orcid ? { orcid } : {}),
+    },
+  };
+}
+
 function buildRewardAllocations({
   contributors,
   leadSelectorTag,
@@ -2239,6 +2321,7 @@ async function createSeedAchievement({
       userId: row.user?.id ?? null,
       externalName: row.externalName ?? null,
       externalAffiliation: row.externalAffiliation ?? null,
+      externalScope: row.externalScope ?? null,
       contributorRoleId: row.contributorRoleId,
       creditPercent: row.creditPercent,
       isExcludedFromReward: row.isExcludedFromReward ?? false,
@@ -2635,6 +2718,12 @@ async function ensureR43InterfaceSeed({
       journalTier: "Q1",
       publicationDate: "2026-02-10",
       pdfLink: "https://example.com/r43/pending-recommendation.pdf",
+      coAuthors: buildSeedCoAuthorList(
+        userName(facultyOne),
+        userName(facultyTwo),
+        "Dr. Nisha External",
+      ),
+      totalAuthors: 3,
     },
     currentVerifierUnitId: eceUnit.id,
     currentVerifierUserId: reviewerUsers.eceHead.id,
@@ -2657,6 +2746,14 @@ async function ensureR43InterfaceSeed({
         creditPercent: 30,
         selectorTags: [],
       },
+      buildSeedExternalContributor({
+        name: "Dr. Nisha External",
+        affiliation: "National Institute of Analytics",
+        scope: "NATIONAL",
+        contributorRoleId: roleMap.get("CO_AUTHOR").id,
+        orcid: "0000-0002-9876-5432",
+        note: "Seeded external co-author for mixed contributor validation.",
+      }),
     ],
     trailEntries: [
       { action: "SUBMITTED", actor: facultyOne, actorRole: "Employee", actorUnitName: cseUnit.name, note: "Initial submission for review.", scoreAtAction: 25, createdAt: at("2026-02-05T10:00:00.000Z") },
@@ -2687,6 +2784,12 @@ async function ensureR43InterfaceSeed({
       journalTier: "Q2",
       publicationDate: "2026-02-13",
       pdfLink: "https://example.com/r43/pending-verification.pdf",
+      coAuthors: buildSeedCoAuthorList(
+        userName(demoEmployee),
+        userName(facultyTwo),
+        "Prof. Elena Collaborator",
+      ),
+      totalAuthors: 3,
     },
     currentVerifierUnitId: cseUnit.id,
     currentVerifierUserId: reviewerUsers.cseHead.id,
@@ -2710,6 +2813,13 @@ async function ensureR43InterfaceSeed({
         creditPercent: 40,
         selectorTags: ["CORRESPONDING_AUTHOR"],
       },
+      buildSeedExternalContributor({
+        name: "Prof. Elena Collaborator",
+        affiliation: "University of Warwick",
+        scope: "INTERNATIONAL",
+        contributorRoleId: roleMap.get("CO_AUTHOR").id,
+        orcid: "0000-0003-1111-2222",
+      }),
     ],
     trailEntries: [
       { action: "SUBMITTED", actor: demoEmployee, actorRole: "Employee", actorUnitName: cseUnit.name, note: "Submitted with all supporting evidence.", scoreAtAction: 25, createdAt: at("2026-02-13T16:20:00.000Z") },
@@ -2738,6 +2848,8 @@ async function ensureR43InterfaceSeed({
       journalTier: "Q3",
       publicationDate: "2026-01-20",
       pdfLink: "https://example.com/r52/stale-recommendation.pdf",
+      coAuthors: buildSeedCoAuthorList(userName(facultyOne)),
+      totalAuthors: 1,
     },
     currentVerifierUnitId: eceUnit.id,
     currentVerifierUserId: reviewerUsers.eceHead.id,
@@ -2778,6 +2890,8 @@ async function ensureR43InterfaceSeed({
       journalTier: "Q2",
       publicationDate: "2026-01-17",
       pdfLink: "https://example.com/r52/stale-verification.pdf",
+      coAuthors: buildSeedCoAuthorList(userName(demoEmployee)),
+      totalAuthors: 1,
     },
     currentVerifierUnitId: cseUnit.id,
     currentVerifierUserId: reviewerUsers.cseHead.id,
@@ -2823,6 +2937,11 @@ async function ensureR43InterfaceSeed({
       journalTier: "Q2",
       publicationDate: "2026-01-27",
       pdfLink: "https://example.com/r43/rejected-publication.pdf",
+      coAuthors: buildSeedCoAuthorList(
+        userName(facultyOne),
+        "Dr. Mohan External",
+      ),
+      totalAuthors: 2,
     },
     rejectionReason: "Please upload the publisher confirmation letter and corrected DOI.",
     verificationLog: [
@@ -2836,6 +2955,12 @@ async function ensureR43InterfaceSeed({
         creditPercent: 100,
         selectorTags: ["FIRST_AUTHOR"],
       },
+      buildSeedExternalContributor({
+        name: "Dr. Mohan External",
+        affiliation: "Institute of Applied Metrics",
+        scope: "NATIONAL",
+        contributorRoleId: roleMap.get("CO_AUTHOR").id,
+      }),
     ],
     trailEntries: [
       { action: "SUBMITTED", actor: facultyOne, actorRole: "Employee", actorUnitName: cseUnit.name, note: "Submitting the paper for Q2 incentive.", scoreAtAction: 25, createdAt: at("2026-01-27T10:00:00.000Z") },
@@ -2863,6 +2988,12 @@ async function ensureR43InterfaceSeed({
       journalTier: "Q1",
       publicationDate: "2026-02-25",
       pdfLink: "https://example.com/r43/draft-rewards-publication.pdf",
+      coAuthors: buildSeedCoAuthorList(
+        userName(demoEmployee),
+        userName(facultyTwo),
+        "Dr. Arjun External",
+      ),
+      totalAuthors: 3,
     },
     recommendedByUserId: reviewerUsers.eceHead.id,
     recommendedAt: at("2026-02-27T11:20:00.000Z"),
@@ -2888,6 +3019,13 @@ async function ensureR43InterfaceSeed({
         creditPercent: 30,
         selectorTags: [],
       },
+      buildSeedExternalContributor({
+        name: "Dr. Arjun External",
+        affiliation: "Imperial College London",
+        scope: "INTERNATIONAL",
+        contributorRoleId: roleMap.get("CO_AUTHOR").id,
+        note: "Excluded from reward to keep seed payout math stable.",
+      }),
     ],
     trailEntries: [
       { action: "SUBMITTED", actor: demoEmployee, actorRole: "Employee", actorUnitName: cseUnit.name, note: "Paper submitted for seed reward draft case.", scoreAtAction: 25, createdAt: at("2026-02-26T09:00:00.000Z") },
@@ -2917,6 +3055,12 @@ async function ensureR43InterfaceSeed({
       journalTier: "Q2",
       publicationDate: "2026-02-28",
       pdfLink: "https://example.com/r43/pending-release-publication.pdf",
+      coAuthors: buildSeedCoAuthorList(
+        userName(facultyOne),
+        userName(facultyTwo),
+        "Ms. Asha External",
+      ),
+      totalAuthors: 3,
     },
     recommendedByUserId: reviewerUsers.eceHead.id,
     recommendedAt: at("2026-03-01T12:10:00.000Z"),
@@ -2942,6 +3086,12 @@ async function ensureR43InterfaceSeed({
         creditPercent: 30,
         selectorTags: [],
       },
+      buildSeedExternalContributor({
+        name: "Ms. Asha External",
+        affiliation: "Independent Research Lab",
+        scope: "NATIONAL",
+        contributorRoleId: roleMap.get("CO_AUTHOR").id,
+      }),
     ],
     trailEntries: [
       { action: "SUBMITTED", actor: facultyOne, actorRole: "Employee", actorUnitName: cseUnit.name, note: "Submitted for pending reward batch scenario.", scoreAtAction: 25, createdAt: at("2026-02-28T09:00:00.000Z") },
@@ -2971,6 +3121,8 @@ async function ensureR43InterfaceSeed({
       journalTier: "UGC_CARE",
       publicationDate: "2026-03-01",
       pdfLink: "https://example.com/r43/released-publication.pdf",
+      coAuthors: buildSeedCoAuthorList(userName(demoEmployee)),
+      totalAuthors: 1,
       ugcCareReference: "UGC-CARE-2026-001",
     },
     recommendedByUserId: reviewerUsers.eceHead.id,
@@ -3020,6 +3172,12 @@ async function ensureR43InterfaceSeed({
       journalTier: "Q2",
       publicationDate: "2026-03-02",
       pdfLink: "https://example.com/r43/corrected-publication.pdf",
+      coAuthors: buildSeedCoAuthorList(
+        userName(facultyOne),
+        userName(facultyTwo),
+        "Prof. Mei External",
+      ),
+      totalAuthors: 3,
     },
     recommendedByUserId: reviewerUsers.eceHead.id,
     recommendedAt: at("2026-03-04T11:45:00.000Z"),
@@ -3045,6 +3203,13 @@ async function ensureR43InterfaceSeed({
         creditPercent: 30,
         selectorTags: [],
       },
+      buildSeedExternalContributor({
+        name: "Prof. Mei External",
+        affiliation: "Nanyang Technological University",
+        scope: "INTERNATIONAL",
+        contributorRoleId: roleMap.get("CO_AUTHOR").id,
+        orcid: "0000-0001-2222-3333",
+      }),
     ],
     trailEntries: [
       { action: "SUBMITTED", actor: facultyOne, actorRole: "Employee", actorUnitName: cseUnit.name, note: "Submitted before the publisher errata was issued.", scoreAtAction: 25, createdAt: at("2026-03-03T10:15:00.000Z") },

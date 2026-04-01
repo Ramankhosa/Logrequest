@@ -94,6 +94,36 @@ enum UploadRowStatus {
   PROVISIONED
 }
 
+enum JournalCatalogScope {
+  GLOBAL
+  TENANT
+}
+
+enum JournalImportSourceSystem {
+  SCIMAGO_RAW
+  TENANT_TEMPLATE
+}
+
+enum JournalImportBatchStatus {
+  VALIDATED
+  APPLYING
+  CONFIRMED
+  FAILED
+}
+
+enum JournalImportRowStatus {
+  VALID
+  WARNING
+  REJECTED
+  APPLIED
+}
+
+enum JournalPolicyStatus {
+  ALLOWED
+  DISABLED
+  BLACKLISTED
+}
+
 enum OrgStructureState {
   DRAFT
   VALIDATED
@@ -465,6 +495,8 @@ model Tenant {
   externalContribTemplates ExternalContributorTemplate[]
   kpiTemplates          KpiTemplate[]
   contributorRewards    ContributorReward[]
+  journalCatalogRecords JournalCatalogRecord[]
+  journalImportBatches  JournalImportBatch[]
 
   @@index([lifecycleState, entitlementState])
 }
@@ -643,6 +675,131 @@ model UploadRow {
 
   @@unique([uploadBatchId, rowIndex])
   @@index([uploadBatchId, status])
+}
+
+model JournalCatalogRecord {
+  id                    String                  @id @default(cuid())
+  tenantId              String?
+  scope                 JournalCatalogScope
+  scopeTenantKey        String
+  sourceSystem          JournalImportSourceSystem
+  sourceYear            Int
+  sourceId              String?
+  identityKey           String
+  currentIdentityKey    String?
+  title                 String
+  normalizedTitle       String
+  type                  String
+  issnRaw               String?
+  issnPrimary           String?
+  issnList              String[]
+  issnNormalizedList    String[]
+  publisher             String?
+  duplicatePublisher    String?
+  openAccessLabel       String?
+  isOpenAccess          Boolean?
+  openAccessDiamondLabel String?
+  isOpenAccessDiamond   Boolean?
+  sjr                   Float?
+  sjrBestQuartile       String?
+  hIndex                Int?
+  totalDocsCurrent      Int?
+  totalDocs3Years       Int?
+  totalRefs             Int?
+  totalCitations3Years  Int?
+  citableDocs3Years     Int?
+  citationsPerDoc2Years Float?
+  refsPerDoc            Float?
+  femalePercent         Float?
+  overton               Int?
+  sdg                   Int?
+  country               String?
+  region                String?
+  coverage              String?
+  categories            String?
+  areas                 String?
+  policyStatus          JournalPolicyStatus     @default(ALLOWED)
+  policyNote            String?
+  isJournalEligible     Boolean                 @default(false)
+  importBatchId         String?
+  overriddenGlobalRecordId String?
+  rawSourcePayload      Json?
+  metadata              Json?
+  isArchived            Boolean                 @default(false)
+  archivedAt            DateTime?
+  archivedByUserId      String?
+  archiveReason         String?
+  isSuperseded          Boolean                 @default(false)
+  supersededAt          DateTime?
+  supersededByBatchId   String?
+  createdByUserId       String?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  tenant                Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  importBatch           JournalImportBatch?     @relation("JournalBatchRecords", fields: [importBatchId], references: [id], onDelete: SetNull)
+  overrideSource        JournalCatalogRecord?   @relation("JournalOverrideSource", fields: [overriddenGlobalRecordId], references: [id], onDelete: SetNull)
+  tenantOverrides       JournalCatalogRecord[]  @relation("JournalOverrideSource")
+  supersededByBatch     JournalImportBatch?     @relation("JournalSupersededBatch", fields: [supersededByBatchId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, sourceYear, isArchived])
+  @@index([scopeTenantKey, sourceYear, type])
+  @@index([scopeTenantKey, sourceYear, sjrBestQuartile])
+  @@index([scopeTenantKey, sourceYear, issnPrimary])
+  @@index([scopeTenantKey, sourceYear, policyStatus])
+  @@index([scopeTenantKey, sourceYear, currentIdentityKey])
+  @@unique([scopeTenantKey, sourceYear, currentIdentityKey])
+}
+
+model JournalImportBatch {
+  id               String                   @id @default(cuid())
+  tenantId         String?
+  scope            JournalCatalogScope
+  scopeTenantKey   String
+  uploadedByUserId String?
+  fileName         String
+  fileType         String
+  sourceSystem     JournalImportSourceSystem
+  sourceYear       Int
+  mode             String
+  status           JournalImportBatchStatus @default(VALIDATED)
+  totalRows        Int                      @default(0)
+  validRows        Int                      @default(0)
+  warningRows      Int                      @default(0)
+  rejectedRows     Int                      @default(0)
+  appliedRows      Int                      @default(0)
+  metadata         Json?
+  confirmedAt      DateTime?
+  failedAt         DateTime?
+  failureMessage   String?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  tenant           Tenant?                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rows             JournalImportRow[]
+  importedRecords  JournalCatalogRecord[]   @relation("JournalBatchRecords")
+  supersededRecords JournalCatalogRecord[]  @relation("JournalSupersededBatch")
+
+  @@index([tenantId, scope, sourceYear, createdAt])
+  @@index([scopeTenantKey, sourceYear, status])
+}
+
+model JournalImportRow {
+  id             String                 @id @default(cuid())
+  importBatchId  String
+  rowIndex       Int
+  status         JournalImportRowStatus
+  sourceId       String?
+  identityKey    String?
+  rawText        String?
+  rawData        Json
+  normalizedData Json?
+  errors         Json?
+  warnings       Json?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  importBatch    JournalImportBatch     @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@unique([importBatchId, rowIndex])
+  @@index([importBatchId, status])
 }
 
 model AuditLog {
@@ -938,6 +1095,7 @@ model KpiDefinition {
   teamCreditMethod      TeamCreditMethod   @default(FULL_EACH)
   // ── R2.2: Stages & submission ──
   allowPartialCompletion Boolean           @default(true)
+  allowMultipleAchievementsPerAllocation Boolean @default(false)
   contributionRoles      Json?
   participantMode        KpiParticipantMode        @default(SINGLE_OWNER)
   rewardRecurrencePolicy KpiRewardRecurrencePolicy @default(RECURRING)

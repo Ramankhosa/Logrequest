@@ -4,6 +4,7 @@ import {
   rewardPreviewInputSchema,
   type RewardPreviewInput,
 } from "./builder-shared";
+import { enrichPublicationJournalFormData } from "./publication-journal-service";
 
 type RewardContributor = {
   id: string | null;
@@ -1352,6 +1353,22 @@ function withSyntheticOwner(
   };
 }
 
+async function enrichRewardPreviewInputFormData(
+  tenantId: string,
+  input: RewardPreviewInput,
+): Promise<RewardPreviewInput> {
+  const enriched = await enrichPublicationJournalFormData({
+    tenantId,
+    formData: input.achievementFormData ?? {},
+    mode: "fillMissing",
+  });
+
+  return {
+    ...input,
+    achievementFormData: enriched.formData ?? {},
+  };
+}
+
 async function loadAchievementRewardContext(
   achievementId: string,
   tenantId: string,
@@ -1390,25 +1407,27 @@ async function loadAchievementRewardContext(
     return null;
   }
 
+  const parsedInput = parseInput({
+    achievementId: achievement.id,
+    actualValue: achievement.actualValue,
+    actualDate: achievement.actualDate,
+    computedScore: achievement.computedScore,
+    effectiveScore: achievement.effectiveScore,
+    reportingDate: achievement.reportingDate,
+    achievementFormData:
+      (achievement.achievementFormData as Record<string, unknown> | null) ?? {},
+    contributors: achievement.contributors.map((contributor) => ({
+      id: contributor.id,
+      userId: contributor.userId ?? undefined,
+      contributorRoleId: contributor.contributorRoleId ?? undefined,
+      creditPercent: contributor.creditPercent,
+      isExcludedFromReward: contributor.isExcludedFromReward,
+      selectorTags: contributor.selectorTags ?? [],
+    })),
+    systemMetrics: {},
+  });
   const input = withSyntheticOwner(
-    parseInput({
-      achievementId: achievement.id,
-      actualValue: achievement.actualValue,
-      actualDate: achievement.actualDate,
-      computedScore: achievement.computedScore,
-      effectiveScore: achievement.effectiveScore,
-      reportingDate: achievement.reportingDate,
-      achievementFormData: (achievement.achievementFormData as Record<string, unknown> | null) ?? {},
-      contributors: achievement.contributors.map((contributor) => ({
-        id: contributor.id,
-        userId: contributor.userId ?? undefined,
-        contributorRoleId: contributor.contributorRoleId ?? undefined,
-        creditPercent: contributor.creditPercent,
-        isExcludedFromReward: contributor.isExcludedFromReward,
-        selectorTags: contributor.selectorTags ?? [],
-      })),
-      systemMetrics: {},
-    }),
+    await enrichRewardPreviewInputFormData(tenantId, parsedInput),
     achievement.reportedByUserId,
   );
 
@@ -1426,7 +1445,8 @@ async function loadAchievementRewardContext(
   return {
     achievement: {
       ...achievement,
-      achievementFormData: (achievement.achievementFormData as Record<string, unknown> | null) ?? {},
+      achievementFormData:
+        (input.achievementFormData as Record<string, unknown> | null) ?? {},
     },
     config,
     resolution,
@@ -1444,7 +1464,11 @@ export async function previewKpiRewards(
   if (!config) return null;
 
   const parsedInput = parseInput(input);
-  const resolution = await resolveRewards(config, parsedInput);
+  const enrichedInput = await enrichRewardPreviewInputFormData(
+    tenantId,
+    parsedInput,
+  );
+  const resolution = await resolveRewards(config, enrichedInput);
   return buildPreviewResult(config, resolution);
 }
 

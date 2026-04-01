@@ -100,6 +100,18 @@ export function MyReviewItem({ item, onActionComplete }: Props) {
           </div>
         ) : null}
 
+        {item.allowMultipleAchievementsPerAllocation && item.allocationAchievementAggregate ? (
+          <div className="rounded bg-blue-50 p-2 text-xs text-blue-800">
+            Allocation progress from verified requests:{" "}
+            <span className="font-semibold">
+              {item.allocationAchievementAggregate.officialActualValue}
+              {item.targetValue != null ? ` / ${item.targetValue}` : ""}
+            </span>
+            {" "}with {item.allocationAchievementAggregate.totalRequests} total request
+            {item.allocationAchievementAggregate.totalRequests === 1 ? "" : "s"} under this KPI.
+          </div>
+        ) : null}
+
         {duplicateMatches.length > 0 ? (
           <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
             <div className="mb-2 flex items-center gap-2 font-semibold">

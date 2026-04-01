@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import {
   CompletionBar,
   EmptyState,
@@ -9,20 +9,30 @@ import {
   StatusPill,
 } from "@/components/dashboard/shared";
 import type { DrillDownNode } from "@/lib/kra-kpi/dashboard-service";
+import { matchesDashboardSearch } from "@/lib/kra-kpi/dashboard-search";
 
 type KraDetailTableProps = {
   kraBreakdown: DrillDownNode["kraBreakdown"];
 };
 
 export function KraDetailTable({ kraBreakdown }: KraDetailTableProps) {
+  const [search, setSearch] = useState("");
   const sortedBreakdown = useMemo(
     () =>
-      [...kraBreakdown].sort((left, right) =>
+      [...kraBreakdown]
+        .filter((kra) =>
+          matchesDashboardSearch(
+            search,
+            kra.kraTitle,
+            ...kra.kpis.flatMap((kpi) => [kpi.kpiTitle]),
+          ),
+        )
+        .sort((left, right) =>
         left.completionPercent === right.completionPercent
           ? left.kraTitle.localeCompare(right.kraTitle)
           : left.completionPercent - right.completionPercent,
       ),
-    [kraBreakdown],
+    [kraBreakdown, search],
   );
   const [selectedKraId, setSelectedKraId] = useState<string | null>(null);
   const openKraId = sortedBreakdown.some((kra) => kra.kraId === selectedKraId)
@@ -40,6 +50,16 @@ export function KraDetailTable({ kraBreakdown }: KraDetailTableProps) {
 
   return (
     <div className="space-y-4">
+      <label className="flex items-center gap-3 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-500">
+        <Search className="h-4 w-4 text-slate-400" />
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search KRA or KPI"
+          className="w-full bg-transparent text-sm text-slate-700 outline-none"
+        />
+      </label>
       {sortedBreakdown.map((kra) => {
         const open = openKraId === kra.kraId;
         return (

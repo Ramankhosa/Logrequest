@@ -1,3 +1,5 @@
+import { PUBLICATION_JOURNAL_LOOKUP_HIDDEN_KEY } from "@/lib/kra-kpi/publication-journal-shared";
+
 const PUBLICATION_LOOKUP_HIDDEN_KEY = "__publicationLookup" as const;
 
 export { PUBLICATION_LOOKUP_HIDDEN_KEY };
@@ -70,6 +72,7 @@ export function stripPublicationLookupMetadata(
 
   const next = { ...formData };
   delete next[PUBLICATION_LOOKUP_HIDDEN_KEY];
+  delete next[PUBLICATION_JOURNAL_LOOKUP_HIDDEN_KEY];
   return next;
 }
 
@@ -274,4 +277,3 @@ export function publicationAffiliationMatchesTenantName(
 export function isFullPublicationDate(value: string | null | undefined): boolean {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
 }
-

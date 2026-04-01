@@ -198,6 +198,52 @@ function validateBuilderFieldReferences(payload: KpiBuilderPayload): string | nu
   return null;
 }
 
+function validateMultiAchievementModeCompatibility(input: {
+  measurementType: BuilderKpiDefinition["measurementType"];
+  stageCount: number;
+  allowMultipleAchievementsPerAllocation: boolean;
+}): string | null {
+  if (!input.allowMultipleAchievementsPerAllocation) {
+    return null;
+  }
+  if (input.measurementType !== "NUMERIC") {
+    return "Parallel achievement requests can only be enabled for numeric KPIs.";
+  }
+  if (input.stageCount > 0) {
+    return "Parallel achievement requests cannot be enabled for staged KPIs in this release.";
+  }
+  return null;
+}
+
+async function hasAllocationWithMultipleAchievements(
+  tenantId: string,
+  kpiDefinitionId: string,
+  tx: Tx,
+): Promise<boolean> {
+  const rows = await tx.achievement.findMany({
+    where: {
+      tenantId,
+      kpiDefinitionId,
+      targetAllocationId: { not: null },
+    },
+    select: {
+      targetAllocationId: true,
+    },
+  });
+
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.targetAllocationId) continue;
+    const nextCount = (counts.get(row.targetAllocationId) ?? 0) + 1;
+    if (nextCount > 1) {
+      return true;
+    }
+    counts.set(row.targetAllocationId, nextCount);
+  }
+
+  return false;
+}
+
 async function syncApplicableRoles(
   kpiId: string,
   tenantId: string,
@@ -632,6 +678,7 @@ function mapPayloadFromKpi(kpi: {
   participantMode: BuilderKpiDefinition["participantMode"];
   rewardRecurrencePolicy: BuilderKpiDefinition["rewardRecurrencePolicy"];
   policyDateFieldKey: string | null;
+  allowMultipleAchievementsPerAllocation: boolean;
   contributionRoles: unknown;
   applicableRoles: Array<{
     contributorRoleId: string;
@@ -751,6 +798,8 @@ function mapPayloadFromKpi(kpi: {
       isTeamKpi: kpi.isTeamKpi,
       teamCreditMethod: kpi.teamCreditMethod,
       allowPartialCompletion: kpi.allowPartialCompletion,
+      allowMultipleAchievementsPerAllocation:
+        kpi.allowMultipleAchievementsPerAllocation,
       participantMode: kpi.participantMode,
       rewardRecurrencePolicy: kpi.rewardRecurrencePolicy,
       policyDateFieldKey: kpi.policyDateFieldKey,
@@ -965,11 +1014,16 @@ export async function saveKpiBuilder(
       }
     }
 
+    const existing = payload.definition.id
+      ? await tx.kpiDefinition.findFirst({
+          where: { id: payload.definition.id, kraDefinition: { tenantId } },
+          select: {
+            id: true,
+            allowMultipleAchievementsPerAllocation: true,
+          },
+        })
+      : null;
     if (payload.definition.id) {
-      const existing = await tx.kpiDefinition.findFirst({
-        where: { id: payload.definition.id, kraDefinition: { tenantId } },
-        select: { id: true },
-      });
       if (!existing) {
         return { status: "error", message: "KPI not found." } satisfies KraKpiActionResult;
       }
@@ -984,6 +1038,39 @@ export async function saveKpiBuilder(
         } satisfies KraKpiActionResult;
       }
       stageOrderSet.add(stage.stageOrder);
+    }
+
+    const multiAchievementModeError = validateMultiAchievementModeCompatibility({
+      measurementType: payload.definition.measurementType,
+      stageCount: payload.stages.length,
+      allowMultipleAchievementsPerAllocation:
+        payload.definition.allowMultipleAchievementsPerAllocation,
+    });
+    if (multiAchievementModeError) {
+      return {
+        status: "error",
+        message: multiAchievementModeError,
+      } satisfies KraKpiActionResult;
+    }
+
+    if (
+      payload.definition.id
+      && existing
+      && existing.allowMultipleAchievementsPerAllocation
+      && !payload.definition.allowMultipleAchievementsPerAllocation
+    ) {
+      const hasMultipleAchievements = await hasAllocationWithMultipleAchievements(
+        tenantId,
+        payload.definition.id,
+        tx,
+      );
+      if (hasMultipleAchievements) {
+        return {
+          status: "error",
+          message:
+            "Cannot disable parallel achievement requests because one or more allocations already have multiple linked achievements.",
+        } satisfies KraKpiActionResult;
+      }
     }
 
     const contributionRolesJson =
@@ -1021,6 +1108,8 @@ export async function saveKpiBuilder(
         ? payload.definition.teamCreditMethod
         : "FULL_EACH",
       allowPartialCompletion: payload.definition.allowPartialCompletion,
+      allowMultipleAchievementsPerAllocation:
+        payload.definition.allowMultipleAchievementsPerAllocation,
       participantMode: payload.definition.participantMode,
       rewardRecurrencePolicy: payload.definition.rewardRecurrencePolicy,
       policyDateFieldKey: normalizeNullableString(payload.definition.policyDateFieldKey ?? null),

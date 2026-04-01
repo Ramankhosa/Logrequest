@@ -2,7 +2,11 @@ import type { Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult } from "./shared";
 import type { KpiBuilderPayload } from "./builder-shared";
-import { kpiTemplateWriteSchema, type KpiTemplateWriteInput } from "./builder-shared";
+import {
+  kpiTemplateWriteSchema,
+  type KpiTemplateWriteDraft,
+  type KpiTemplateWriteInput,
+} from "./builder-shared";
 import { ACHIEVEMENT_TEMPLATES } from "./shared";
 import { GALGOTIA_KPI_TEMPLATES } from "./galgotia-kpi-templates";
 import { saveKpiBuilder } from "./kpi-builder-service";
@@ -297,7 +301,7 @@ function buildJournalArticleRewardComponents() {
   });
 }
 
-const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
+const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteDraft[] = [
   {
     code: "SYSTEM_TEMPLATE_JOURNAL_ARTICLE",
     name: "Journal Article",
@@ -351,6 +355,7 @@ const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
         isTeamKpi: true,
         teamCreditMethod: "WEIGHTED_SPLIT",
         allowPartialCompletion: true,
+        allowMultipleAchievementsPerAllocation: true,
         participantMode: "OPTIONAL_TEAM",
         rewardRecurrencePolicy: "ONCE_PER_UNIQUE_KEY",
         policyDateFieldKey: "publicationDate",
@@ -422,6 +427,7 @@ const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
         isTeamKpi: true,
         teamCreditMethod: "WEIGHTED_SPLIT",
         allowPartialCompletion: true,
+        allowMultipleAchievementsPerAllocation: true,
         participantMode: "OPTIONAL_TEAM",
         rewardRecurrencePolicy: "ONCE_PER_UNIQUE_KEY",
         policyDateFieldKey: "publicationDate",

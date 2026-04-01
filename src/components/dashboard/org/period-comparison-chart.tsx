@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -18,6 +19,7 @@ import {
   StatusPill,
 } from "@/components/dashboard/shared";
 import type { PeriodComparisonResult } from "@/lib/kra-kpi/dashboard-service";
+import { matchesDashboardSearch } from "@/lib/kra-kpi/dashboard-search";
 
 type PeriodOption = {
   id: string;
@@ -52,6 +54,7 @@ export function PeriodComparisonChart({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PeriodComparisonResult | null>(null);
+  const [kpiSearch, setKpiSearch] = useState("");
 
   useEffect(() => {
     let ignore = false;
@@ -147,6 +150,23 @@ export function PeriodComparisonChart({
     };
   }, [orgUnitId, selectedPeriodIds, selectedSourceKpiId]);
 
+  const filteredKpiOptions = useMemo(
+    () =>
+      kpiOptions.filter((kpi) =>
+        matchesDashboardSearch(kpiSearch, kpi.kraTitle, kpi.kpiTitle),
+      ),
+    [kpiOptions, kpiSearch],
+  );
+  const selectableKpiOptions = useMemo(() => {
+    const selected = kpiOptions.find((kpi) => kpi.sourceKpiId === selectedSourceKpiId) ?? null;
+    if (!selected) {
+      return filteredKpiOptions;
+    }
+    return filteredKpiOptions.some((kpi) => kpi.sourceKpiId === selected.sourceKpiId)
+      ? filteredKpiOptions
+      : [selected, ...filteredKpiOptions];
+  }, [filteredKpiOptions, kpiOptions, selectedSourceKpiId]);
+
   const chartRows = useMemo(
     () =>
       (result?.periods ?? [])
@@ -177,17 +197,32 @@ export function PeriodComparisonChart({
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
               KPI
             </label>
+            <label className="mb-3 flex items-center gap-3 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-500">
+              <Search className="h-4 w-4 text-slate-400" />
+              <input
+                type="search"
+                value={kpiSearch}
+                onChange={(event) => setKpiSearch(event.target.value)}
+                placeholder="Search KRA or KPI"
+                className="w-full bg-transparent text-sm text-slate-700 outline-none"
+              />
+            </label>
             <select
               value={selectedSourceKpiId}
               onChange={(event) => onSourceKpiChange(event.target.value)}
               className="w-full rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-700 outline-none transition focus:border-brand focus:ring-2 focus:ring-brand/15"
             >
-              {kpiOptions.map((kpi) => (
+              {selectableKpiOptions.map((kpi) => (
                 <option key={kpi.sourceKpiId} value={kpi.sourceKpiId}>
                   {kpi.kraTitle} | {kpi.kpiTitle}
                 </option>
               ))}
             </select>
+            {filteredKpiOptions.length === 0 ? (
+              <p className="mt-2 text-xs text-amber-700">
+                No KPI matches the current search.
+              </p>
+            ) : null}
           </div>
           <div>
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">

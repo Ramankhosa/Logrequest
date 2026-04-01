@@ -9,6 +9,7 @@ import {
   Users2,
 } from "lucide-react";
 import { MyReviewItem } from "@/components/my-kpis/my-review-item";
+import { matchesDashboardSearch } from "@/lib/kra-kpi/dashboard-search";
 import {
   FilterBar,
   MetricCard,
@@ -82,15 +83,16 @@ export function ReviewerPanel({
 
         if (
           query
-          && ![
+          && !matchesDashboardSearch(
+            query,
             item.facultyName,
+            item.kraTitle,
             item.kpiTitle,
+            item.startingUnitName,
             item.reviewUnitName,
             item.targetDisplay,
             item.actualDisplay,
-          ]
-            .filter((value): value is string => Boolean(value))
-            .some((value) => value.toLowerCase().includes(query))
+          )
         ) {
           return false;
         }
@@ -211,7 +213,7 @@ export function ReviewerPanel({
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search contributor, KPI, or measured values"
+            placeholder="Search faculty, KRA, KPI, or source division"
             className="w-full bg-transparent text-sm text-slate-700 outline-none"
           />
         </label>

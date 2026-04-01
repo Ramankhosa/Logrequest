@@ -20,12 +20,13 @@ import {
   mustCascade,
   showBothChoiceUI,
 } from "@/lib/kra-kpi/assignee-access";
+import { summarizeAllocationLifecycle } from "@/lib/kra-kpi/allocation-achievement-utils";
 import { MyAchievementTrail } from "@/components/my-kpis/my-achievement-trail";
 
 type Props = {
   allocation: MyAllocationView;
   context: MyKpiContext | null;
-  onRecordAchievement: () => void;
+  onRecordAchievement: (achievement?: MyAllocationView["achievement"]) => void;
   onCascade: () => void;
   onRefresh: () => void;
 };
@@ -39,9 +40,11 @@ export function MyAllocationCard({
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [showChildren, setShowChildren] = useState(false);
+  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
 
   const ach = a.achievement;
+  const isMultiRequest = a.allowMultipleAchievementsPerAllocation;
   const ctx = context ?? { userId: "", headOfUnits: [], memberOfUnits: [] };
 
   const allocInfo = {
@@ -58,6 +61,12 @@ export function MyAllocationCard({
   const canCascadeFlag = targetConfigured && canCascade(allocInfo, ctx);
   const mustCascadeFlag = mustCascade(allocInfo, ctx);
   const showBothChoice = showBothChoiceUI(allocInfo, ctx);
+  const lifecycle = summarizeAllocationLifecycle({
+    allowMultipleAchievementsPerAllocation: a.allowMultipleAchievementsPerAllocation,
+    achievements: a.achievements,
+    aggregate: a.achievementAggregate,
+    targetValue: a.targetValue,
+  });
 
   // Period state messages
   const periodMessage = getPeriodMessage(a.periodState);
@@ -72,6 +81,13 @@ export function MyAllocationCard({
     ? ach.computedScore >= 80 ? "text-green-600"
       : ach.computedScore >= 60 ? "text-blue-600"
       : ach.computedScore >= 40 ? "text-amber-600"
+      : "text-red-600"
+    : "";
+  const aggregateScore = a.achievementAggregate.officialScore;
+  const aggregateScoreColor = aggregateScore != null
+    ? aggregateScore >= 80 ? "text-green-600"
+      : aggregateScore >= 60 ? "text-blue-600"
+      : aggregateScore >= 40 ? "text-amber-600"
       : "text-red-600"
     : "";
 
@@ -112,14 +128,26 @@ export function MyAllocationCard({
 
           {/* Status + Score */}
           <div className="flex flex-col items-end gap-1">
-            {ach ? (
+            {isMultiRequest ? (
+              a.achievementAggregate.totalRequests > 0 ? (
+              <AchievementStateBadge state={mapLifecycleToBadgeState(lifecycle)} />
+              ) : (
+                <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-500">
+                  Not Started
+                </span>
+              )
+            ) : ach ? (
               <AchievementStateBadge state={ach.state} />
             ) : (
               <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-500">
                 Not Started
               </span>
             )}
-            {ach?.state === "VERIFIED" && ach.computedScore != null && (
+            {isMultiRequest && aggregateScore != null ? (
+              <span className={cn("text-sm font-bold", aggregateScoreColor)}>
+                Score: {Math.round(aggregateScore)}
+              </span>
+            ) : ach?.state === "VERIFIED" && ach.computedScore != null && (
               <span className={cn("text-sm font-bold", scoreColor)}>
                 Score: {Math.round(ach.computedScore)}
               </span>
@@ -173,20 +201,20 @@ export function MyAllocationCard({
         {/* Actions */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Record */}
-          {!showBothChoice && canRecordFlag && !ach && (
+          {!showBothChoice && canRecordFlag && (!ach || isMultiRequest) && (
             <button
-              onClick={onRecordAchievement}
+              onClick={() => onRecordAchievement(null)}
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
             >
               <FileText className="h-3.5 w-3.5" />
-              Record Achievement
+              {isMultiRequest ? "Add Achievement Request" : "Record Achievement"}
             </button>
           )}
 
           {/* Edit draft */}
-          {!showBothChoice && canRecordFlag && ach?.state === "DRAFT" && (
+          {!isMultiRequest && !showBothChoice && canRecordFlag && ach?.state === "DRAFT" && (
             <button
-              onClick={onRecordAchievement}
+              onClick={() => onRecordAchievement(ach)}
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
             >
               Edit & Submit
@@ -194,9 +222,9 @@ export function MyAllocationCard({
           )}
 
           {/* Edit rejected */}
-          {!showBothChoice && canRecordFlag && ach?.state === "REJECTED" && (
+          {!isMultiRequest && !showBothChoice && canRecordFlag && ach?.state === "REJECTED" && (
             <button
-              onClick={onRecordAchievement}
+              onClick={() => onRecordAchievement(ach)}
               className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
             >
               Revise & Resubmit
@@ -223,7 +251,7 @@ export function MyAllocationCard({
           {showBothChoice && (
             <div className="flex gap-2">
               <button
-                onClick={onRecordAchievement}
+                onClick={() => onRecordAchievement(null)}
                 className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
               >
                 Record at Dept Level
@@ -247,6 +275,121 @@ export function MyAllocationCard({
           </button>
         </div>
 
+        {isMultiRequest && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="flex flex-wrap items-center gap-3 text-sm text-slate-700">
+              <span>
+                <strong>Verified progress:</strong>{" "}
+                {a.achievementAggregate.officialActualValue}
+                {a.targetValue != null ? ` / ${a.targetValue}` : ""}
+              </span>
+              <span>
+                <strong>Total requests:</strong> {a.achievementAggregate.totalRequests}
+              </span>
+              <span>
+                <strong>Draft:</strong> {a.achievementAggregate.countsByState.draft}
+              </span>
+              <span>
+                <strong>Pending:</strong>{" "}
+                {a.achievementAggregate.countsByState.submitted + a.achievementAggregate.countsByState.recommended}
+              </span>
+              <span>
+                <strong>Rejected:</strong> {a.achievementAggregate.countsByState.rejected}
+              </span>
+            </div>
+
+            {a.achievements.length === 0 ? (
+              <div className="mt-3 rounded bg-white px-3 py-2 text-xs text-slate-500">
+                No achievement requests have been recorded for this KPI yet.
+              </div>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {a.achievements.map((request) => {
+                  const canEditRequest =
+                    canRecordFlag && (request.state === "DRAFT" || request.state === "REJECTED");
+                  const expandedRequest = expandedRequestId === request.id;
+                  return (
+                    <div key={request.id} className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate text-sm font-medium text-slate-900">
+                              {request.title ?? `Request ${request.id.slice(0, 8)}`}
+                            </span>
+                            <AchievementStateBadge state={request.state} />
+                          </div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            Recorded on {new Date(request.reportingDate).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {canEditRequest ? (
+                            <button
+                              onClick={() => onRecordAchievement(request)}
+                              className={`rounded-md px-3 py-1.5 text-xs font-medium text-white ${
+                                request.state === "REJECTED"
+                                  ? "bg-amber-600 hover:bg-amber-700"
+                                  : "bg-blue-600 hover:bg-blue-700"
+                              }`}
+                            >
+                              {request.state === "REJECTED" ? "Revise" : "Edit"}
+                            </button>
+                          ) : null}
+                          {request.state === "SUBMITTED" && request.reportedByUserId === ctx.userId ? (
+                            <WithdrawButton achievementId={request.id} onDone={onRefresh} />
+                          ) : null}
+                          <button
+                            onClick={() => setExpandedRequestId(expandedRequest ? null : request.id)}
+                            className="text-xs text-slate-500 hover:text-slate-700"
+                          >
+                            {expandedRequest ? "Hide details" : "Show details"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {expandedRequest ? (
+                        <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
+                          {request.duplicateCheckResult?.matches?.length ? (
+                            <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                              <div className="mb-2 flex items-center gap-2 font-semibold">
+                                <AlertTriangle className="h-4 w-4" />
+                                Duplicate and policy checks
+                              </div>
+                              <div className="space-y-2">
+                                {request.duplicateCheckResult.matches.map((match) => (
+                                  <div key={`${match.achievementId}-${match.matchedField}-${match.matchType ?? match.similarity}`}>
+                                    <div>
+                                      {match.matchType === "POLICY_WARNING" ? "Policy warning" : "Possible duplicate"}:{" "}
+                                      {match.achievementTitle ?? "Untitled achievement"}
+                                    </div>
+                                    <div className="text-amber-800/80">
+                                      Field: {match.matchedField} | Value: {match.matchedValue || "--"} | Reporter: {match.reportedByName}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {request.rejectionReason ? (
+                            <div className="rounded bg-red-50 p-2 text-xs text-red-700">
+                              <strong>Not Approved:</strong> {request.rejectionReason}
+                            </div>
+                          ) : null}
+
+                          {(request.submissionTrail.length > 0 || request.verificationLog.length > 0) ? (
+                            <MyAchievementTrail trail={request.submissionTrail} log={request.verificationLog} />
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Expanded section */}
         {expanded && (
           <div className="border-t border-gray-100 pt-3 space-y-3">
@@ -256,7 +399,7 @@ export function MyAllocationCard({
               </div>
             )}
 
-            {ach?.duplicateCheckResult?.matches?.length ? (
+            {!isMultiRequest && ach?.duplicateCheckResult?.matches?.length ? (
               <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                 <div className="mb-2 flex items-center gap-2 font-semibold">
                   <AlertTriangle className="h-4 w-4" />
@@ -284,12 +427,12 @@ export function MyAllocationCard({
             ) : null}
 
             {/* Achievement trail */}
-            {ach && (ach.submissionTrail.length > 0 || ach.verificationLog.length > 0) && (
+            {!isMultiRequest && ach && (ach.submissionTrail.length > 0 || ach.verificationLog.length > 0) && (
               <MyAchievementTrail trail={ach.submissionTrail} log={ach.verificationLog} />
             )}
 
             {/* Rejection reason */}
-            {ach?.rejectionReason && (
+            {!isMultiRequest && ach?.rejectionReason && (
               <div className="rounded bg-red-50 p-2 text-xs text-red-700">
                 <strong>Not Approved:</strong> {ach.rejectionReason}
               </div>
@@ -337,6 +480,23 @@ export function MyAllocationCard({
       </div>
     </div>
   );
+}
+
+function mapLifecycleToBadgeState(
+  lifecycle: ReturnType<typeof summarizeAllocationLifecycle>,
+) {
+  switch (lifecycle) {
+    case "completed":
+      return "VERIFIED";
+    case "pendingReview":
+      return "SUBMITTED";
+    case "notApproved":
+      return "REJECTED";
+    case "inProgress":
+      return "DRAFT";
+    default:
+      return "DRAFT";
+  }
 }
 
 function AchievementStateBadge({ state }: { state: string }) {

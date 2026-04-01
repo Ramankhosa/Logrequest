@@ -1,7 +1,7 @@
 import type {
   BuilderRewardComponent,
   BuilderRewardTier,
-  KpiTemplateWriteInput,
+  KpiTemplateWriteDraft,
 } from "./builder-shared";
 import type { AchievementFieldConfig } from "./shared";
 import { ACHIEVEMENT_TEMPLATES } from "./shared";
@@ -33,6 +33,7 @@ type TemplateDefinitionInput = {
   evidenceInstructions: string | null;
   isTeamKpi: boolean;
   teamCreditMethod: "FULL_EACH" | "EQUAL_SPLIT" | "WEIGHTED_SPLIT" | "PRIMARY_ONLY";
+  allowMultipleAchievementsPerAllocation?: boolean;
   participantMode: "SINGLE_OWNER" | "OPTIONAL_TEAM" | "REQUIRED_TEAM";
   rewardRecurrencePolicy:
     | "RECURRING"
@@ -78,7 +79,7 @@ function declarationField(label: string): AchievementFieldConfig {
   };
 }
 
-function buildTemplate(input: TemplateInput): KpiTemplateWriteInput {
+function buildTemplate(input: TemplateInput): KpiTemplateWriteDraft {
   return {
     code: input.code,
     name: input.name,
@@ -118,6 +119,8 @@ function buildTemplate(input: TemplateInput): KpiTemplateWriteInput {
         isTeamKpi: input.definition.isTeamKpi,
         teamCreditMethod: input.definition.teamCreditMethod,
         allowPartialCompletion: true,
+        allowMultipleAchievementsPerAllocation:
+          input.definition.allowMultipleAchievementsPerAllocation ?? false,
         participantMode: input.definition.participantMode,
         rewardRecurrencePolicy: input.definition.rewardRecurrencePolicy,
         policyDateFieldKey: input.definition.policyDateFieldKey ?? null,
@@ -336,7 +339,7 @@ const journalFields = [
   ),
 ];
 
-export const GALGOTIA_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
+export const GALGOTIA_KPI_TEMPLATES: KpiTemplateWriteDraft[] = [
   buildTemplate({
     code: "GU_SCOPUS_JOURNAL_PUBLICATION",
     name: "Scopus/WoS Journal Publication Incentive",
@@ -355,6 +358,7 @@ export const GALGOTIA_KPI_TEMPLATES: KpiTemplateWriteInput[] = [
         "Attach the paper first page, DOI or publisher URL, and a Scopus or WoS screenshot showing indexing and quartile.",
       isTeamKpi: true,
       teamCreditMethod: "WEIGHTED_SPLIT",
+      allowMultipleAchievementsPerAllocation: true,
       participantMode: "OPTIONAL_TEAM",
       rewardRecurrencePolicy: "ONCE_PER_UNIQUE_KEY",
       policyDateFieldKey: "publicationDate",

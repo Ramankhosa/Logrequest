@@ -1055,12 +1055,29 @@ export function KpiBuilderForm({
             <label className="inline-flex items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
+                checked={payload.definition.allowMultipleAchievementsPerAllocation}
+                disabled={payload.definition.measurementType !== "NUMERIC"}
+                onChange={(event) =>
+                  updateDefinition("allowMultipleAchievementsPerAllocation", event.target.checked)
+                }
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              Parallel Requests
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
                 checked={payload.definition.evidenceRequired}
                 onChange={(event) => updateDefinition("evidenceRequired", event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300"
               />
               Evidence Required
             </label>
+          </div>
+          <div className="text-xs text-slate-500">
+            {payload.definition.measurementType === "NUMERIC"
+              ? "Parallel requests let one allocation collect multiple item-based submissions. Official progress comes from verified requests only."
+              : "Parallel requests are available only for numeric KPIs."}
           </div>
         </div>
       </Section>

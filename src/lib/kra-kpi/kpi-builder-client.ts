@@ -49,6 +49,7 @@ export function createEmptyBuilderPayload(
       isTeamKpi: false,
       teamCreditMethod: "FULL_EACH",
       allowPartialCompletion: true,
+      allowMultipleAchievementsPerAllocation: false,
       participantMode: "SINGLE_OWNER",
       rewardRecurrencePolicy: "RECURRING",
       policyDateFieldKey: null,
@@ -139,6 +140,8 @@ export function applyCopySelectionToDraft(input: {
     next.definition.isTeamKpi = source.definition.isTeamKpi;
     next.definition.teamCreditMethod = source.definition.teamCreditMethod;
     next.definition.allowPartialCompletion = source.definition.allowPartialCompletion;
+    next.definition.allowMultipleAchievementsPerAllocation =
+      source.definition.allowMultipleAchievementsPerAllocation;
   }
 
   if (selection.externalContributorPolicy || !input.target) {

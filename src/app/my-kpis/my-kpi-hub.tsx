@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   LayoutDashboard,
   PlusCircle,
+  Search,
   Send,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,8 @@ import { MyAchievementForm } from "@/components/my-kpis/my-achievement-form";
 import { MyCascadeForm } from "@/components/my-kpis/my-cascade-form";
 import { AdditionalAchievementsTab } from "@/components/my-kpis/additional-achievements-tab";
 import { hasReviewRole } from "@/lib/kra-kpi/assignee-access";
+import { matchesDashboardSearch } from "@/lib/kra-kpi/dashboard-search";
+import { summarizeAllocationLifecycle } from "@/lib/kra-kpi/allocation-achievement-utils";
 
 type Tab = "targets" | "review" | "dashboard" | "additional";
 
@@ -55,6 +58,7 @@ export function MyKpiHub() {
   const [currentCycle, setCurrentCycle] = useState<StoredReviewCycleView | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [search, setSearch] = useState("");
   const [sourceDeptFilter, setSourceDeptFilter] = useState<string>("");
   const [categoryFilter, setCategoryFilter] = useState<string>("");
   const [categoryPillFilter, setCategoryPillFilter] = useState<string | null>(null);
@@ -68,7 +72,10 @@ export function MyKpiHub() {
   const [bulkResult, setBulkResult] = useState<{ submitted: number; failed: { id: string; reason: string }[] } | null>(null);
 
   // Achievement form state
-  const [editingAllocation, setEditingAllocation] = useState<MyAllocationView | null>(null);
+  const [editingAllocation, setEditingAllocation] = useState<{
+    allocation: MyAllocationView;
+    achievement: MyAllocationView["achievement"];
+  } | null>(null);
   const [cascadingAllocation, setCascadingAllocation] = useState<MyAllocationView | null>(null);
 
   useEffect(() => {
@@ -120,9 +127,11 @@ export function MyKpiHub() {
   }
 
   async function handleBulkSubmit() {
-    const draftIds = allocations
-      .filter((a) => a.achievement?.state === "DRAFT")
-      .map((a) => a.achievement!.id);
+    const draftIds = allocations.flatMap((allocation) =>
+      allocation.achievements
+        .filter((achievement) => achievement.state === "DRAFT")
+        .map((achievement) => achievement.id),
+    );
     if (draftIds.length === 0) return;
 
     setBulkSubmitting(true);
@@ -170,6 +179,23 @@ export function MyKpiHub() {
 
   // Apply filters
   const filteredAllocations = allocations.filter((a) => {
+    const lifecycle = summarizeAllocationLifecycle({
+      allowMultipleAchievementsPerAllocation: a.allowMultipleAchievementsPerAllocation,
+      achievements: a.achievements,
+      aggregate: a.achievementAggregate,
+      targetValue: a.targetValue,
+    });
+    if (
+      !matchesDashboardSearch(
+        search,
+        a.kraTitle,
+        a.kpiTitle,
+        a.startingUnitName,
+        a.categoryLabel ?? "",
+      )
+    ) {
+      return false;
+    }
     if (sourceDeptFilter && a.startingUnitName !== sourceDeptFilter) return false;
     if (categoryFilter && a.categoryLabel !== categoryFilter) return false;
     if (categoryPillFilter && a.categoryKey !== categoryPillFilter && a.categoryLabel !== categoryPillFilter) return false;
@@ -178,13 +204,12 @@ export function MyKpiHub() {
     }
 
     if (statusFilter === "all") return true;
-    const ach = a.achievement;
     switch (statusFilter) {
-      case "notStarted": return !ach;
-      case "inProgress": return ach?.state === "DRAFT";
-      case "pendingReview": return ach?.state === "SUBMITTED" || ach?.state === "RECOMMENDED";
-      case "completed": return ach?.state === "VERIFIED";
-      case "notApproved": return ach?.state === "REJECTED";
+      case "notStarted": return lifecycle === "notStarted";
+      case "inProgress": return lifecycle === "inProgress";
+      case "pendingReview": return lifecycle === "pendingReview";
+      case "completed": return lifecycle === "completed";
+      case "notApproved": return lifecycle === "notApproved";
       case "needsCascade":
         return a.section === "department" &&
           (a.allocationType === "INDIVIDUAL" || a.allocationType === "BOTH") &&
@@ -205,17 +230,27 @@ export function MyKpiHub() {
   // Group by section
   const deptAllocations = sortedAllocations.filter((a) => a.section === "department");
   const indivAllocations = sortedAllocations.filter((a) => a.section === "individual");
+  const filteredReviewQueue = reviewQueue.filter((item) =>
+    matchesDashboardSearch(
+      search,
+      item.kraTitle,
+      item.kpiTitle,
+      item.facultyName,
+      item.startingUnitName,
+      item.reviewUnitName ?? "",
+      item.targetDisplay,
+      item.actualDisplay,
+    ),
+  );
 
   // Filter counts
   const counts = {
     all: allocations.length,
-    notStarted: allocations.filter((a) => !a.achievement).length,
-    inProgress: allocations.filter((a) => a.achievement?.state === "DRAFT").length,
-    pendingReview: allocations.filter(
-      (a) => a.achievement?.state === "SUBMITTED" || a.achievement?.state === "RECOMMENDED"
-    ).length,
-    completed: allocations.filter((a) => a.achievement?.state === "VERIFIED").length,
-    notApproved: allocations.filter((a) => a.achievement?.state === "REJECTED").length,
+    notStarted: allocations.filter((a) => getAllocationLifecycle(a) === "notStarted").length,
+    inProgress: allocations.filter((a) => getAllocationLifecycle(a) === "inProgress").length,
+    pendingReview: allocations.filter((a) => getAllocationLifecycle(a) === "pendingReview").length,
+    completed: allocations.filter((a) => getAllocationLifecycle(a) === "completed").length,
+    notApproved: allocations.filter((a) => getAllocationLifecycle(a) === "notApproved").length,
     needsCascade: allocations.filter(
       (a) =>
         a.section === "department" &&
@@ -243,7 +278,11 @@ export function MyKpiHub() {
   })();
 
   // Draft achievements count for bulk submit
-  const draftAchievementCount = allocations.filter((a) => a.achievement?.state === "DRAFT").length;
+  const draftAchievementCount = allocations.reduce(
+    (total, allocation) =>
+      total + allocation.achievements.filter((achievement) => achievement.state === "DRAFT").length,
+    0,
+  );
 
   // Selected period state
   const selectedPeriod = periods.find((p) => p.id === selectedPeriodId);
@@ -261,7 +300,8 @@ export function MyKpiHub() {
   if (editingAllocation) {
     return (
       <MyAchievementForm
-        allocation={editingAllocation}
+        allocation={editingAllocation.allocation}
+        achievementOverride={editingAllocation.achievement}
         onDone={() => {
           setEditingAllocation(null);
           if (selectedPeriodId) {
@@ -454,6 +494,16 @@ export function MyKpiHub() {
 
           {/* Secondary filters */}
           <div className="flex flex-wrap gap-3 items-center">
+            <label className="flex min-w-[250px] flex-1 items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-600">
+              <Search className="h-3.5 w-3.5 text-gray-400" />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search KRA, KPI, or source division"
+                className="w-full bg-transparent text-sm text-gray-700 outline-none"
+              />
+            </label>
             {sourceDepts.length > 1 && (
               <select
                 className="rounded-md border border-gray-300 px-2 py-1 text-xs"
@@ -547,12 +597,26 @@ export function MyKpiHub() {
 
       {!loading && effectiveActiveTab === "review" && (
         <div className="space-y-4">
-          {reviewQueue.length === 0 ? (
+          <label className="flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-600">
+            <Search className="h-4 w-4 text-gray-400" />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search faculty, KRA, KPI, or source division"
+                className="w-full bg-transparent text-sm text-gray-700 outline-none"
+              />
+          </label>
+          {filteredReviewQueue.length === 0 ? (
             <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 py-12 text-center">
-              <p className="text-sm text-gray-500">No items pending your review.</p>
+              <p className="text-sm text-gray-500">
+                {reviewQueue.length === 0
+                  ? "No items pending your review."
+                  : "No review items match the current search."}
+              </p>
             </div>
           ) : (
-            reviewQueue.map((item) => (
+            filteredReviewQueue.map((item) => (
               <MyReviewItem
                 key={item.achievementId}
                 item={item}
@@ -590,7 +654,10 @@ function renderAllocationsByKra(
   allocations: MyAllocationView[],
   context: MyKpiContext | null,
   selectedPeriodId: string | null,
-  setEditingAllocation: (allocation: MyAllocationView) => void,
+  setEditingAllocation: (value: {
+    allocation: MyAllocationView;
+    achievement: MyAllocationView["achievement"];
+  }) => void,
   setCascadingAllocation: (allocation: MyAllocationView) => void,
   refreshData: (periodId: string) => Promise<void>,
 ) {
@@ -611,7 +678,9 @@ function renderAllocationsByKra(
           key={allocation.id}
           allocation={allocation}
           context={context}
-          onRecordAchievement={() => setEditingAllocation(allocation)}
+          onRecordAchievement={(achievement) =>
+            setEditingAllocation({ allocation, achievement: achievement ?? null })
+          }
           onCascade={() => setCascadingAllocation(allocation)}
           onRefresh={() => {
             if (selectedPeriodId) {
@@ -622,6 +691,15 @@ function renderAllocationsByKra(
       ))}
     </div>
   ));
+}
+
+function getAllocationLifecycle(allocation: MyAllocationView) {
+  return summarizeAllocationLifecycle({
+    allowMultipleAchievementsPerAllocation: allocation.allowMultipleAchievementsPerAllocation,
+    achievements: allocation.achievements,
+    aggregate: allocation.achievementAggregate,
+    targetValue: allocation.targetValue,
+  });
 }
 
 function getDaysUntilDeadline(deadline: Date | null, todayTs: number) {
@@ -670,7 +748,7 @@ function matchesDeadlineFilter(
   todayTs: number,
   cycleInfo: ReturnType<typeof getCurrentCycleInfo>,
 ) {
-  if (allocation.achievement?.state === "VERIFIED") {
+  if (getAllocationLifecycle(allocation) === "completed") {
     return false;
   }
 

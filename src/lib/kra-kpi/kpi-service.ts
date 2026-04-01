@@ -112,6 +112,7 @@ const createKpiSchema = z.object({
   isTeamKpi: z.boolean().default(false),
   teamCreditMethod: z.enum(["FULL_EACH", "EQUAL_SPLIT", "WEIGHTED_SPLIT", "PRIMARY_ONLY"]).default("FULL_EACH"),
   allowPartialCompletion: z.boolean().default(true),
+  allowMultipleAchievementsPerAllocation: z.boolean().default(false),
   contributionRoles: z.array(contributionRoleEntrySchema).optional(),
 });
 
@@ -156,6 +157,7 @@ const updateKpiSchema = z.object({
   isTeamKpi: z.boolean().optional(),
   teamCreditMethod: z.enum(["FULL_EACH", "EQUAL_SPLIT", "WEIGHTED_SPLIT", "PRIMARY_ONLY"]).optional(),
   allowPartialCompletion: z.boolean().optional(),
+  allowMultipleAchievementsPerAllocation: z.boolean().optional(),
   contributionRoles: z.array(contributionRoleEntrySchema).nullable().optional(),
 });
 
@@ -220,6 +222,7 @@ function mapKpiView(k: any): KpiDefinitionView {
     isTeamKpi: k.isTeamKpi,
     teamCreditMethod: k.teamCreditMethod,
     allowPartialCompletion: k.allowPartialCompletion ?? true,
+    allowMultipleAchievementsPerAllocation: k.allowMultipleAchievementsPerAllocation ?? false,
     contributionRoles: parseContributionRoles(k.contributionRoles),
     createdAt: k.createdAt,
   };
@@ -276,6 +279,51 @@ function validateMeasurementSettings(
   }
 
   return null;
+}
+
+function validateMultiAchievementModeCompatibility(input: {
+  measurementType: string;
+  stageCount: number;
+  allowMultipleAchievementsPerAllocation: boolean;
+}): string | null {
+  if (!input.allowMultipleAchievementsPerAllocation) {
+    return null;
+  }
+  if (input.measurementType !== "NUMERIC") {
+    return "Parallel achievement requests can only be enabled for numeric KPIs.";
+  }
+  if (input.stageCount > 0) {
+    return "Parallel achievement requests cannot be enabled for staged KPIs in this release.";
+  }
+  return null;
+}
+
+async function hasAllocationWithMultipleAchievements(
+  tenantId: string,
+  kpiDefinitionId: string,
+): Promise<boolean> {
+  const rows = await prisma.achievement.findMany({
+    where: {
+      tenantId,
+      kpiDefinitionId,
+      targetAllocationId: { not: null },
+    },
+    select: {
+      targetAllocationId: true,
+    },
+  });
+
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.targetAllocationId) continue;
+    const nextCount = (counts.get(row.targetAllocationId) ?? 0) + 1;
+    if (nextCount > 1) {
+      return true;
+    }
+    counts.set(row.targetAllocationId, nextCount);
+  }
+
+  return false;
 }
 
 // ── List KPIs ────────────────────────────────────────────────────────────────
@@ -398,6 +446,18 @@ export async function createKpi(
     };
   }
 
+  const multiAchievementModeError = validateMultiAchievementModeCompatibility({
+    measurementType: data.measurementType,
+    stageCount: 0,
+    allowMultipleAchievementsPerAllocation: data.allowMultipleAchievementsPerAllocation,
+  });
+  if (multiAchievementModeError) {
+    return {
+      status: "error",
+      message: multiAchievementModeError,
+    };
+  }
+
   // Validate scoringConfig matches scoringMethod
   if (data.scoringConfig) {
     if (data.scoringConfig.method !== data.scoringMethod) {
@@ -453,6 +513,7 @@ export async function createKpi(
         isTeamKpi: data.isTeamKpi,
         teamCreditMethod: !data.isTeamKpi ? "FULL_EACH" : data.teamCreditMethod,
         allowPartialCompletion: data.allowPartialCompletion,
+        allowMultipleAchievementsPerAllocation: data.allowMultipleAchievementsPerAllocation,
         contributionRoles:
           data.contributionRoles && data.contributionRoles.length > 0
             ? (data.contributionRoles as object[])
@@ -529,6 +590,11 @@ export async function updateKpi(
         select: { id: true },
         take: 1,
       },
+      _count: {
+        select: {
+          stages: true,
+        },
+      },
     },
   });
   if (!kpi) {
@@ -601,6 +667,38 @@ export async function updateKpi(
     };
   }
 
+  const nextAllowMultipleAchievementsPerAllocation =
+    data.allowMultipleAchievementsPerAllocation
+      ?? kpi.allowMultipleAchievementsPerAllocation;
+  const multiAchievementModeError = validateMultiAchievementModeCompatibility({
+    measurementType: nextMeasurementType,
+    stageCount: kpi._count.stages,
+    allowMultipleAchievementsPerAllocation: nextAllowMultipleAchievementsPerAllocation,
+  });
+  if (multiAchievementModeError) {
+    return {
+      status: "error",
+      message: multiAchievementModeError,
+    };
+  }
+
+  if (
+    data.allowMultipleAchievementsPerAllocation === false &&
+    kpi.allowMultipleAchievementsPerAllocation
+  ) {
+    const hasMultipleAchievements = await hasAllocationWithMultipleAchievements(
+      tenantId,
+      kpiId,
+    );
+    if (hasMultipleAchievements) {
+      return {
+        status: "error",
+        message:
+          "Cannot disable parallel achievement requests because one or more allocations already have multiple linked achievements.",
+      };
+    }
+  }
+
   if (data.contributionRoles !== undefined) {
     const rolesError = validateContributionRolesJson(
       data.contributionRoles === null ? null : data.contributionRoles,
@@ -644,6 +742,10 @@ export async function updateKpi(
     if (data.teamCreditMethod !== undefined) updateData.teamCreditMethod = data.teamCreditMethod;
     if (data.allowPartialCompletion !== undefined) {
       updateData.allowPartialCompletion = data.allowPartialCompletion;
+    }
+    if (data.allowMultipleAchievementsPerAllocation !== undefined) {
+      updateData.allowMultipleAchievementsPerAllocation =
+        data.allowMultipleAchievementsPerAllocation;
     }
     if (data.contributionRoles !== undefined) {
       updateData.contributionRoles =

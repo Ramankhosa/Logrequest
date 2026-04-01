@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Building2, Layers3, Target, Users2 } from "lucide-react";
+import { AlertTriangle, Building2, Layers3, Search, Target, Users2 } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -30,6 +30,7 @@ import type {
 import type { UserDashboardScope } from "@/lib/org-structure/scope-resolver";
 import { PersonDetailSlideout } from "./person-detail-slideout";
 import { UnitMembersTable } from "./unit-members-table";
+import { matchesDashboardSearch } from "@/lib/kra-kpi/dashboard-search";
 
 type UnitPanelProps = {
   scope: UserDashboardScope;
@@ -96,6 +97,7 @@ export function UnitPanel({ scope, periodId }: UnitPanelProps) {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedStageKpiId, setSelectedStageKpiId] = useState<string | null>(null);
+  const [kpiSearch, setKpiSearch] = useState("");
   const [stageAnalysis, setStageAnalysis] = useState<StageBottleneck | null>(null);
   const [stageLoading, setStageLoading] = useState(false);
   const [stageError, setStageError] = useState<string | null>(null);
@@ -311,6 +313,30 @@ export function UnitPanel({ scope, periodId }: UnitPanelProps) {
   const selectedStageOption = summary?.stageKpiOptions.find(
     (option) => option.kpiId === selectedStageKpiId,
   ) ?? null;
+  const filteredKraBreakdown = useMemo(
+    () =>
+      (summary?.kraBreakdown ?? []).filter((kra) =>
+        matchesDashboardSearch(kpiSearch, kra.kraTitle),
+      ),
+    [kpiSearch, summary],
+  );
+  const filteredStageOptions = useMemo(
+    () =>
+      (summary?.stageKpiOptions ?? []).filter((option) =>
+        matchesDashboardSearch(kpiSearch, option.kpiTitle),
+      ),
+    [kpiSearch, summary],
+  );
+  const unitSearchPlaceholder =
+    activeSubview === "kra" ? "Search KRA" : "Search KPI";
+  const stageOptionsForSelect = useMemo(() => {
+    if (!selectedStageOption) {
+      return filteredStageOptions;
+    }
+    return filteredStageOptions.some((option) => option.kpiId === selectedStageOption.kpiId)
+      ? filteredStageOptions
+      : [selectedStageOption, ...filteredStageOptions];
+  }, [filteredStageOptions, selectedStageOption]);
 
   const kraChartData = summary?.kraBreakdown.map((item) => ({
     label: item.kraTitle,
@@ -446,6 +472,18 @@ export function UnitPanel({ scope, periodId }: UnitPanelProps) {
             <p className="mt-3 text-sm text-slate-500">
               {SUBVIEWS.find((view) => view.key === activeSubview)?.description}
             </p>
+            {activeSubview !== "members" ? (
+              <label className="mt-4 flex items-center gap-3 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-500">
+                <Search className="h-4 w-4 text-slate-400" />
+                <input
+                  type="search"
+                  value={kpiSearch}
+                  onChange={(event) => setKpiSearch(event.target.value)}
+                  placeholder={unitSearchPlaceholder}
+                  className="w-full bg-transparent text-sm text-slate-700 outline-none"
+                />
+              </label>
+            ) : null}
           </section>
 
           {activeSubview === "members" ? (
@@ -496,7 +534,7 @@ export function UnitPanel({ scope, periodId }: UnitPanelProps) {
               </ChartContainer>
 
               <div className="grid gap-4 lg:grid-cols-2">
-                {(summary?.kraBreakdown ?? []).map((kra) => (
+                {filteredKraBreakdown.map((kra) => (
                   <article
                     key={kra.kraId}
                     className="glass-panel rounded-[1.5rem] border border-slate-200/80 p-4"
@@ -531,6 +569,13 @@ export function UnitPanel({ scope, periodId }: UnitPanelProps) {
                   </article>
                 ))}
               </div>
+              {!loading && filteredKraBreakdown.length === 0 ? (
+                <EmptyState
+                  icon={<Target className="h-8 w-8" />}
+                  title="No KRA or KPI matches"
+                  description="Try a different KRA or KPI search term."
+                />
+              ) : null}
             </div>
           ) : null}
 
@@ -555,7 +600,7 @@ export function UnitPanel({ scope, periodId }: UnitPanelProps) {
                           onChange={(event) => setSelectedStageKpiId(event.target.value)}
                           className="w-full rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-700 outline-none transition focus:border-brand focus:ring-2 focus:ring-brand/15"
                         >
-                          {summary?.stageKpiOptions.map((option) => (
+                          {stageOptionsForSelect.map((option) => (
                             <option key={option.kpiId} value={option.kpiId}>
                               {option.kpiTitle}
                             </option>
@@ -581,6 +626,13 @@ export function UnitPanel({ scope, periodId }: UnitPanelProps) {
                     </div>
                   </section>
 
+                  {!stageLoading && filteredStageOptions.length === 0 ? (
+                    <EmptyState
+                      icon={<Layers3 className="h-8 w-8" />}
+                      title="No staged KPI matches"
+                      description="Try a different KRA or KPI search term."
+                    />
+                  ) : null}
                   {stageError ? (
                     <EmptyState
                       icon={<AlertTriangle className="h-8 w-8" />}

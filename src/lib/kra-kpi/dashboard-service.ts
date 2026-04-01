@@ -1,9 +1,18 @@
 import type { KpiMeasurementType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getPublishedVersionId } from "@/lib/org-structure/hierarchy-utils";
-import type { StageProgressView } from "./shared";
+import type {
+  AllocationAchievementAggregateView,
+  MeasurementConfig,
+  ScoringConfig,
+  StageProgressView,
+} from "./shared";
 import { formatTargetDisplay } from "./measurement-display";
 import { getStageProgressForAchievement } from "./stage-progress-service";
+import {
+  buildAllocationAchievementAggregate,
+  isAllocationOfficiallyComplete,
+} from "./allocation-achievement-utils";
 
 /**
  * Builds a combined WHERE filter that captures both unit-assigned and
@@ -283,11 +292,19 @@ type AggregatedAllocation = {
   resolvedUnitId: string | null;
   targetValue: number | null;
   targetRating: number | null;
+  targetDate: Date | null;
+  targetMilestone: string | null;
+  targetGrade: string | null;
+  targetBoolean: boolean | null;
   kpiDefinitionId: string;
   kpiTitle: string;
   measurementType: KpiMeasurementType;
   unitLabel: string | null;
   stageCount: number;
+  allowMultipleAchievementsPerAllocation: boolean;
+  achievementAggregate: AllocationAchievementAggregateView;
+  officialActualValue: number;
+  officialScore: number | null;
   kraId: string;
   kraTitle: string;
   kraWeightage: number;
@@ -435,6 +452,11 @@ async function loadScopedAggregationData(
             title: true,
             measurementType: true,
             unitLabel: true,
+            allowMultipleAchievementsPerAllocation: true,
+            scoringMethod: true,
+            scoringDirection: true,
+            scoringConfig: true,
+            measurementConfig: true,
             _count: { select: { stages: true } },
             kraDefinition: {
               select: {
@@ -479,17 +501,61 @@ async function loadScopedAggregationData(
         : null),
     targetValue: allocation.targetValue,
     targetRating: allocation.targetRating,
+    targetDate: null,
+    targetMilestone: null,
+    targetGrade: null,
+    targetBoolean: null,
     kpiDefinitionId: allocation.kpiDefinitionId,
     kpiTitle: allocation.kpiDefinition.title,
     measurementType: allocation.kpiDefinition.measurementType,
     unitLabel: allocation.kpiDefinition.unitLabel,
     stageCount: allocation.kpiDefinition._count.stages,
+    allowMultipleAchievementsPerAllocation:
+      allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+    achievementAggregate: buildAllocationAchievementAggregate({
+      allowMultipleAchievementsPerAllocation:
+        allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+      achievements: allocation.achievements,
+      measurementType: allocation.kpiDefinition.measurementType,
+      scoringMethod: allocation.kpiDefinition.scoringMethod,
+      scoringDirection: allocation.kpiDefinition.scoringDirection,
+      scoringConfig: allocation.kpiDefinition.scoringConfig as ScoringConfig | null,
+      measurementConfig: allocation.kpiDefinition.measurementConfig as MeasurementConfig | null,
+      target: {
+        targetValue: allocation.targetValue,
+        targetDate: null,
+        targetMilestone: null,
+        targetGrade: null,
+        targetBoolean: null,
+        targetRating: allocation.targetRating,
+      },
+    }),
+    officialActualValue: 0,
+    officialScore: null,
     kraId: allocation.kpiDefinition.kraDefinition.id,
     kraTitle: allocation.kpiDefinition.kraDefinition.title,
     kraWeightage: allocation.kpiDefinition.kraDefinition.weightage,
     latestAchievement: allocation.achievements[0] ?? null,
-    hasVerifiedAchievement: isAllocationCompleted(allocation.achievements),
+    hasVerifiedAchievement: false,
   }));
+
+  rows.forEach((row, index) => {
+    const sourceAllocation = allocations[index];
+    row.officialActualValue = row.allowMultipleAchievementsPerAllocation
+      ? row.achievementAggregate.officialActualValue
+      : row.latestAchievement?.actualRating ?? row.latestAchievement?.actualValue ?? 0;
+    row.officialScore = row.allowMultipleAchievementsPerAllocation
+      ? row.achievementAggregate.officialScore
+      : row.latestAchievement
+        ? scoreFromAchievement(row.latestAchievement)
+        : null;
+    row.hasVerifiedAchievement = isAllocationOfficiallyComplete({
+      allowMultipleAchievementsPerAllocation: row.allowMultipleAchievementsPerAllocation,
+      aggregate: row.achievementAggregate,
+      targetValue: row.targetValue,
+      achievements: sourceAllocation?.achievements ?? [],
+    });
+  });
 
   return {
     units,
@@ -611,8 +677,8 @@ function summarizeScopedAllocations(
       completedAllocations += 1;
     }
 
-    if (row.latestAchievement) {
-      scoreTotal += scoreFromAchievement(row.latestAchievement);
+    if (row.officialScore != null) {
+      scoreTotal += row.officialScore;
       scoredCount += 1;
     }
 
@@ -634,8 +700,8 @@ function summarizeScopedAllocations(
     if (row.hasVerifiedAchievement) {
       kraBucket.completedAllocations += 1;
     }
-    if (row.latestAchievement) {
-      kraBucket.scoreTotal += scoreFromAchievement(row.latestAchievement);
+    if (row.officialScore != null) {
+      kraBucket.scoreTotal += row.officialScore;
       kraBucket.scoredCount += 1;
     }
 
@@ -655,8 +721,8 @@ function summarizeScopedAllocations(
     if (row.hasVerifiedAchievement) {
       kpiBucket.completedAllocations += 1;
     }
-    if (row.latestAchievement) {
-      kpiBucket.scoreTotal += scoreFromAchievement(row.latestAchievement);
+    if (row.officialScore != null) {
+      kpiBucket.scoreTotal += row.officialScore;
       kpiBucket.scoredCount += 1;
     }
     kraBucket.kpiBuckets.set(row.kpiDefinitionId, kpiBucket);
@@ -740,7 +806,7 @@ export async function getOverviewStats(
   const scopeFilter = buildEffectiveUnitFilter(tenantId, scopeUnitIds);
   const allocationWhere: Prisma.TargetAllocationWhereInput = { tenantId, periodId, ...scopeFilter };
 
-  const [kpiCount, allocationCount, achievements, period] = await Promise.all([
+  const [kpiCount, allocationCount, achievements, scopedData] = await Promise.all([
     prisma.kpiDefinition.count({
       where: { kraDefinition: { tenantId, periodId }, state: "ACTIVE" },
     }),
@@ -755,10 +821,7 @@ export async function getOverviewStats(
       },
       select: { state: true },
     }),
-    prisma.assessmentPeriod.findFirst({
-      where: { id: periodId, tenantId },
-      select: { achievementDeadline: true, endDate: true },
-    }),
+    loadScopedAggregationData(tenantId, periodId, scopeUnitIds),
   ]);
 
   const byState = { DRAFT: 0, SUBMITTED: 0, RECOMMENDED: 0, VERIFIED: 0, REJECTED: 0 };
@@ -767,34 +830,15 @@ export async function getOverviewStats(
   }
 
   const totalAchievements = achievements.length;
-  const overallCompletionPercent =
-    allocationCount > 0 ? Math.round((byState.VERIFIED / allocationCount) * 10000) / 100 : 0;
-
-  let overdueCount = 0;
-  const dueDate = period?.achievementDeadline ?? period?.endDate ?? null;
-  if (dueDate && new Date() > dueDate) {
-    const allocationsWithVerified = await prisma.achievement.groupBy({
-      by: ["targetAllocationId"],
-      where: {
-        tenantId,
-        periodId,
-        state: "VERIFIED",
-        targetAllocationId: { not: null },
-        ...(scopeFilter.OR
-          ? { targetAllocation: scopeFilter }
-          : {}),
-      },
-    });
-    overdueCount = allocationCount - allocationsWithVerified.length;
-  }
+  const overallSummary = summarizeScopedAllocations(scopedData.rows, scopedData.dueDate);
 
   return {
     totalKpis: kpiCount,
     totalAllocations: allocationCount,
     totalAchievements,
     achievementsByState: byState,
-    overallCompletionPercent,
-    overdueCount: Math.max(0, overdueCount),
+    overallCompletionPercent: overallSummary.completionPercent,
+    overdueCount: overallSummary.overdueCount,
     pendingReviewCount: byState.SUBMITTED + byState.RECOMMENDED,
   };
 }
@@ -1087,7 +1131,21 @@ export async function getKpiPeriodComparison(
           periodId: true,
           kpiDefinitionId: true,
           targetValue: true,
+          targetDate: true,
+          targetMilestone: true,
+          targetGrade: true,
+          targetBoolean: true,
           targetRating: true,
+          kpiDefinition: {
+            select: {
+              allowMultipleAchievementsPerAllocation: true,
+              measurementType: true,
+              scoringMethod: true,
+              scoringDirection: true,
+              scoringConfig: true,
+              measurementConfig: true,
+            },
+          },
           achievements: {
             orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
             select: {
@@ -1123,17 +1181,48 @@ export async function getKpiPeriodComparison(
     };
 
     entry.totalAllocations += 1;
-    if (isAllocationCompleted(allocation.achievements)) {
+    const aggregate = buildAllocationAchievementAggregate({
+      allowMultipleAchievementsPerAllocation:
+        allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+      achievements: allocation.achievements,
+      measurementType: allocation.kpiDefinition.measurementType,
+      scoringMethod: allocation.kpiDefinition.scoringMethod,
+      scoringDirection: allocation.kpiDefinition.scoringDirection,
+      scoringConfig: allocation.kpiDefinition.scoringConfig as ScoringConfig | null,
+      measurementConfig: allocation.kpiDefinition.measurementConfig as MeasurementConfig | null,
+      target: {
+        targetValue: allocation.targetValue,
+        targetDate: allocation.targetDate,
+        targetMilestone: allocation.targetMilestone,
+        targetGrade: allocation.targetGrade,
+        targetBoolean: allocation.targetBoolean,
+        targetRating: allocation.targetRating,
+      },
+    });
+    if (isAllocationOfficiallyComplete({
+      allowMultipleAchievementsPerAllocation:
+        allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+      aggregate,
+      targetValue: allocation.targetValue,
+      achievements: allocation.achievements,
+    })) {
       entry.verifiedCount += 1;
     }
     entry.targetTotal += allocation.targetRating ?? allocation.targetValue ?? 0;
-
     const latestAchievement = allocation.achievements[0] ?? null;
-    if (latestAchievement) {
-      entry.scoreTotal += scoreFromAchievement(latestAchievement);
+    const officialScore = allocation.kpiDefinition.allowMultipleAchievementsPerAllocation
+      ? aggregate.officialScore
+      : latestAchievement
+        ? scoreFromAchievement(latestAchievement)
+        : null;
+    const officialActual = allocation.kpiDefinition.allowMultipleAchievementsPerAllocation
+      ? aggregate.officialActualValue
+      : latestAchievement?.actualRating ?? latestAchievement?.actualValue ?? 0;
+    if (officialScore != null) {
+      entry.scoreTotal += officialScore;
       entry.scoredCount += 1;
-      entry.achievedTotal += latestAchievement.actualRating ?? latestAchievement.actualValue ?? 0;
     }
+    entry.achievedTotal += officialActual;
 
     metrics.set(key, entry);
   }
@@ -1261,7 +1350,15 @@ export async function getKpiCrossComparison(
 ): Promise<KpiCrossComparison | null> {
   const kpi = await prisma.kpiDefinition.findFirst({
     where: { id: kpiId, kraDefinition: { tenantId, periodId } },
-    select: { title: true },
+    select: {
+      title: true,
+      measurementType: true,
+      allowMultipleAchievementsPerAllocation: true,
+      scoringMethod: true,
+      scoringDirection: true,
+      scoringConfig: true,
+      measurementConfig: true,
+    },
   });
   if (!kpi) return null;
 
@@ -1276,6 +1373,12 @@ export async function getKpiCrossComparison(
     select: {
       assignedToUnitId: true,
       assignedToUserId: true,
+      targetValue: true,
+      targetDate: true,
+      targetMilestone: true,
+      targetGrade: true,
+      targetBoolean: true,
+      targetRating: true,
       assignedToUnit: { select: { id: true, name: true } },
       achievements: {
         orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
@@ -1284,6 +1387,8 @@ export async function getKpiCrossComparison(
           effectiveScore: true,
           stageCompletionScore: true,
           computedScore: true,
+          actualValue: true,
+          actualRating: true,
         },
       },
     },
@@ -1301,6 +1406,7 @@ export async function getKpiCrossComparison(
   const unitMap = new Map<string, {
     name: string;
     allocationCount: number;
+    completedCount: number;
     scoredCount: number;
     scoreTotal: number;
   }>();
@@ -1317,22 +1423,46 @@ export async function getKpiCrossComparison(
     const entry = unitMap.get(unitId) ?? {
       name: unitName,
       allocationCount: 0,
+      completedCount: 0,
       scoredCount: 0,
       scoreTotal: 0,
     };
     entry.allocationCount += 1;
-
-    const latestAchievement = allocation.achievements[0];
-    if (latestAchievement && ["SUBMITTED", "RECOMMENDED", "VERIFIED"].includes(latestAchievement.state)) {
-      const score =
-        latestAchievement.effectiveScore
-        ?? latestAchievement.stageCompletionScore
-        ?? latestAchievement.computedScore;
-
-      if (score != null) {
-        entry.scoreTotal += score;
-        entry.scoredCount += 1;
-      }
+    const latestAchievement = allocation.achievements[0] ?? null;
+    const aggregate = buildAllocationAchievementAggregate({
+      allowMultipleAchievementsPerAllocation: kpi.allowMultipleAchievementsPerAllocation,
+      achievements: allocation.achievements,
+      measurementType: kpi.measurementType,
+      scoringMethod: kpi.scoringMethod,
+      scoringDirection: kpi.scoringDirection,
+      scoringConfig: kpi.scoringConfig as ScoringConfig | null,
+      measurementConfig: kpi.measurementConfig as MeasurementConfig | null,
+      target: {
+        targetValue: allocation.targetValue,
+        targetDate: allocation.targetDate,
+        targetMilestone: allocation.targetMilestone,
+        targetGrade: allocation.targetGrade,
+        targetBoolean: allocation.targetBoolean,
+        targetRating: allocation.targetRating,
+      },
+    });
+    const officialScore = kpi.allowMultipleAchievementsPerAllocation
+      ? aggregate.officialScore
+      : latestAchievement
+        ? scoreFromAchievement(latestAchievement)
+        : null;
+    const isComplete = isAllocationOfficiallyComplete({
+      allowMultipleAchievementsPerAllocation: kpi.allowMultipleAchievementsPerAllocation,
+      aggregate,
+      targetValue: allocation.targetValue,
+      achievements: allocation.achievements,
+    });
+    if (isComplete) {
+      entry.completedCount += 1;
+    }
+    if (officialScore != null) {
+      entry.scoreTotal += officialScore;
+      entry.scoredCount += 1;
     }
 
     unitMap.set(unitId, entry);
@@ -1357,7 +1487,7 @@ export async function getKpiCrossComparison(
           : 0,
       completionPercent:
         unit.allocationCount > 0
-          ? Math.round((unit.scoredCount / unit.allocationCount) * 10000) / 100
+          ? Math.round((unit.completedCount / unit.allocationCount) * 10000) / 100
           : 0,
     };
   });
@@ -1378,31 +1508,9 @@ export async function getAttentionItems(
 ): Promise<AttentionItems> {
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const period = await prisma.assessmentPeriod.findFirst({
-    where: { id: periodId, tenantId },
-    select: { achievementDeadline: true, endDate: true },
-  });
-
   const scopeFilter = buildEffectiveUnitFilter(tenantId, scopeUnitIds);
-
-  let overdueAchievements = 0;
-  const dueDate = period?.achievementDeadline ?? period?.endDate ?? null;
-  if (dueDate && now > dueDate) {
-    const allocationsWithVerified = await prisma.achievement.groupBy({
-      by: ["targetAllocationId"],
-      where: {
-        tenantId,
-        periodId,
-        state: "VERIFIED",
-        targetAllocationId: { not: null },
-        ...(scopeFilter.OR ? { targetAllocation: scopeFilter } : {}),
-      },
-    });
-    const allocationCount = await prisma.targetAllocation.count({
-      where: { tenantId, periodId, ...scopeFilter },
-    });
-    overdueAchievements = Math.max(0, allocationCount - allocationsWithVerified.length);
-  }
+  const scopedData = await loadScopedAggregationData(tenantId, periodId, scopeUnitIds);
+  const scopedSummary = summarizeScopedAllocations(scopedData.rows, scopedData.dueDate);
 
   const allocations = await prisma.targetAllocation.findMany({
     where: {
@@ -1438,34 +1546,31 @@ export async function getAttentionItems(
     },
   });
 
-  const kpis = await prisma.kpiDefinition.findMany({
-    where: { kraDefinition: { tenantId, periodId }, state: "ACTIVE" },
-    select: {
-      id: true,
-      title: true,
-      targetAllocations: {
-        where: scopeFilter,
-        select: {
-          achievements: { select: { state: true } },
-        },
-      },
-    },
-  });
+  const kpiBuckets = new Map<string, { kpiTitle: string; totalAllocations: number; completedAllocations: number }>();
+  for (const row of scopedData.rows) {
+    const bucket = kpiBuckets.get(row.kpiDefinitionId) ?? {
+      kpiTitle: row.kpiTitle,
+      totalAllocations: 0,
+      completedAllocations: 0,
+    };
+    bucket.totalAllocations += 1;
+    if (row.hasVerifiedAchievement) {
+      bucket.completedAllocations += 1;
+    }
+    kpiBuckets.set(row.kpiDefinitionId, bucket);
+  }
 
-  const lowCompletionKpis = kpis
-    .map((kpi) => {
-      const totalAllocations = kpi.targetAllocations.length;
-      const verifiedAllocations = kpi.targetAllocations.filter((allocation) =>
-        allocation.achievements.some((achievement) => achievement.state === "VERIFIED"),
-      ).length;
+  const lowCompletionKpis = [...kpiBuckets.entries()]
+    .map(([kpiId, bucket]) => {
+      const totalAllocations = bucket.totalAllocations;
       const completionPercent =
         totalAllocations > 0
-          ? Math.round((verifiedAllocations / totalAllocations) * 10000) / 100
+          ? Math.round((bucket.completedAllocations / totalAllocations) * 10000) / 100
           : 0;
 
       return {
-        kpiId: kpi.id,
-        kpiTitle: kpi.title,
+        kpiId,
+        kpiTitle: bucket.kpiTitle,
         completionPercent,
         totalAllocations,
       };
@@ -1478,7 +1583,7 @@ export async function getAttentionItems(
     }));
 
   return {
-    overdueAchievements,
+    overdueAchievements: scopedSummary.overdueCount,
     zeroProgressEmployees: [...usersWithAllocations].filter((userId) => !usersWithProgress.has(userId)).length,
     stalePendingReviews,
     lowCompletionKpis,
@@ -1572,11 +1677,23 @@ export async function getUnitSummary(
       },
       select: {
         assignedToUserId: true,
+        targetValue: true,
+        targetDate: true,
+        targetMilestone: true,
+        targetGrade: true,
+        targetBoolean: true,
+        targetRating: true,
         kpiDefinitionId: true,
         kpiDefinition: {
           select: {
             id: true,
             title: true,
+            measurementType: true,
+            allowMultipleAchievementsPerAllocation: true,
+            scoringMethod: true,
+            scoringDirection: true,
+            scoringConfig: true,
+            measurementConfig: true,
             _count: { select: { stages: true } },
             kraDefinition: {
               select: {
@@ -1594,6 +1711,8 @@ export async function getUnitSummary(
             effectiveScore: true,
             stageCompletionScore: true,
             computedScore: true,
+            actualValue: true,
+            actualRating: true,
             stageProgress: { select: { isCompleted: true } },
           },
         },
@@ -1638,9 +1757,37 @@ export async function getUnitSummary(
       memberIds.add(allocation.assignedToUserId);
     }
 
-    const latestAchievement = allocation.achievements[0];
-    const allocationCompleted = isAllocationCompleted(allocation.achievements);
-    const latestScore = latestAchievement ? scoreFromAchievement(latestAchievement) : null;
+    const latestAchievement = allocation.achievements[0] ?? null;
+    const aggregate = buildAllocationAchievementAggregate({
+      allowMultipleAchievementsPerAllocation:
+        allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+      achievements: allocation.achievements,
+      measurementType: allocation.kpiDefinition.measurementType,
+      scoringMethod: allocation.kpiDefinition.scoringMethod,
+      scoringDirection: allocation.kpiDefinition.scoringDirection,
+      scoringConfig: allocation.kpiDefinition.scoringConfig as ScoringConfig | null,
+      measurementConfig: allocation.kpiDefinition.measurementConfig as MeasurementConfig | null,
+      target: {
+        targetValue: allocation.targetValue,
+        targetDate: allocation.targetDate,
+        targetMilestone: allocation.targetMilestone,
+        targetGrade: allocation.targetGrade,
+        targetBoolean: allocation.targetBoolean,
+        targetRating: allocation.targetRating,
+      },
+    });
+    const allocationCompleted = isAllocationOfficiallyComplete({
+      allowMultipleAchievementsPerAllocation:
+        allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+      aggregate,
+      targetValue: allocation.targetValue,
+      achievements: allocation.achievements,
+    });
+    const latestScore = allocation.kpiDefinition.allowMultipleAchievementsPerAllocation
+      ? aggregate.officialScore
+      : latestAchievement
+        ? scoreFromAchievement(latestAchievement)
+        : null;
 
     if (allocationCompleted) {
       completedAllocations += 1;
@@ -1764,7 +1911,23 @@ export async function getUnitMembersSummary(
       },
       select: {
         assignedToUserId: true,
+        targetValue: true,
+        targetDate: true,
+        targetMilestone: true,
+        targetGrade: true,
+        targetBoolean: true,
+        targetRating: true,
         assignedToUser: { select: { firstName: true, lastName: true } },
+        kpiDefinition: {
+          select: {
+            measurementType: true,
+            allowMultipleAchievementsPerAllocation: true,
+            scoringMethod: true,
+            scoringDirection: true,
+            scoringConfig: true,
+            measurementConfig: true,
+          },
+        },
         achievements: {
           orderBy: [{ reportingDate: "desc" }, { createdAt: "desc" }],
           select: {
@@ -1772,6 +1935,8 @@ export async function getUnitMembersSummary(
             effectiveScore: true,
             stageCompletionScore: true,
             computedScore: true,
+            actualValue: true,
+            actualRating: true,
           },
         },
       },
@@ -1822,14 +1987,43 @@ export async function getUnitMembersSummary(
     };
 
     entry.totalAllocations += 1;
-    const allocationCompleted = isAllocationCompleted(allocation.achievements);
+    const latestAchievement = allocation.achievements[0] ?? null;
+    const aggregate = buildAllocationAchievementAggregate({
+      allowMultipleAchievementsPerAllocation:
+        allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+      achievements: allocation.achievements,
+      measurementType: allocation.kpiDefinition.measurementType,
+      scoringMethod: allocation.kpiDefinition.scoringMethod,
+      scoringDirection: allocation.kpiDefinition.scoringDirection,
+      scoringConfig: allocation.kpiDefinition.scoringConfig as ScoringConfig | null,
+      measurementConfig: allocation.kpiDefinition.measurementConfig as MeasurementConfig | null,
+      target: {
+        targetValue: allocation.targetValue,
+        targetDate: allocation.targetDate,
+        targetMilestone: allocation.targetMilestone,
+        targetGrade: allocation.targetGrade,
+        targetBoolean: allocation.targetBoolean,
+        targetRating: allocation.targetRating,
+      },
+    });
+    const allocationCompleted = isAllocationOfficiallyComplete({
+      allowMultipleAchievementsPerAllocation:
+        allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+      aggregate,
+      targetValue: allocation.targetValue,
+      achievements: allocation.achievements,
+    });
     if (allocationCompleted) {
       entry.completedAllocations += 1;
     }
 
-    const latestAchievement = allocation.achievements[0];
-    if (latestAchievement) {
-      entry.scoreTotal += scoreFromAchievement(latestAchievement);
+    const officialScore = allocation.kpiDefinition.allowMultipleAchievementsPerAllocation
+      ? aggregate.officialScore
+      : latestAchievement
+        ? scoreFromAchievement(latestAchievement)
+        : null;
+    if (officialScore != null) {
+      entry.scoreTotal += officialScore;
       entry.scoredCount += 1;
     }
 
@@ -1904,6 +2098,11 @@ export async function getPersonDetail(
           title: true,
           measurementType: true,
           unitLabel: true,
+          allowMultipleAchievementsPerAllocation: true,
+          scoringMethod: true,
+          scoringDirection: true,
+          scoringConfig: true,
+          measurementConfig: true,
           _count: { select: { stages: true } },
         },
       },
@@ -1915,6 +2114,8 @@ export async function getPersonDetail(
           effectiveScore: true,
           stageCompletionScore: true,
           computedScore: true,
+          actualValue: true,
+          actualRating: true,
         },
       },
     },
@@ -1947,13 +2148,33 @@ export async function getPersonDetail(
   const allocationRows = await Promise.all(
     allocations.map(async (allocation) => {
       const latestAchievement = allocation.achievements[0] ?? null;
+      const aggregate = buildAllocationAchievementAggregate({
+        allowMultipleAchievementsPerAllocation:
+          allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+        achievements: allocation.achievements,
+        measurementType: allocation.kpiDefinition.measurementType,
+        scoringMethod: allocation.kpiDefinition.scoringMethod,
+        scoringDirection: allocation.kpiDefinition.scoringDirection,
+        scoringConfig: allocation.kpiDefinition.scoringConfig as ScoringConfig | null,
+        measurementConfig: allocation.kpiDefinition.measurementConfig as MeasurementConfig | null,
+        target: {
+          targetValue: allocation.targetValue,
+          targetDate: allocation.targetDate,
+          targetMilestone: allocation.targetMilestone,
+          targetGrade: allocation.targetGrade,
+          targetBoolean: allocation.targetBoolean,
+          targetRating: allocation.targetRating,
+        },
+      });
       const stageRows = latestAchievement
         ? await getStageProgressForAchievement(latestAchievement.id, tenantId)
         : [];
       const stagesTotal = stageRows.length || allocation.kpiDefinition._count.stages;
       const stagesComplete = stageRows.filter((stage) => stage.isCompleted).length;
       const state = latestAchievement?.state ?? "NOT_STARTED";
-      const score = scoreFromAchievement(latestAchievement);
+      const score = allocation.kpiDefinition.allowMultipleAchievementsPerAllocation
+        ? aggregate.officialScore ?? 0
+        : scoreFromAchievement(latestAchievement);
       const targetDisplay = formatTargetDisplay(
         allocation.kpiDefinition.measurementType,
         allocation,
@@ -1963,12 +2184,31 @@ export async function getPersonDetail(
         stageRows.length > 0
           ? stageRows.some((stage) => stage.isOverdue)
           : Boolean(dueDate && now > dueDate && state !== "VERIFIED");
+      const isComplete = isAllocationOfficiallyComplete({
+        allowMultipleAchievementsPerAllocation:
+          allocation.kpiDefinition.allowMultipleAchievementsPerAllocation,
+        aggregate,
+        targetValue: allocation.targetValue,
+        achievements: allocation.achievements,
+      });
+      const progressCompletionPercent =
+        stagesTotal > 0
+          ? Math.round((stagesComplete / stagesTotal) * 100)
+          : allocation.kpiDefinition.allowMultipleAchievementsPerAllocation && allocation.targetValue
+            ? Math.min(100, Math.round((aggregate.officialActualValue / allocation.targetValue) * 100))
+            : isComplete
+              ? 100
+              : 0;
 
       overallScore += score;
-      if (latestAchievement) {
+      if (
+        allocation.kpiDefinition.allowMultipleAchievementsPerAllocation
+          ? aggregate.officialScore != null
+          : latestAchievement != null
+      ) {
         scoredCount += 1;
       }
-      if (isAllocationCompleted(allocation.achievements)) {
+      if (isComplete) {
         completedCount += 1;
       }
 
@@ -1983,7 +2223,7 @@ export async function getPersonDetail(
         latestAchievementId: latestAchievement?.id ?? null,
         stagesComplete,
         stagesTotal,
-        completionPercent: stagesTotal > 0 ? Math.round((stagesComplete / stagesTotal) * 100) : 0,
+        completionPercent: progressCompletionPercent,
         score,
         state,
         isOverdue,

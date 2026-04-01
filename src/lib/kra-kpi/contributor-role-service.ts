@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult } from "./shared";
 import { parseContributionRoles } from "./kpi-service";
+import { getTemplateApplicableRoleBaseline } from "./applicable-role-defaults";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -193,6 +194,41 @@ async function buildBaselineApplicableRoles(
       rows[0] = { ...rows[0], isDefault: true };
     }
     return rows;
+  }
+
+  const kpiDefinition = await tx.kpiDefinition.findUnique({
+    where: { id: kpiDefinitionId },
+    select: { achievementTemplateKey: true },
+  });
+  const templateRoles = getTemplateApplicableRoleBaseline(
+    kpiDefinition?.achievementTemplateKey ?? null,
+  );
+  if (templateRoles.length > 0) {
+    const rows: Array<{ contributorRoleId: string; isDefault: boolean; sortOrder: number }> = [];
+
+    for (const templateRole of templateRoles) {
+      const role = await tx.contributorRole.findUnique({
+        where: {
+          tenantId_code: {
+            tenantId,
+            code: templateRole.roleCode,
+          },
+        },
+      });
+      if (!role) continue;
+      rows.push({
+        contributorRoleId: role.id,
+        isDefault: templateRole.isDefault,
+        sortOrder: templateRole.sortOrder,
+      });
+    }
+
+    if (rows.length > 0) {
+      if (!rows.some((row) => row.isDefault)) {
+        rows[0] = { ...rows[0], isDefault: true };
+      }
+      return rows;
+    }
   }
 
   const memberRole = await tx.contributorRole.findUnique({

@@ -238,6 +238,7 @@ export const builderKpiDefinitionSchema = z.object({
     "PRIMARY_ONLY",
   ]).default("FULL_EACH"),
   allowPartialCompletion: z.boolean().default(true),
+  allowMultipleAchievementsPerAllocation: z.boolean().default(false),
   participantMode: participantModeSchema.default("SINGLE_OWNER"),
   rewardRecurrencePolicy: rewardRecurrencePolicySchema.default("RECURRING"),
   policyDateFieldKey: z.string().trim().max(80).nullable().optional(),
@@ -284,6 +285,7 @@ export const kpiTemplateWriteSchema = z.object({
   payload: kpiBuilderPayloadSchema,
 });
 
+export type KpiTemplateWriteDraft = z.input<typeof kpiTemplateWriteSchema>;
 export type KpiTemplateWriteInput = z.infer<typeof kpiTemplateWriteSchema>;
 
 export const kpiCopySelectionSchema = z.object({

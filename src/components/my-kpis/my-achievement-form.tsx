@@ -23,6 +23,11 @@ import {
 } from "@/lib/kra-kpi/publication-doi-client";
 import { GALGOTIA_AUTO_EXCLUDE_EXTERNAL_TEMPLATE_KEYS } from "@/lib/kra-kpi/galgotia-template-constants";
 import {
+  applyPublicationJournalLookupToFormData,
+  getPublicationJournalLookupStoredData,
+  type PublicationJournalLookupResult,
+} from "@/lib/kra-kpi/publication-journal-shared";
+import {
   getPublicationLookupStoredData,
   isFullPublicationDate,
   type PublicationLookupAuthor,
@@ -50,12 +55,14 @@ export type AdditionalAchievementFormContext = {
 type Props =
   | {
       allocation: MyAllocationView;
+      achievementOverride?: AchievementView | null;
       additionalContext?: never;
       onDone: () => void;
       onCancel: () => void;
     }
   | {
       allocation?: never;
+      achievementOverride?: never;
       additionalContext: AdditionalAchievementFormContext;
       onDone: () => void;
       onCancel: () => void;
@@ -79,6 +86,7 @@ type FormSubject = {
   submissionConfig: AchievementSubmissionConfig;
   achievement: AchievementView | null;
   isAdditional: boolean;
+  allowMultipleAchievementsPerAllocation: boolean;
 };
 
 type UserOption = {
@@ -112,11 +120,13 @@ type PublicationLookupApiResponse = {
   filledFieldKeys?: string[];
   missingFieldKeys?: string[];
   warnings?: string[];
+  journalLookup?: PublicationJournalLookupResult | null;
 };
 
 function buildSubject(
   allocation: MyAllocationView | undefined,
   additionalContext: AdditionalAchievementFormContext | undefined,
+  achievementOverride?: AchievementView | null,
 ): FormSubject {
   if (allocation) {
     return {
@@ -135,8 +145,10 @@ function buildSubject(
       achievementTemplateKey: allocation.achievementTemplateKey,
       achievementFormConfig: allocation.achievementFormConfig,
       submissionConfig: allocation.submissionConfig,
-      achievement: allocation.achievement,
+      achievement: achievementOverride ?? allocation.achievement,
       isAdditional: false,
+      allowMultipleAchievementsPerAllocation:
+        allocation.allowMultipleAchievementsPerAllocation,
     };
   }
 
@@ -162,6 +174,7 @@ function buildSubject(
     submissionConfig: additionalContext.submissionConfig,
     achievement: additionalContext.achievement,
     isAdditional: true,
+    allowMultipleAchievementsPerAllocation: false,
   };
 }
 
@@ -391,12 +404,15 @@ function validateContributors(input: {
 
 export function MyAchievementForm({
   allocation,
+  achievementOverride,
   additionalContext,
   onDone,
   onCancel,
 }: Props) {
-  const subject = buildSubject(allocation, additionalContext);
+  const subject = buildSubject(allocation, additionalContext, achievementOverride);
   const ach = subject.achievement;
+  const forceSingleItemActualValue =
+    !subject.isAdditional && subject.allowMultipleAchievementsPerAllocation;
   const isEdit = ach != null && (ach.state === "DRAFT" || ach.state === "REJECTED");
   const genericFields = ACHIEVEMENT_TEMPLATES.GENERIC.fields;
   const fields: AchievementFieldConfig[] = subject.achievementFormConfig?.fields ?? genericFields;
@@ -427,7 +443,9 @@ export function MyAchievementForm({
           : {}),
     );
 
-  const [actualValue, setActualValue] = useState<number | undefined>(ach?.actualValue ?? undefined);
+  const [actualValue, setActualValue] = useState<number | undefined>(
+    forceSingleItemActualValue ? 1 : ach?.actualValue ?? undefined,
+  );
   const [actualDate, setActualDate] = useState(formatDateInput(ach?.actualDate));
   const [actualMilestone, setActualMilestone] = useState(ach?.actualMilestone ?? "");
   const [actualGrade, setActualGrade] = useState(ach?.actualGrade ?? "");
@@ -459,6 +477,10 @@ export function MyAchievementForm({
     () => getPublicationLookupStoredData(formData),
     [formData],
   );
+  const publicationJournalLookup = useMemo(
+    () => getPublicationJournalLookupStoredData(formData),
+    [formData],
+  );
   const publicationDateFieldInfo = publicationLookup?.rawPublicationDate
     && !isFullPublicationDate(publicationLookup.rawPublicationDate)
     ? "Publication year/month found from DOI; enter the exact date manually."
@@ -467,6 +489,22 @@ export function MyAchievementForm({
     () => getPublicationAuthorPreview(publicationLookup?.authors ?? [], showAllPublicationAuthors),
     [publicationLookup, showAllPublicationAuthors],
   );
+  const journalPolicyAlert =
+    publicationJournalLookup?.policyStatus === "BLACKLISTED"
+      ? {
+          type: "error" as const,
+          message: publicationJournalLookup.policyNote
+            ? `This journal is blacklisted by your institution: ${publicationJournalLookup.policyNote}`
+            : "This journal is blacklisted by your institution.",
+        }
+      : publicationJournalLookup?.policyStatus === "DISABLED"
+        ? {
+            type: "warning" as const,
+            message: publicationJournalLookup.policyNote
+              ? `This journal is disabled by your institution: ${publicationJournalLookup.policyNote}`
+              : "This journal is disabled by your institution.",
+          }
+        : null;
 
   useEffect(() => {
     if (!showContributorSection) {
@@ -558,26 +596,50 @@ export function MyAchievementForm({
         currentValues: formData,
         lookup: lookupResult,
       });
+      const journalApplied = payload.journalLookup
+        ? applyPublicationJournalLookupToFormData({
+            fields,
+            currentValues: applied.formData,
+            lookup: payload.journalLookup,
+            mode: "overwrite",
+          })
+        : null;
+      const nextFormData = journalApplied?.formData ?? applied.formData;
+      const filledFieldKeys = [
+        ...new Set([
+          ...applied.visibleFilledFieldKeys,
+          ...(journalApplied?.visibleFilledFieldKeys ?? []),
+        ]),
+      ];
+      const missingFieldKeys = [
+        ...new Set([
+          ...applied.visibleMissingFieldKeys,
+          ...(journalApplied?.visibleMissingFieldKeys ?? []),
+        ]),
+      ].filter((key) => !filledFieldKeys.includes(key));
 
-      setFormData(applied.formData);
+      setFormData(nextFormData);
       setShowAllPublicationAuthors(false);
       setFormErrors((prev) => {
         const next = { ...prev };
-        for (const key of applied.visibleFilledFieldKeys) {
+        for (const key of filledFieldKeys) {
           delete next[key];
         }
         return next;
       });
 
       const feedbackType =
-        applied.visibleMissingFieldKeys.length > 0 || lookupResult.warnings.length > 0
+        missingFieldKeys.length > 0 ||
+        lookupResult.warnings.length > 0 ||
+        (payload.journalLookup?.warnings.length ?? 0) > 0
           ? "warning"
           : "success";
       const details = [
         ...lookupResult.warnings,
+        ...(payload.journalLookup?.warnings ?? []),
         ...(
-          applied.visibleMissingFieldKeys.length > 0
-            ? [`Manual entry still required for: ${applied.visibleMissingFieldKeys.join(", ")}`]
+          missingFieldKeys.length > 0
+            ? [`Manual entry still required for: ${missingFieldKeys.join(", ")}`]
             : []
         ),
       ];
@@ -585,8 +647,8 @@ export function MyAchievementForm({
       setDoiLookupFeedback({
         type: feedbackType,
         message: buildPublicationLookupFeedbackMessage({
-          filledCount: applied.visibleFilledFieldKeys.length,
-          missingCount: applied.visibleMissingFieldKeys.length,
+          filledCount: filledFieldKeys.length,
+          missingCount: missingFieldKeys.length,
         }),
         details,
       });
@@ -660,7 +722,9 @@ export function MyAchievementForm({
       case "NUMERIC":
       case "PERCENTAGE":
       case "CURRENCY":
-        return actualValue != null ? null : "Enter the actual value.";
+        return forceSingleItemActualValue || actualValue != null
+          ? null
+          : "Enter the actual value.";
       case "BOOLEAN":
         return actualBoolean != null ? null : "Select whether the target was achieved.";
       case "RATING":
@@ -731,13 +795,14 @@ export function MyAchievementForm({
       typeof formData.description === "string" && formData.description.trim()
         ? formData.description.trim()
         : evidenceDescription || undefined;
+    const persistedActualValue = forceSingleItemActualValue ? 1 : actualValue;
 
     const body = {
       periodId: subject.periodId,
       kpiDefinitionId: subject.kpiDefinitionId,
       ...(!subject.isAdditional &&
         subject.targetAllocationId && { targetAllocationId: subject.targetAllocationId }),
-      ...(actualValue !== undefined && { actualValue }),
+      ...(persistedActualValue !== undefined && { actualValue: persistedActualValue }),
       ...(actualDate && { actualDate }),
       ...(actualMilestone && { actualMilestone }),
       ...(actualGrade && { actualGrade }),
@@ -756,7 +821,7 @@ export function MyAchievementForm({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            ...(actualValue !== undefined && { actualValue }),
+            ...(persistedActualValue !== undefined && { actualValue: persistedActualValue }),
             ...(actualDate && { actualDate }),
             ...(actualMilestone && { actualMilestone }),
             ...(actualGrade && { actualGrade }),
@@ -865,15 +930,21 @@ export function MyAchievementForm({
               Actual Value {subject.unitLabel ? `(${subject.unitLabel})` : ""}
               <span className="ml-0.5 text-red-500">*</span>
             </label>
-            <input
-              type="number"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-              value={actualValue ?? ""}
-              onChange={(event) =>
-                setActualValue(event.target.value ? Number(event.target.value) : undefined)
-              }
-              placeholder={`e.g., ${subject.targetValue ?? ""}`}
-            />
+            {forceSingleItemActualValue ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                Each achievement request counts as 1 for this KPI. Official progress is calculated from verified requests only.
+              </div>
+            ) : (
+              <input
+                type="number"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                value={actualValue ?? ""}
+                onChange={(event) =>
+                  setActualValue(event.target.value ? Number(event.target.value) : undefined)
+                }
+                placeholder={`e.g., ${subject.targetValue ?? ""}`}
+              />
+            )}
           </div>
         )}
 
@@ -1017,6 +1088,18 @@ export function MyAchievementForm({
                   ))}
                 </div>
               )}
+            </div>
+          ) : null}
+
+          {journalPolicyAlert ? (
+            <div
+              className={`mb-3 rounded-md border p-3 text-xs ${
+                journalPolicyAlert.type === "error"
+                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                  : "border-amber-200 bg-amber-50 text-amber-800"
+              }`}
+            >
+              <div className="font-medium">{journalPolicyAlert.message}</div>
             </div>
           ) : null}
 
