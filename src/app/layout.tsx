@@ -13,9 +13,9 @@ const sourceSerif = Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "Academic Intelligence Platform",
+  title: "AcademetriQ — KPI Tracking for Academic Institutions",
   description:
-    "An academic SaaS starter for tenant provisioning, identity governance, staged imports, and intelligent dashboards.",
+    "Allocate, track, measure, and improve institutional KPIs. Accreditation-mapped templates, auto DVV generation, AI recommendations, research output tracking, and competition analysis — all in one platform.",
 };
 
 export default function RootLayout({

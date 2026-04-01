@@ -15,7 +15,8 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
     "db:seedscript": "node prisma/seedscript.mjs",
-    "seed:galgotia": "npx tsx scripts/seed-galgotia-kpi-templates.ts",
+    "seed:galgotia": "npx tsx scripts/seed-galgotia-demo.ts",
+    "seed:galgotia:templates": "npx tsx scripts/seed-galgotia-kpi-templates.ts",
     "db:studio": "prisma studio",
     "bootstrap:superadmin": "node scripts/bootstrap-superadmin.mjs"
   },

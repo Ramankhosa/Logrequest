@@ -1,18 +1,18 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f5f1e8;
-  --foreground: #172033;
-  --panel: rgba(255, 255, 255, 0.74);
-  --panel-strong: rgba(255, 255, 255, 0.9);
-  --muted: #5f6b85;
+  --background: #f8f9fb;
+  --foreground: #0f172a;
+  --panel: rgba(255, 255, 255, 0.82);
+  --panel-strong: rgba(255, 255, 255, 0.95);
+  --muted: #64748b;
   --slate: #64748b;
-  --border: rgba(23, 32, 51, 0.12);
+  --border: rgba(15, 23, 42, 0.08);
   --brand: #0f766e;
-  --brand-soft: #d8f3ed;
+  --brand-soft: #d1fae5;
   --blue: #2563eb;
   --blue-soft: #dbeafe;
-  --accent: #f59e0b;
+  --accent: #d97706;
   --danger: #dc2626;
 }
 
@@ -46,9 +46,8 @@ body {
   background: var(--background);
   color: var(--foreground);
   background-image:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 30%),
-    radial-gradient(circle at right 20%, rgba(245, 158, 11, 0.12), transparent 24%),
-    linear-gradient(180deg, #f8f4ec 0%, #f3efe6 100%);
+    radial-gradient(ellipse at 0% 0%, rgba(15, 118, 110, 0.05), transparent 50%),
+    radial-gradient(ellipse at 100% 100%, rgba(37, 99, 235, 0.03), transparent 50%);
   font-family: var(--font-geist-sans), sans-serif;
   min-height: 100vh;
 }
@@ -65,8 +64,8 @@ a {
 .surface-grid {
   background-image:
     linear-gradient(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.6)),
-    linear-gradient(rgba(23, 32, 51, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(23, 32, 51, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
   background-size: auto, 28px 28px, 28px 28px;
 }
 
@@ -74,7 +73,7 @@ a {
   backdrop-filter: blur(16px);
   background: var(--panel);
   border: 1px solid var(--border);
-  box-shadow: 0 24px 70px rgba(23, 32, 51, 0.08);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 8px 32px rgba(15, 23, 42, 0.06);
 }
 
 .section-title {
@@ -88,7 +87,7 @@ a {
 }
 
 .data-glow::after {
-  background: linear-gradient(120deg, rgba(15, 118, 110, 0.18), rgba(245, 158, 11, 0.08));
+  background: linear-gradient(120deg, rgba(15, 118, 110, 0.12), rgba(37, 99, 235, 0.06));
   border-radius: inherit;
   content: "";
   inset: 0;
@@ -100,4 +99,64 @@ a {
 
 .data-glow:hover::after {
   opacity: 1;
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(28px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes bar-grow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+@keyframes progress-fill {
+  from { width: 0%; }
+}
+
+@keyframes gradient-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.25); }
+  70% { box-shadow: 0 0 0 8px rgba(15, 118, 110, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0); }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.7s ease-out both;
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+.animate-bar-grow {
+  animation: bar-grow 1s ease-out both;
+  transform-origin: bottom;
+}
+
+.animate-progress {
+  animation: progress-fill 1.2s ease-out both;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2.5s ease-out infinite;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--brand) 0%, #6366f1 50%, var(--brand) 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: gradient-shift 6s ease-in-out infinite;
 }
