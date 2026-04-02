@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -37,6 +37,16 @@ import {
 } from "@/lib/kra-kpi/kpi-builder-client";
 
 type UnitOption = { id: string; name: string };
+type WorkflowReviewerOption = {
+  userId: string;
+  name: string;
+  email: string;
+  employeeId: string | null;
+  designation: string | null;
+  membershipStatus: string;
+  unitIds: string[];
+  unitLabels: string[];
+};
 
 type TemplateRow = {
   id: string;
@@ -348,6 +358,7 @@ export function KpiBuilderForm({
   const [benefitTypes, setBenefitTypes] = useState<BenefitTypeRow[]>([]);
   const [externalTemplates, setExternalTemplates] = useState<ExternalTemplateRow[]>([]);
   const [sourceKpis, setSourceKpis] = useState<KpiSummaryRow[]>([]);
+  const [workflowReviewerOptions, setWorkflowReviewerOptions] = useState<WorkflowReviewerOption[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [selectedSourceKpiId, setSelectedSourceKpiId] = useState("");
   const [copyPreview, setCopyPreview] = useState<CopyPreviewResponse | null>(null);
@@ -382,6 +393,7 @@ export function KpiBuilderForm({
           fetch("/api/tenant/kra-kpi/benefit-types"),
           fetch("/api/tenant/kra-kpi/external-contrib-templates"),
           fetch("/api/tenant/kra-kpi/kpis"),
+          fetch("/api/tenant/kra-kpi/workflow/reviewer-options"),
         ];
         if (mode === "edit" && initial?.id) {
           requests.unshift(fetch(`/api/tenant/kra-kpi/kpi-builder/${initial.id}`));
@@ -420,6 +432,7 @@ export function KpiBuilderForm({
               state: row.state,
             })),
         );
+        setWorkflowReviewerOptions((json[offset + 5] as WorkflowReviewerOption[]) ?? []);
       } catch {
         if (!cancelled) {
           setError("Failed to load unified KPI builder data.");
@@ -436,6 +449,20 @@ export function KpiBuilderForm({
       cancelled = true;
     };
   }, [initial?.id, kraDefinitionId, mode, units]);
+
+  const reviewerOptionsForUnit = useCallback(
+    (unitId: string | null | undefined) =>
+      unitId
+        ? workflowReviewerOptions.filter((option) => option.unitIds.includes(unitId))
+        : [],
+    [workflowReviewerOptions],
+  );
+
+  const formatReviewerLabel = useCallback(
+    (option: WorkflowReviewerOption) =>
+      `${option.name}${option.employeeId ? ` (${option.employeeId})` : ""}`,
+    [],
+  );
 
   const fieldOptions = useMemo(
     () =>
@@ -980,7 +1007,10 @@ export function KpiBuilderForm({
             <label className={labelCls}>Key Unit</label>
             <select
               value={payload.definition.keyUnitId ?? ""}
-              onChange={(event) => updateDefinition("keyUnitId", event.target.value || null)}
+              onChange={(event) => {
+                updateDefinition("keyUnitId", event.target.value || null);
+                updateDefinition("keyReviewerUserId", null);
+              }}
               className={inputCls}
             >
               <option value="">None</option>
@@ -995,13 +1025,48 @@ export function KpiBuilderForm({
             <label className={labelCls}>Final Unit</label>
             <select
               value={payload.definition.finalUnitId ?? ""}
-              onChange={(event) => updateDefinition("finalUnitId", event.target.value || null)}
+              onChange={(event) => {
+                updateDefinition("finalUnitId", event.target.value || null);
+                updateDefinition("finalReviewerUserId", null);
+              }}
               className={inputCls}
             >
               <option value="">None</option>
               {units.map((unit) => (
                 <option key={unit.id} value={unit.id}>
                   {unit.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>Key Reviewer</label>
+            <select
+              value={payload.definition.keyReviewerUserId ?? ""}
+              onChange={(event) => updateDefinition("keyReviewerUserId", event.target.value || null)}
+              className={inputCls}
+              disabled={!payload.definition.keyUnitId}
+            >
+              <option value="">Fallback to key unit head</option>
+              {reviewerOptionsForUnit(payload.definition.keyUnitId).map((option) => (
+                <option key={option.userId} value={option.userId}>
+                  {formatReviewerLabel(option)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>Final Reviewer</label>
+            <select
+              value={payload.definition.finalReviewerUserId ?? ""}
+              onChange={(event) => updateDefinition("finalReviewerUserId", event.target.value || null)}
+              className={inputCls}
+              disabled={!payload.definition.finalUnitId}
+            >
+              <option value="">Fallback to final unit head</option>
+              {reviewerOptionsForUnit(payload.definition.finalUnitId).map((option) => (
+                <option key={option.userId} value={option.userId}>
+                  {formatReviewerLabel(option)}
                 </option>
               ))}
             </select>

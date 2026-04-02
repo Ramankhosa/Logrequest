@@ -4,7 +4,7 @@ import { AppShell } from "@/components/app-shell";
 import { PersonnelTransfersPageClient } from "@/components/tenant/personnel-transfers-page";
 import { getShellIdentity } from "@/lib/auth/access";
 import { tenantNavigationGroups } from "@/lib/navigation";
-import { requireTenantAdmin } from "@/lib/auth/session";
+import { requireTenantCapability } from "@/lib/auth/session";
 import {
   getTransferSetupOptions,
   listTransfers,
@@ -15,7 +15,7 @@ export default async function PersonnelTransfersPage({
 }: {
   searchParams?: Promise<{ membershipId?: string }>;
 }) {
-  const context = await requireTenantAdmin();
+  const context = await requireTenantCapability("MANAGE_PERSONNEL");
   const tenantId = context.tenant?.id ?? "";
   const params = searchParams ? await searchParams : undefined;
   const [setup, transfers] = await Promise.all([

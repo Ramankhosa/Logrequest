@@ -69,8 +69,18 @@ enum TenantPermissionRole {
   TARGET_MANAGER
   WORKFLOW_MANAGER
   REWARD_MANAGER
+  ACCREDITATION_MANAGER
   ACCESS_ADMIN
   PERSONNEL_MANAGER
+}
+
+enum TenantServiceCode {
+  ACCREDITATION
+}
+
+enum TenantServiceEntitlementStatus {
+  ENABLED
+  DISABLED
 }
 
 enum ContributorType {
@@ -183,34 +193,45 @@ enum OrgRoleScope {
 // ── KRA/KPI Enums (Release 1) ──────────────────────────────────────────────
 
 enum KpiMeasurementType {
-  NUMERIC          // count of items (publications, patents)
-  PERCENTAGE       // pass rate, attendance
-  CURRENCY         // grant amount, revenue
-  BOOLEAN          // yes/no (accreditation obtained)
-  RATING           // 1-5 scale
-  MILESTONE        // NOT_STARTED → IN_PROGRESS → COMPLETED
-  DATE_TARGET      // deadline compliance
-  GRADE            // qualitative scale (Outstanding...Poor)
+  NUMERIC // count of items (publications, patents)
+  PERCENTAGE // pass rate, attendance
+  CURRENCY // grant amount, revenue
+  BOOLEAN // yes/no (accreditation obtained)
+  RATING // 1-5 scale
+  MILESTONE // NOT_STARTED → IN_PROGRESS → COMPLETED
+  DATE_TARGET // deadline compliance
+  GRADE // qualitative scale (Outstanding...Poor)
 }
 
 enum KraCategoryScope {
-  GLOBAL           // superadmin-managed, visible to all tenants
-  TENANT           // tenant-created
+  GLOBAL // superadmin-managed, visible to all tenants
+  TENANT // tenant-created
+}
+
+enum AccreditationScope {
+  GLOBAL
+  TENANT
+}
+
+enum CriterionDataType {
+  QUANTITATIVE
+  QUALITATIVE
+  HYBRID
 }
 
 enum AssessmentPeriodState {
   DRAFT
-  OPEN             // targets can be set
-  IN_PROGRESS      // targets locked, achievements recorded
-  UNDER_REVIEW     // verification happening
-  CLOSED           // finalized, read-only
+  OPEN // targets can be set
+  IN_PROGRESS // targets locked, achievements recorded
+  UNDER_REVIEW // verification happening
+  CLOSED // finalized, read-only
   ARCHIVED
 }
 
 enum AssessmentPeriodType {
-  CALENDAR_YEAR    // Jan-Dec
-  FINANCIAL_YEAR   // Apr-Mar (configurable)
-  SPECIFIC_RANGE   // custom start/end
+  CALENDAR_YEAR // Jan-Dec
+  FINANCIAL_YEAR // Apr-Mar (configurable)
+  SPECIFIC_RANGE // custom start/end
 }
 
 enum ReviewCycleFrequency {
@@ -235,22 +256,22 @@ enum KpiDefinitionState {
 }
 
 enum KpiAllocationType {
-  DEPARTMENT       // stays at dept level, head owns it
-  INDIVIDUAL       // must be split to individual members
-  BOTH             // head decides whether to keep or split
+  DEPARTMENT // stays at dept level, head owns it
+  INDIVIDUAL // must be split to individual members
+  BOTH // head decides whether to keep or split
 }
 
 enum TargetAllocationState {
-  ACTIVE           // final value entered, target is live
-  LOCKED           // frozen after deadline, no changes
+  ACTIVE // final value entered, target is live
+  LOCKED // frozen after deadline, no changes
 }
 
 enum AchievementState {
-  DRAFT            // being filled in
-  SUBMITTED        // submitted for verification
-  RECOMMENDED      // dept head has endorsed
-  VERIFIED         // approved
-  REJECTED         // sent back with reason (displayed as "Not Approved" in UI)
+  DRAFT // being filled in
+  SUBMITTED // submitted for verification
+  RECOMMENDED // dept head has endorsed
+  VERIFIED // approved
+  REJECTED // sent back with reason (displayed as "Not Approved" in UI)
 }
 
 enum AchievementFieldType {
@@ -268,14 +289,14 @@ enum AchievementFieldType {
 }
 
 enum ScoringMethod {
-  LINEAR           // actual/target * 100
-  THRESHOLD        // below = 0, above = 100
-  SLAB             // defined ranges
+  LINEAR // actual/target * 100
+  THRESHOLD // below = 0, above = 100
+  SLAB // defined ranges
 }
 
 enum ScoringDirection {
-  ASCENDING        // higher actual = better (publications, revenue)
-  DESCENDING       // lower actual = better (attrition, defects, costs)
+  ASCENDING // higher actual = better (publications, revenue)
+  DESCENDING // lower actual = better (attrition, defects, costs)
 }
 
 enum MilestoneStatus {
@@ -296,32 +317,32 @@ enum GradeValue {
 // ── KRA/KPI Enums (Release 2) ──────────────────────────────────────────────
 
 enum KpiFlowStatus {
-  CREATED           // allocation just created, no work started
-  ASSIGNED          // target communicated to assignee
-  IN_PROGRESS       // assignee working on it
-  SUBMITTED         // assignee submitted achievement for review
-  KEY_REVIEW        // key department reviewing (optional step)
-  KEY_APPROVED      // key department endorsed
-  KEY_REJECTED      // key department sent back (auto-resets to IN_PROGRESS)
-  FINAL_REVIEW      // final/starting department reviewing (optional step)
-  VERIFIED          // fully approved
-  REJECTED          // sent back at any review level
+  CREATED // allocation just created, no work started
+  ASSIGNED // target communicated to assignee
+  IN_PROGRESS // assignee working on it
+  SUBMITTED // assignee submitted achievement for review
+  KEY_REVIEW // key department reviewing (optional step)
+  KEY_APPROVED // key department endorsed
+  KEY_REJECTED // key department sent back (auto-resets to IN_PROGRESS)
+  FINAL_REVIEW // final/starting department reviewing (optional step)
+  VERIFIED // fully approved
+  REJECTED // sent back at any review level
 }
 
 enum EvidenceType {
-  DOCUMENT          // PDF, DOC, DOCX
-  URL               // web link
-  CERTIFICATE       // scanned certificate
-  SELF_DECLARATION  // self-attested
-  SYSTEM_GENERATED  // auto-captured by system
-  NONE              // no evidence needed
+  DOCUMENT // PDF, DOC, DOCX
+  URL // web link
+  CERTIFICATE // scanned certificate
+  SELF_DECLARATION // self-attested
+  SYSTEM_GENERATED // auto-captured by system
+  NONE // no evidence needed
 }
 
 enum TeamCreditMethod {
-  FULL_EACH          // each contributor gets 100% credit (count-based KPIs)
-  EQUAL_SPLIT        // credit divided equally among all contributors
-  WEIGHTED_SPLIT     // credit split per contributor weight (e.g., first author 60%)
-  PRIMARY_ONLY       // only primary contributor gets credit
+  FULL_EACH // each contributor gets 100% credit (count-based KPIs)
+  EQUAL_SPLIT // credit divided equally among all contributors
+  WEIGHTED_SPLIT // credit split per contributor weight (e.g., first author 60%)
+  PRIMARY_ONLY // only primary contributor gets credit
 }
 
 enum KpiParticipantMode {
@@ -463,51 +484,54 @@ enum ResignationStatus {
 }
 
 model Tenant {
-  id                    String                 @id @default(cuid())
-  name                  String
-  code                  String                 @unique
-  legalOrganizationName String
-  organizationType      String
-  primaryDomains        String[]
-  subscriptionPlan      String
-  subscriptionStartDate DateTime?
-  subscriptionEndDate   DateTime?
-  entitlementState      TenantEntitlementState @default(TRIAL_ACTIVE)
-  lifecycleState        TenantLifecycleState   @default(DRAFT)
-  ownerUserId           String?
-  createdByUserId       String?
-  createdAt             DateTime               @default(now())
-  updatedAt             DateTime               @updatedAt
-  memberships           Membership[]
-  invitations           Invitation[]
-  uploadBatches         UploadBatch[]
-  auditLogs             AuditLog[]
-  structureVersions     OrgStructureVersion[]
-  orgUnits              OrgUnit[]
-  kraCategories         KraCategoryDefinition[]
-  assessmentPeriods     AssessmentPeriod[]
-  kraDefinitions        KraDefinition[]
-  targetAllocations     TargetAllocation[]
-  achievements          Achievement[]
-  policy                TenantPolicy?
-  roleDefinitions       OrgRoleDefinition[]
-  notifications         Notification[]
-  contributorRewardEvents ContributorRewardEvent[]
-  personnelPolicy       TenantPersonnelPolicy?
-  leaveTypeDefinitions  LeaveTypeDefinition[]
-  leaveRecords          LeaveRecord[]
-  transferRecords       TransferRecord[]
-  resignationRecords    ResignationRecord[]
-  personnelActions      PersonnelAction[]
-  actingAssignments     ActingAssignment[]
-  benefitTypes          BenefitType[]
-  contributorRoles      ContributorRole[]
-  externalContribTemplates ExternalContributorTemplate[]
-  permissionAssignments TenantPermissionAssignment[]
-  kpiTemplates          KpiTemplate[]
-  contributorRewards    ContributorReward[]
-  journalCatalogRecords JournalCatalogRecord[]
-  journalImportBatches  JournalImportBatch[]
+  id                             String                          @id @default(cuid())
+  name                           String
+  code                           String                          @unique
+  legalOrganizationName          String
+  organizationType               String
+  primaryDomains                 String[]
+  subscriptionPlan               String
+  subscriptionStartDate          DateTime?
+  subscriptionEndDate            DateTime?
+  entitlementState               TenantEntitlementState          @default(TRIAL_ACTIVE)
+  lifecycleState                 TenantLifecycleState            @default(DRAFT)
+  ownerUserId                    String?
+  createdByUserId                String?
+  createdAt                      DateTime                        @default(now())
+  updatedAt                      DateTime                        @updatedAt
+  memberships                    Membership[]
+  invitations                    Invitation[]
+  uploadBatches                  UploadBatch[]
+  auditLogs                      AuditLog[]
+  structureVersions              OrgStructureVersion[]
+  orgUnits                       OrgUnit[]
+  kraCategories                  KraCategoryDefinition[]
+  assessmentPeriods              AssessmentPeriod[]
+  kraDefinitions                 KraDefinition[]
+  targetAllocations              TargetAllocation[]
+  achievements                   Achievement[]
+  policy                         TenantPolicy?
+  roleDefinitions                OrgRoleDefinition[]
+  notifications                  Notification[]
+  contributorRewardEvents        ContributorRewardEvent[]
+  personnelPolicy                TenantPersonnelPolicy?
+  leaveTypeDefinitions           LeaveTypeDefinition[]
+  leaveRecords                   LeaveRecord[]
+  transferRecords                TransferRecord[]
+  resignationRecords             ResignationRecord[]
+  personnelActions               PersonnelAction[]
+  actingAssignments              ActingAssignment[]
+  benefitTypes                   BenefitType[]
+  contributorRoles               ContributorRole[]
+  externalContribTemplates       ExternalContributorTemplate[]
+  permissionAssignments          TenantPermissionAssignment[]
+  kpiTemplates                   KpiTemplate[]
+  contributorRewards             ContributorReward[]
+  journalCatalogRecords          JournalCatalogRecord[]
+  journalImportBatches           JournalImportBatch[]
+  serviceEntitlements            TenantServiceEntitlement[]
+  accreditationBodies            AccreditationBody[]
+  kpiAccreditationCriterionLinks KpiAccreditationCriterionLink[]
 
   @@index([lifecycleState, entitlementState])
 }
@@ -526,43 +550,62 @@ model TenantPolicy {
   tenant                       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
+model TenantServiceEntitlement {
+  id               String                         @id @default(cuid())
+  tenantId         String
+  serviceCode      TenantServiceCode
+  status           TenantServiceEntitlementStatus @default(DISABLED)
+  enabledAt        DateTime?
+  enabledByUserId  String?
+  disabledAt       DateTime?
+  disabledByUserId String?
+  notes            String?
+  createdAt        DateTime                       @default(now())
+  updatedAt        DateTime                       @updatedAt
+  tenant           Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, serviceCode])
+  @@index([tenantId, status])
+  @@index([serviceCode, status])
+}
+
 model User {
-  id                  String               @id @default(cuid())
-  firstName           String
-  lastName            String
-  officialEmail       String               @unique
-  alternateEmail      String?
-  phoneNumber         String?
-  allowedLoginMethods Json?
-  passwordHash        String?
-  emailVerifiedAt     DateTime?
-  passwordSetAt       DateTime?
-  passwordChangedAt   DateTime?
-  lastLoginAt         DateTime?
-  lifecycleState      UserLifecycleState   @default(DRAFT)
-  mustResetPassword   Boolean              @default(false)
-  isSuperadmin        Boolean              @default(false)
-  failedLoginCount    Int                  @default(0)
-  lockedUntil         DateTime?
-  memberships         Membership[]
-  achievementContributions AchievementContributor[] @relation("AchievementContributorUser")
-  contributorRewards  ContributorReward[]  @relation("ContributorRewardUser")
-  contributorRewardEvents ContributorRewardEvent[]
-  invitations         Invitation[]
-  socialAccounts      SocialAccount[]
-  passwordResetTokens PasswordResetToken[]
-  orgAssignments      UserOrgAssignment[]
-  orgRoleAssignments  OrgRoleAssignment[]
-  tenantPermissionAssignments TenantPermissionAssignment[] @relation("TenantPermissionAssignmentUser")
+  id                                 String                       @id @default(cuid())
+  firstName                          String
+  lastName                           String
+  officialEmail                      String                       @unique
+  alternateEmail                     String?
+  phoneNumber                        String?
+  allowedLoginMethods                Json?
+  passwordHash                       String?
+  emailVerifiedAt                    DateTime?
+  passwordSetAt                      DateTime?
+  passwordChangedAt                  DateTime?
+  lastLoginAt                        DateTime?
+  lifecycleState                     UserLifecycleState           @default(DRAFT)
+  mustResetPassword                  Boolean                      @default(false)
+  isSuperadmin                       Boolean                      @default(false)
+  failedLoginCount                   Int                          @default(0)
+  lockedUntil                        DateTime?
+  memberships                        Membership[]
+  achievementContributions           AchievementContributor[]     @relation("AchievementContributorUser")
+  contributorRewards                 ContributorReward[]          @relation("ContributorRewardUser")
+  contributorRewardEvents            ContributorRewardEvent[]
+  invitations                        Invitation[]
+  socialAccounts                     SocialAccount[]
+  passwordResetTokens                PasswordResetToken[]
+  orgAssignments                     UserOrgAssignment[]
+  orgRoleAssignments                 OrgRoleAssignment[]
+  tenantPermissionAssignments        TenantPermissionAssignment[] @relation("TenantPermissionAssignmentUser")
   grantedTenantPermissionAssignments TenantPermissionAssignment[] @relation("TenantPermissionAssignmentCreatedBy")
-  managerLines        ReportingLine[]      @relation("OrgManagerLines")
-  memberLines         ReportingLine[]      @relation("OrgMemberLines")
-  targetAllocations   TargetAllocation[]   @relation("TargetUser")
-  notifications       Notification[]
-  keyReviewKpis       KpiDefinition[]      @relation("KpiKeyReviewer")
-  finalReviewKpis     KpiDefinition[]      @relation("KpiFinalReviewer")
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
+  managerLines                       ReportingLine[]              @relation("OrgManagerLines")
+  memberLines                        ReportingLine[]              @relation("OrgMemberLines")
+  targetAllocations                  TargetAllocation[]           @relation("TargetUser")
+  notifications                      Notification[]
+  keyReviewKpis                      KpiDefinition[]              @relation("KpiKeyReviewer")
+  finalReviewKpis                    KpiDefinition[]              @relation("KpiFinalReviewer")
+  createdAt                          DateTime                     @default(now())
+  updatedAt                          DateTime                     @updatedAt
 
   @@index([lifecycleState])
 }
@@ -710,105 +753,105 @@ model UploadRow {
 }
 
 model JournalCatalogRecord {
-  id                    String                  @id @default(cuid())
-  tenantId              String?
-  scope                 JournalCatalogScope
-  scopeTenantKey        String
-  sourceSystem          JournalImportSourceSystem
-  sourceYear            Int
-  sourceId              String?
-  identityKey           String
-  currentIdentityKey    String?
-  title                 String
-  normalizedTitle       String
-  type                  String
-  issnRaw               String?
-  issnPrimary           String?
-  issnList              String[]
-  issnNormalizedList    String[]
-  publisher             String?
-  duplicatePublisher    String?
-  openAccessLabel       String?
-  isOpenAccess          Boolean?
-  openAccessDiamondLabel String?
-  isOpenAccessDiamond   Boolean?
-  sjr                   Float?
-  sjrBestQuartile       String?
-  hIndex                Int?
-  totalDocsCurrent      Int?
-  totalDocs3Years       Int?
-  totalRefs             Int?
-  totalCitations3Years  Int?
-  citableDocs3Years     Int?
-  citationsPerDoc2Years Float?
-  refsPerDoc            Float?
-  femalePercent         Float?
-  overton               Int?
-  sdg                   Int?
-  country               String?
-  region                String?
-  coverage              String?
-  categories            String?
-  areas                 String?
-  policyStatus          JournalPolicyStatus     @default(ALLOWED)
-  policyNote            String?
-  isJournalEligible     Boolean                 @default(false)
-  importBatchId         String?
+  id                       String                    @id @default(cuid())
+  tenantId                 String?
+  scope                    JournalCatalogScope
+  scopeTenantKey           String
+  sourceSystem             JournalImportSourceSystem
+  sourceYear               Int
+  sourceId                 String?
+  identityKey              String
+  currentIdentityKey       String?
+  title                    String
+  normalizedTitle          String
+  type                     String
+  issnRaw                  String?
+  issnPrimary              String?
+  issnList                 String[]
+  issnNormalizedList       String[]
+  publisher                String?
+  duplicatePublisher       String?
+  openAccessLabel          String?
+  isOpenAccess             Boolean?
+  openAccessDiamondLabel   String?
+  isOpenAccessDiamond      Boolean?
+  sjr                      Float?
+  sjrBestQuartile          String?
+  hIndex                   Int?
+  totalDocsCurrent         Int?
+  totalDocs3Years          Int?
+  totalRefs                Int?
+  totalCitations3Years     Int?
+  citableDocs3Years        Int?
+  citationsPerDoc2Years    Float?
+  refsPerDoc               Float?
+  femalePercent            Float?
+  overton                  Int?
+  sdg                      Int?
+  country                  String?
+  region                   String?
+  coverage                 String?
+  categories               String?
+  areas                    String?
+  policyStatus             JournalPolicyStatus       @default(ALLOWED)
+  policyNote               String?
+  isJournalEligible        Boolean                   @default(false)
+  importBatchId            String?
   overriddenGlobalRecordId String?
-  rawSourcePayload      Json?
-  metadata              Json?
-  isArchived            Boolean                 @default(false)
-  archivedAt            DateTime?
-  archivedByUserId      String?
-  archiveReason         String?
-  isSuperseded          Boolean                 @default(false)
-  supersededAt          DateTime?
-  supersededByBatchId   String?
-  createdByUserId       String?
-  createdAt             DateTime                @default(now())
-  updatedAt             DateTime                @updatedAt
-  tenant                Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  importBatch           JournalImportBatch?     @relation("JournalBatchRecords", fields: [importBatchId], references: [id], onDelete: SetNull)
-  overrideSource        JournalCatalogRecord?   @relation("JournalOverrideSource", fields: [overriddenGlobalRecordId], references: [id], onDelete: SetNull)
-  tenantOverrides       JournalCatalogRecord[]  @relation("JournalOverrideSource")
-  supersededByBatch     JournalImportBatch?     @relation("JournalSupersededBatch", fields: [supersededByBatchId], references: [id], onDelete: SetNull)
+  rawSourcePayload         Json?
+  metadata                 Json?
+  isArchived               Boolean                   @default(false)
+  archivedAt               DateTime?
+  archivedByUserId         String?
+  archiveReason            String?
+  isSuperseded             Boolean                   @default(false)
+  supersededAt             DateTime?
+  supersededByBatchId      String?
+  createdByUserId          String?
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  tenant                   Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  importBatch              JournalImportBatch?       @relation("JournalBatchRecords", fields: [importBatchId], references: [id], onDelete: SetNull)
+  overrideSource           JournalCatalogRecord?     @relation("JournalOverrideSource", fields: [overriddenGlobalRecordId], references: [id], onDelete: SetNull)
+  tenantOverrides          JournalCatalogRecord[]    @relation("JournalOverrideSource")
+  supersededByBatch        JournalImportBatch?       @relation("JournalSupersededBatch", fields: [supersededByBatchId], references: [id], onDelete: SetNull)
 
+  @@unique([scopeTenantKey, sourceYear, currentIdentityKey])
   @@index([tenantId, sourceYear, isArchived])
   @@index([scopeTenantKey, sourceYear, type])
   @@index([scopeTenantKey, sourceYear, sjrBestQuartile])
   @@index([scopeTenantKey, sourceYear, issnPrimary])
   @@index([scopeTenantKey, sourceYear, policyStatus])
   @@index([scopeTenantKey, sourceYear, currentIdentityKey])
-  @@unique([scopeTenantKey, sourceYear, currentIdentityKey])
 }
 
 model JournalImportBatch {
-  id               String                   @id @default(cuid())
-  tenantId         String?
-  scope            JournalCatalogScope
-  scopeTenantKey   String
-  uploadedByUserId String?
-  fileName         String
-  fileType         String
-  sourceSystem     JournalImportSourceSystem
-  sourceYear       Int
-  mode             String
-  status           JournalImportBatchStatus @default(VALIDATED)
-  totalRows        Int                      @default(0)
-  validRows        Int                      @default(0)
-  warningRows      Int                      @default(0)
-  rejectedRows     Int                      @default(0)
-  appliedRows      Int                      @default(0)
-  metadata         Json?
-  confirmedAt      DateTime?
-  failedAt         DateTime?
-  failureMessage   String?
-  createdAt        DateTime                 @default(now())
-  updatedAt        DateTime                 @updatedAt
-  tenant           Tenant?                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  rows             JournalImportRow[]
-  importedRecords  JournalCatalogRecord[]   @relation("JournalBatchRecords")
-  supersededRecords JournalCatalogRecord[]  @relation("JournalSupersededBatch")
+  id                String                    @id @default(cuid())
+  tenantId          String?
+  scope             JournalCatalogScope
+  scopeTenantKey    String
+  uploadedByUserId  String?
+  fileName          String
+  fileType          String
+  sourceSystem      JournalImportSourceSystem
+  sourceYear        Int
+  mode              String
+  status            JournalImportBatchStatus  @default(VALIDATED)
+  totalRows         Int                       @default(0)
+  validRows         Int                       @default(0)
+  warningRows       Int                       @default(0)
+  rejectedRows      Int                       @default(0)
+  appliedRows       Int                       @default(0)
+  metadata          Json?
+  confirmedAt       DateTime?
+  failedAt          DateTime?
+  failureMessage    String?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  tenant            Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rows              JournalImportRow[]
+  importedRecords   JournalCatalogRecord[]    @relation("JournalBatchRecords")
+  supersededRecords JournalCatalogRecord[]    @relation("JournalSupersededBatch")
 
   @@index([tenantId, scope, sourceYear, createdAt])
   @@index([scopeTenantKey, sourceYear, status])
@@ -853,6 +896,165 @@ model AuditLog {
 
   @@index([tenantId, createdAt])
   @@index([targetType, targetId])
+}
+
+model AccreditationBody {
+  id              String                     @id @default(cuid())
+  tenantId        String?
+  scope           AccreditationScope         @default(GLOBAL)
+  code            String
+  name            String
+  country         String?
+  description     String?
+  websiteUrl      String?
+  isActive        Boolean                    @default(true)
+  createdByUserId String?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  tenant          Tenant?                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  versions        AccreditationBodyVersion[]
+
+  @@unique([tenantId, code])
+  @@index([scope, isActive])
+}
+
+model AccreditationBodyVersion {
+  id                String                       @id @default(cuid())
+  bodyId            String
+  versionCode       String
+  versionName       String
+  scoreBase         Float
+  convertedScaleMax Float?
+  conversionFormula String?
+  effectiveFrom     DateTime?
+  effectiveTo       DateTime?
+  isActive          Boolean                      @default(true)
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+  body              AccreditationBody            @relation(fields: [bodyId], references: [id], onDelete: Cascade)
+  criteria          AccreditationCriterion[]
+  profiles          AccreditationProfile[]
+  gradeBands        AccreditationGradeBand[]
+  thresholdRules    AccreditationThresholdRule[]
+
+  @@unique([bodyId, versionCode])
+  @@index([bodyId, isActive])
+}
+
+model AccreditationProfile {
+  id              String                       @id @default(cuid())
+  versionId       String
+  profileCode     String
+  profileName     String
+  description     String?
+  isDefault       Boolean                      @default(false)
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+  version         AccreditationBodyVersion     @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  weightOverrides AccreditationProfileWeight[]
+
+  @@unique([versionId, profileCode])
+}
+
+model AccreditationCriterion {
+  id               String                          @id @default(cuid())
+  versionId        String
+  parentId         String?
+  criterionCode    String
+  title            String
+  description      String?
+  dataType         CriterionDataType               @default(QUANTITATIVE)
+  maxScore         Float?
+  sortOrder        Int                             @default(0)
+  depth            Int                             @default(0)
+  unitOfMeasure    String?
+  validationRules  Json?
+  expectedEvidence Json?
+  isLeaf           Boolean                         @default(false)
+  isActive         Boolean                         @default(true)
+  createdAt        DateTime                        @default(now())
+  updatedAt        DateTime                        @updatedAt
+  version          AccreditationBodyVersion        @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  parent           AccreditationCriterion?         @relation("AccreditationCriterionTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children         AccreditationCriterion[]        @relation("AccreditationCriterionTree")
+  scoringSlabs     AccreditationScoringSlab[]
+  profileWeights   AccreditationProfileWeight[]
+  thresholdRules   AccreditationThresholdRule[]
+  kpiLinks         KpiAccreditationCriterionLink[]
+
+  @@unique([versionId, criterionCode])
+  @@index([versionId, parentId, sortOrder])
+  @@index([versionId, depth])
+}
+
+model AccreditationProfileWeight {
+  id            String                 @id @default(cuid())
+  profileId     String
+  criterionId   String
+  maxScore      Float
+  weightPercent Float?
+  profile       AccreditationProfile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  criterion     AccreditationCriterion @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, criterionId])
+}
+
+model AccreditationScoringSlab {
+  id            String                 @id @default(cuid())
+  criterionId   String
+  rangeMin      Float?
+  rangeMax      Float?
+  rangeLabel    String?
+  pointsAwarded Float
+  sortOrder     Int                    @default(0)
+  criterion     AccreditationCriterion @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+
+  @@index([criterionId, sortOrder])
+}
+
+model AccreditationGradeBand {
+  id         String                   @id @default(cuid())
+  versionId  String
+  gradeLabel String
+  scoreMin   Float
+  scoreMax   Float
+  outcome    String
+  sortOrder  Int                      @default(0)
+  version    AccreditationBodyVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([versionId, sortOrder])
+}
+
+model AccreditationThresholdRule {
+  id            String                   @id @default(cuid())
+  versionId     String
+  criterionId   String?
+  thresholdType String
+  minValue      Float
+  outcome       String
+  description   String?
+  version       AccreditationBodyVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  criterion     AccreditationCriterion?  @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+
+  @@index([versionId])
+}
+
+model KpiAccreditationCriterionLink {
+  id              String                 @id @default(cuid())
+  tenantId        String
+  kpiDefinitionId String
+  criterionId     String
+  notes           String?
+  createdByUserId String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kpiDefinition   KpiDefinition          @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  criterion       AccreditationCriterion @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+
+  @@unique([kpiDefinitionId, criterionId])
+  @@index([tenantId, kpiDefinitionId])
+  @@index([tenantId, criterionId])
 }
 
 model OrgStructureVersion {
@@ -1024,13 +1226,13 @@ model OrgRoleDefinition {
 
 model KraCategoryDefinition {
   id              String           @id @default(cuid())
-  tenantId        String?          // null = global (superadmin)
+  tenantId        String? // null = global (superadmin)
   scope           KraCategoryScope @default(TENANT)
-  categoryKey     String           // "RESEARCH", "FINANCIAL"
+  categoryKey     String // "RESEARCH", "FINANCIAL"
   displayLabel    String
   description     String?
-  iconName        String?          // lucide icon name for UI
-  colorHex        String?          // dashboard color
+  iconName        String? // lucide icon name for UI
+  colorHex        String? // dashboard color
   sortOrder       Int              @default(0)
   isActive        Boolean          @default(true)
   createdByUserId String?
@@ -1046,8 +1248,8 @@ model KraCategoryDefinition {
 model AssessmentPeriod {
   id                    String                @id @default(cuid())
   tenantId              String
-  name                  String                // "AY 2025-26"
-  code                  String                // "AY2025-26"
+  name                  String // "AY 2025-26"
+  code                  String // "AY2025-26"
   periodType            AssessmentPeriodType  @default(SPECIFIC_RANGE)
   startDate             DateTime
   endDate               DateTime
@@ -1070,20 +1272,20 @@ model AssessmentPeriod {
 }
 
 model KraDefinition {
-  id              String              @id @default(cuid())
+  id              String                 @id @default(cuid())
   tenantId        String
   periodId        String
   categoryId      String?
   title           String
   description     String?
-  weightage       Int                 @default(0) // integer, out of org total 100
-  state           KraDefinitionState  @default(DRAFT)
-  sortOrder       Int                 @default(0)
+  weightage       Int                    @default(0) // integer, out of org total 100
+  state           KraDefinitionState     @default(DRAFT)
+  sortOrder       Int                    @default(0)
   createdByUserId String?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  period          AssessmentPeriod    @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  period          AssessmentPeriod       @relation(fields: [periodId], references: [id], onDelete: Restrict)
   category        KraCategoryDefinition? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   kpiDefinitions  KpiDefinition[]
 
@@ -1092,70 +1294,71 @@ model KraDefinition {
 }
 
 model KpiDefinition {
-  id                String             @id @default(cuid())
-  kraDefinitionId   String
-  title             String
-  description       String?
+  id                                     String                    @id @default(cuid())
+  kraDefinitionId                        String
+  title                                  String
+  description                            String?
   // ── Measurement ──
-  measurementType   KpiMeasurementType @default(NUMERIC)
-  unitLabel         String?            // "count", "%", "INR", "days"
-  weightage         Int                @default(0) // must sum to parent KRA's weightage
-  defaultTarget     Float?
-  measurementConfig Json?              // Zod-validated per type
+  measurementType                        KpiMeasurementType        @default(NUMERIC)
+  unitLabel                              String? // "count", "%", "INR", "days"
+  weightage                              Int                       @default(0) // must sum to parent KRA's weightage
+  defaultTarget                          Float?
+  measurementConfig                      Json? // Zod-validated per type
   // ── Scoring ──
-  scoringMethod     ScoringMethod      @default(LINEAR)
-  scoringDirection  ScoringDirection   @default(ASCENDING)
-  scoringConfig     Json?              // Zod-validated per method
-  isPerCapita       Boolean            @default(false)
+  scoringMethod                          ScoringMethod             @default(LINEAR)
+  scoringDirection                       ScoringDirection          @default(ASCENDING)
+  scoringConfig                          Json? // Zod-validated per method
+  isPerCapita                            Boolean                   @default(false)
   // ── Allocation ──
-  allocationType    KpiAllocationType  @default(BOTH)
-  startingUnitId    String             // originating department
+  allocationType                         KpiAllocationType         @default(BOTH)
+  startingUnitId                         String // originating department
   // ── Achievement Template ──
-  achievementTemplateKey  String?    // "PUBLICATION", "PATENT", etc.
-  achievementFormConfig   Json?      // [{key, label, type, required, options?, pattern?}]
+  achievementTemplateKey                 String? // "PUBLICATION", "PATENT", etc.
+  achievementFormConfig                  Json? // [{key, label, type, required, options?, pattern?}]
   // ── R2: Verification Routing ──
-  keyUnitId             String?
-  finalUnitId           String?
-  keyReviewerUserId     String?
-  finalReviewerUserId   String?
+  keyUnitId                              String?
+  finalUnitId                            String?
+  keyReviewerUserId                      String?
+  finalReviewerUserId                    String?
   // ── R2: SOP & Evidence ──
-  sopDescription        String?
-  sopFiles              Json?
-  evidenceRequired      Boolean            @default(true)
-  evidenceTypes         EvidenceType[]
-  evidenceInstructions  String?
+  sopDescription                         String?
+  sopFiles                               Json?
+  evidenceRequired                       Boolean                   @default(true)
+  evidenceTypes                          EvidenceType[]
+  evidenceInstructions                   String?
   // ── R2: Team KPI ──
-  isTeamKpi             Boolean            @default(false)
-  teamCreditMethod      TeamCreditMethod   @default(FULL_EACH)
+  isTeamKpi                              Boolean                   @default(false)
+  teamCreditMethod                       TeamCreditMethod          @default(FULL_EACH)
   // ── R2.2: Stages & submission ──
-  allowPartialCompletion Boolean           @default(true)
-  allowMultipleAchievementsPerAllocation Boolean @default(true)
-  contributionRoles      Json?
-  participantMode        KpiParticipantMode        @default(SINGLE_OWNER)
-  rewardRecurrencePolicy KpiRewardRecurrencePolicy @default(RECURRING)
-  policyDateFieldKey     String?
+  allowPartialCompletion                 Boolean                   @default(true)
+  allowMultipleAchievementsPerAllocation Boolean                   @default(true)
+  contributionRoles                      Json?
+  participantMode                        KpiParticipantMode        @default(SINGLE_OWNER)
+  rewardRecurrencePolicy                 KpiRewardRecurrencePolicy @default(RECURRING)
+  policyDateFieldKey                     String?
   // ── State ──
-  state             KpiDefinitionState @default(DRAFT)
-  sortOrder         Int                @default(0)
-  guidanceNotes     String?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
+  state                                  KpiDefinitionState        @default(DRAFT)
+  sortOrder                              Int                       @default(0)
+  guidanceNotes                          String?
+  createdAt                              DateTime                  @default(now())
+  updatedAt                              DateTime                  @updatedAt
 
-  kraDefinition     KraDefinition      @relation(fields: [kraDefinitionId], references: [id], onDelete: Cascade)
-  startingUnit      OrgUnit            @relation("KpiStartingUnit", fields: [startingUnitId], references: [id], onDelete: Restrict)
-  keyUnit           OrgUnit?           @relation("KpiKeyUnit", fields: [keyUnitId], references: [id], onDelete: SetNull)
-  finalUnit         OrgUnit?           @relation("KpiFinalUnit", fields: [finalUnitId], references: [id], onDelete: SetNull)
-  keyReviewerUser   User?              @relation("KpiKeyReviewer", fields: [keyReviewerUserId], references: [id], onDelete: SetNull)
-  finalReviewerUser User?              @relation("KpiFinalReviewer", fields: [finalReviewerUserId], references: [id], onDelete: SetNull)
-  targetAllocations TargetAllocation[]
-  achievements      Achievement[]
-  targetUnits       KpiTargetUnit[]
-  stages            KpiStageDefinition[]
-  applicableRoles   KpiApplicableRole[]
-  contributorConfig KpiContributorConfig?
-  rewardTiers       KpiRewardTier[]
-  rewardComponents  KpiRewardComponent[]
-  contributorRewards ContributorReward[]
+  kraDefinition               KraDefinition                   @relation(fields: [kraDefinitionId], references: [id], onDelete: Cascade)
+  startingUnit                OrgUnit                         @relation("KpiStartingUnit", fields: [startingUnitId], references: [id], onDelete: Restrict)
+  keyUnit                     OrgUnit?                        @relation("KpiKeyUnit", fields: [keyUnitId], references: [id], onDelete: SetNull)
+  finalUnit                   OrgUnit?                        @relation("KpiFinalUnit", fields: [finalUnitId], references: [id], onDelete: SetNull)
+  keyReviewerUser             User?                           @relation("KpiKeyReviewer", fields: [keyReviewerUserId], references: [id], onDelete: SetNull)
+  finalReviewerUser           User?                           @relation("KpiFinalReviewer", fields: [finalReviewerUserId], references: [id], onDelete: SetNull)
+  targetAllocations           TargetAllocation[]
+  achievements                Achievement[]
+  targetUnits                 KpiTargetUnit[]
+  stages                      KpiStageDefinition[]
+  applicableRoles             KpiApplicableRole[]
+  contributorConfig           KpiContributorConfig?
+  rewardTiers                 KpiRewardTier[]
+  rewardComponents            KpiRewardComponent[]
+  contributorRewards          ContributorReward[]
+  accreditationCriterionLinks KpiAccreditationCriterionLink[]
 
   @@index([kraDefinitionId])
   @@index([startingUnitId])
@@ -1166,20 +1369,20 @@ model KpiDefinition {
 }
 
 model BenefitType {
-  id          String   @id @default(cuid())
-  tenantId    String
-  code        String
-  name        String
-  description String?
-  unit        String
-  precision   Int      @default(2)
-  roundingMode String  @default("HALF_UP")
-  isActive    Boolean  @default(true)
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  rewardComponents KpiRewardComponent[]
+  id                 String               @id @default(cuid())
+  tenantId           String
+  code               String
+  name               String
+  description        String?
+  unit               String
+  precision          Int                  @default(2)
+  roundingMode       String               @default("HALF_UP")
+  isActive           Boolean              @default(true)
+  sortOrder          Int                  @default(0)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  tenant             Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rewardComponents   KpiRewardComponent[]
   contributorRewards ContributorReward[]
 
   @@unique([tenantId, code])
@@ -1187,20 +1390,20 @@ model BenefitType {
 }
 
 model ContributorRole {
-  id                   String              @id @default(cuid())
-  tenantId             String
-  code                 String
-  name                 String
-  description          String?
-  defaultCreditPercent Float
-  isActive             Boolean             @default(true)
-  sortOrder            Int                 @default(0)
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
-  tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  applicableKpis       KpiApplicableRole[]
+  id                      String                   @id @default(cuid())
+  tenantId                String
+  code                    String
+  name                    String
+  description             String?
+  defaultCreditPercent    Float
+  isActive                Boolean                  @default(true)
+  sortOrder               Int                      @default(0)
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  tenant                  Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  applicableKpis          KpiApplicableRole[]
   achievementContributors AchievementContributor[]
-  rewardDistributions  KpiRewardDistribution[]
+  rewardDistributions     KpiRewardDistribution[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -1220,76 +1423,76 @@ model KpiApplicableRole {
 }
 
 model ExternalContributorTemplate {
-  id          String   @id @default(cuid())
+  id          String                 @id @default(cuid())
   tenantId    String
   name        String
   description String?
   fields      Json
-  isDefault   Boolean  @default(false)
-  isActive    Boolean  @default(true)
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  isDefault   Boolean                @default(false)
+  isActive    Boolean                @default(true)
+  sortOrder   Int                    @default(0)
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+  tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   kpiConfigs  KpiContributorConfig[]
 
   @@index([tenantId, isActive])
 }
 
 model KpiContributorConfig {
-  id                        String                      @id @default(cuid())
-  kpiDefinitionId           String                      @unique
+  id                        String                       @id @default(cuid())
+  kpiDefinitionId           String                       @unique
   externalContribTemplateId String?
-  allowExternalContributors Boolean                     @default(true)
+  allowExternalContributors Boolean                      @default(true)
   duplicateCheckFields      Json?
-  creditSumMode             String                      @default("MUST_EQUAL_100")
-  createdAt                 DateTime                    @default(now())
-  updatedAt                 DateTime                    @updatedAt
-  kpiDefinition             KpiDefinition               @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  creditSumMode             String                       @default("MUST_EQUAL_100")
+  createdAt                 DateTime                     @default(now())
+  updatedAt                 DateTime                     @updatedAt
+  kpiDefinition             KpiDefinition                @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
   externalContribTemplate   ExternalContributorTemplate? @relation(fields: [externalContribTemplateId], references: [id])
 
   @@index([externalContribTemplateId])
 }
 
 model KpiTemplate {
-  id            String   @id @default(cuid())
-  tenantId      String?
-  code          String   @unique
-  name          String
-  description   String?
-  category      String?
-  isSystem      Boolean  @default(false)
-  isActive      Boolean  @default(true)
-  sortOrder     Int      @default(0)
+  id             String   @id @default(cuid())
+  tenantId       String?
+  code           String   @unique
+  name           String
+  description    String?
+  category       String?
+  isSystem       Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  sortOrder      Int      @default(0)
   builderPayload Json
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  tenant        Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  tenant         Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, isActive])
   @@index([isSystem, isActive])
 }
 
 model TargetAllocation {
-  id                 String                @id @default(cuid())
-  tenantId           String
-  periodId           String
-  kpiDefinitionId    String
-  assignedToUnitId   String?
-  assignedToUserId   String?
-  allocatedByUserId  String
+  id                     String                 @id @default(cuid())
+  tenantId               String
+  periodId               String
+  kpiDefinitionId        String
+  assignedToUnitId       String?
+  assignedToUserId       String?
+  allocatedByUserId      String
   // Target (polymorphic by measurement type)
-  targetValue        Float?
-  targetDate         DateTime?
-  targetMilestone    MilestoneStatus?
-  targetGrade        GradeValue?
-  targetBoolean      Boolean?
-  targetRating       Int?
+  targetValue            Float?
+  targetDate             DateTime?
+  targetMilestone        MilestoneStatus?
+  targetGrade            GradeValue?
+  targetBoolean          Boolean?
+  targetRating           Int?
   // State
-  state              TargetAllocationState @default(ACTIVE)
-  lockedAt           DateTime?
+  state                  TargetAllocationState  @default(ACTIVE)
+  lockedAt               DateTime?
   // ── R2: Flow tracking ──
-  flowStatus             KpiFlowStatus     @default(CREATED)
+  flowStatus             KpiFlowStatus          @default(CREATED)
   flowLog                Json?
   // ── R2: Verifier override ──
   verifierOverrideUserId String?
@@ -1297,20 +1500,20 @@ model TargetAllocation {
   // ── R2: Team weights ──
   teamWeights            Json?
   // Cascade lineage
-  parentAllocationId String?
-  notes              String?
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
-  tenant             Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  period             AssessmentPeriod      @relation(fields: [periodId], references: [id], onDelete: Restrict)
-  kpiDefinition      KpiDefinition         @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
-  assignedToUnit     OrgUnit?              @relation("TargetUnit", fields: [assignedToUnitId], references: [id], onDelete: SetNull)
-  assignedToUser     User?                 @relation("TargetUser", fields: [assignedToUserId], references: [id], onDelete: SetNull)
-  parentAllocation   TargetAllocation?     @relation("CascadeParent", fields: [parentAllocationId], references: [id], onDelete: SetNull)
-  childAllocations   TargetAllocation[]    @relation("CascadeParent")
-  achievements       Achievement[]
-  stageProgress      KpiStageProgress[]
-  transferActions    TransferTargetAction[]
+  parentAllocationId     String?
+  notes                  String?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  tenant                 Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  period                 AssessmentPeriod       @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  kpiDefinition          KpiDefinition          @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
+  assignedToUnit         OrgUnit?               @relation("TargetUnit", fields: [assignedToUnitId], references: [id], onDelete: SetNull)
+  assignedToUser         User?                  @relation("TargetUser", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  parentAllocation       TargetAllocation?      @relation("CascadeParent", fields: [parentAllocationId], references: [id], onDelete: SetNull)
+  childAllocations       TargetAllocation[]     @relation("CascadeParent")
+  achievements           Achievement[]
+  stageProgress          KpiStageProgress[]
+  transferActions        TransferTargetAction[]
 
   @@index([tenantId, periodId, kpiDefinitionId])
   @@index([assignedToUnitId, periodId])
@@ -1319,7 +1522,7 @@ model TargetAllocation {
 }
 
 model Achievement {
-  id                    String             @id @default(cuid())
+  id                    String                   @id @default(cuid())
   tenantId              String
   periodId              String
   kpiDefinitionId       String
@@ -1335,18 +1538,18 @@ model Achievement {
   actualRating          Int?
   // Evidence (simple text in R1, file uploads added in R2)
   evidenceDescription   String?
-  evidenceLinks         String[]           // URLs for now, file uploads in R2
+  evidenceLinks         String[] // URLs for now, file uploads in R2
   // ── R2: Evidence files ──
-  evidenceFiles          Json?
+  evidenceFiles         Json?
   // ── R2: Multi-level verification ──
-  currentVerifierUserId  String?
-  currentVerifierUnitId  String?
+  currentVerifierUserId String?
+  currentVerifierUnitId String?
   // ── R2: Team achievement ──
-  isTeamAchievement      Boolean           @default(false)
+  isTeamAchievement     Boolean                  @default(false)
   // Scoring
-  computedScore         Float?             // 0-100
+  computedScore         Float? // 0-100
   // Dynamic form data (R1.1a)
-  achievementFormData       Json?      // filled-in custom fields per KPI template
+  achievementFormData   Json? // filled-in custom fields per KPI template
   // ── R2.2: Named instance & stage score ──
   title                 String?
   contributionRole      String?
@@ -1354,23 +1557,23 @@ model Achievement {
   effectiveScore        Float?
   stageCompletionScore  Float?
   duplicateCheckResult  Json?
-  isOBO                 Boolean            @default(false)
+  isOBO                 Boolean                  @default(false)
   // 2-level verification (R1.1a)
-  state                 AchievementState   @default(DRAFT)
-  recommendedByUserId       String?
-  recommendedAt             DateTime?
-  recommendationNote        String?
+  state                 AchievementState         @default(DRAFT)
+  recommendedByUserId   String?
+  recommendedAt         DateTime?
+  recommendationNote    String?
   verifiedByUserId      String?
   verifiedAt            DateTime?
   verificationNote      String?
   rejectionReason       String?
-  verificationLog           Json?      // [{level, userId, userName, action, note, at}]
-  reportingDate         DateTime           @default(now())
-  createdAt             DateTime           @default(now())
-  updatedAt             DateTime           @updatedAt
-  tenant                Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  kpiDefinition         KpiDefinition      @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
-  targetAllocation      TargetAllocation?  @relation(fields: [targetAllocationId], references: [id], onDelete: SetNull)
+  verificationLog       Json? // [{level, userId, userName, action, note, at}]
+  reportingDate         DateTime                 @default(now())
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  tenant                Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kpiDefinition         KpiDefinition            @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
+  targetAllocation      TargetAllocation?        @relation(fields: [targetAllocationId], references: [id], onDelete: SetNull)
   contributors          AchievementContributor[]
   stageProgress         KpiStageProgress[]
   submissionTrail       SubmissionTrail[]
@@ -1384,25 +1587,25 @@ model Achievement {
 }
 
 model AchievementContributor {
-  id                  String                   @id @default(cuid())
-  achievementId       String
-  type                ContributorType          @default(INTERNAL)
-  userId              String?
-  externalName        String?
-  externalAffiliation String?
-  externalScope       ExternalContributorScope?
-  externalData        Json?
-  contributorRoleId   String
-  creditPercent       Float
-  isExcludedFromReward Boolean                 @default(false)
-  selectorTags        String[]                 @default([])
-  note                String?
-  createdAt           DateTime                 @default(now())
-  updatedAt           DateTime                 @updatedAt
-  achievement         Achievement              @relation(fields: [achievementId], references: [id], onDelete: Cascade)
-  user                User?                    @relation("AchievementContributorUser", fields: [userId], references: [id], onDelete: SetNull)
-  contributorRole     ContributorRole          @relation(fields: [contributorRoleId], references: [id], onDelete: Restrict)
-  contributorRewards  ContributorReward[]
+  id                   String                    @id @default(cuid())
+  achievementId        String
+  type                 ContributorType           @default(INTERNAL)
+  userId               String?
+  externalName         String?
+  externalAffiliation  String?
+  externalScope        ExternalContributorScope?
+  externalData         Json?
+  contributorRoleId    String
+  creditPercent        Float
+  isExcludedFromReward Boolean                   @default(false)
+  selectorTags         String[]                  @default([])
+  note                 String?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  achievement          Achievement               @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  user                 User?                     @relation("AchievementContributorUser", fields: [userId], references: [id], onDelete: SetNull)
+  contributorRole      ContributorRole           @relation(fields: [contributorRoleId], references: [id], onDelete: Restrict)
+  contributorRewards   ContributorReward[]
 
   @@unique([achievementId, userId])
   @@index([achievementId])
@@ -1425,46 +1628,46 @@ model KpiTargetUnit {
 }
 
 model KpiStageDefinition {
-  id                   String         @id @default(cuid())
-  kpiDefinitionId      String
-  stageOrder           Int
-  title                String
-  description          String?
-  isMandatory          Boolean        @default(true)
-  weight               Float          @default(0)
-  evidenceRequired     Boolean        @default(false)
-  evidenceTypes        EvidenceType[] @default([])
-  evidenceInstructions String?
-  deadline             DateTime?
-  gracePeriodDays          Int      @default(0)
-  latePenaltyEnabled       Boolean  @default(false)
-  latePenaltyPercentPerDay Float    @default(0)
-  createdAt            DateTime       @default(now())
-  updatedAt            DateTime       @updatedAt
-  kpiDefinition        KpiDefinition  @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
-  stageProgress        KpiStageProgress[]
-  rewardComponents     KpiRewardComponent[]
+  id                       String               @id @default(cuid())
+  kpiDefinitionId          String
+  stageOrder               Int
+  title                    String
+  description              String?
+  isMandatory              Boolean              @default(true)
+  weight                   Float                @default(0)
+  evidenceRequired         Boolean              @default(false)
+  evidenceTypes            EvidenceType[]       @default([])
+  evidenceInstructions     String?
+  deadline                 DateTime?
+  gracePeriodDays          Int                  @default(0)
+  latePenaltyEnabled       Boolean              @default(false)
+  latePenaltyPercentPerDay Float                @default(0)
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+  kpiDefinition            KpiDefinition        @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  stageProgress            KpiStageProgress[]
+  rewardComponents         KpiRewardComponent[]
 
   @@unique([kpiDefinitionId, stageOrder])
   @@index([kpiDefinitionId])
 }
 
 model KpiStageProgress {
-  id                  String             @id @default(cuid())
-  targetAllocationId  String
-  stageDefinitionId   String
-  achievementId       String?
-  isCompleted         Boolean            @default(false)
-  completedByUserId   String?
-  completedAt         DateTime?
-  evidenceNote        String?
-  notes               String?
-  evidenceFiles       Json?
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
-  targetAllocation    TargetAllocation   @relation(fields: [targetAllocationId], references: [id], onDelete: Cascade)
-  stageDefinition     KpiStageDefinition @relation(fields: [stageDefinitionId], references: [id], onDelete: Cascade)
-  achievement         Achievement?       @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  id                 String             @id @default(cuid())
+  targetAllocationId String
+  stageDefinitionId  String
+  achievementId      String?
+  isCompleted        Boolean            @default(false)
+  completedByUserId  String?
+  completedAt        DateTime?
+  evidenceNote       String?
+  notes              String?
+  evidenceFiles      Json?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  targetAllocation   TargetAllocation   @relation(fields: [targetAllocationId], references: [id], onDelete: Cascade)
+  stageDefinition    KpiStageDefinition @relation(fields: [stageDefinitionId], references: [id], onDelete: Cascade)
+  achievement        Achievement?       @relation(fields: [achievementId], references: [id], onDelete: Cascade)
 
   @@unique([targetAllocationId, stageDefinitionId, achievementId])
   @@index([targetAllocationId])
@@ -1489,23 +1692,23 @@ model SubmissionTrail {
 }
 
 model KpiRewardTier {
-  id                String                 @id @default(cuid())
-  kpiDefinitionId   String
-  tierSetKey        String                 @default("PRIMARY")
-  code              String
-  name              String
-  description       String?
-  priority          Int                    @default(0)
-  matchMode         KpiRewardTierMatchMode @default(HIGHEST_MATCH)
-  effectiveFrom     DateTime?
-  effectiveTo       DateTime?
-  isActive          Boolean                @default(true)
-  metadata          Json?
-  createdAt         DateTime               @default(now())
-  updatedAt         DateTime               @updatedAt
-  kpiDefinition     KpiDefinition          @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
-  rules             KpiRewardRule[]
-  rewardComponents  KpiRewardComponent[]
+  id                 String                 @id @default(cuid())
+  kpiDefinitionId    String
+  tierSetKey         String                 @default("PRIMARY")
+  code               String
+  name               String
+  description        String?
+  priority           Int                    @default(0)
+  matchMode          KpiRewardTierMatchMode @default(HIGHEST_MATCH)
+  effectiveFrom      DateTime?
+  effectiveTo        DateTime?
+  isActive           Boolean                @default(true)
+  metadata           Json?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  kpiDefinition      KpiDefinition          @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  rules              KpiRewardRule[]
+  rewardComponents   KpiRewardComponent[]
   contributorRewards ContributorReward[]
 
   @@unique([kpiDefinitionId, tierSetKey, code, effectiveFrom])
@@ -1531,7 +1734,7 @@ model KpiRewardRule {
 }
 
 model KpiRewardComponent {
-  id                     String                           @id @default(cuid())
+  id                     String                          @id @default(cuid())
   kpiDefinitionId        String
   rewardTierId           String?
   stageDefinitionId      String?
@@ -1587,51 +1790,51 @@ model KpiRewardDistribution {
 }
 
 model ContributorReward {
-  id                      String                  @id @default(cuid())
-  tenantId                String
-  periodId                String
-  kpiDefinitionId         String
-  achievementId           String
+  id                       String                   @id @default(cuid())
+  tenantId                 String
+  periodId                 String
+  kpiDefinitionId          String
+  achievementId            String
   achievementContributorId String?
-  contributorUserId       String?
-  benefitTypeId           String
-  rewardTierId            String?
-  rewardComponentId       String
-  recurrenceKey           String?
-  state                   ContributorRewardState @default(DRAFT)
-  statusRemark            String?
-  releasedAt              DateTime?
-  releasedById            String?
-  releaseReference        String?
-  revokedAt               DateTime?
-  revokedById             String?
-  revocationReason        String?
-  supersedesRewardId      String?
-  replacedByRewardId      String?
-  rewardOwnerUnitId       String?
-  rewardOwnerUnitName     String?
-  rewardOwnerUnitPath     String?
-  rewardOwnerUnitTypeKey  String?
-  reporterUnitId          String?
-  reporterUnitName        String?
-  reporterUnitPath        String?
-  reporterUnitTypeKey     String?
-  baseAmount              Float
-  finalAmount             Float
-  roundingAdjustment      Float                  @default(0)
-  explanation             Json?
-  idempotencyKey          String                 @unique
-  createdAt               DateTime               @default(now())
-  updatedAt               DateTime               @updatedAt
-  tenant                  Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  kpiDefinition           KpiDefinition          @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
-  achievement             Achievement            @relation(fields: [achievementId], references: [id], onDelete: Cascade)
-  achievementContributor  AchievementContributor? @relation(fields: [achievementContributorId], references: [id], onDelete: SetNull)
-  contributorUser         User?                  @relation("ContributorRewardUser", fields: [contributorUserId], references: [id], onDelete: SetNull)
-  benefitType             BenefitType            @relation(fields: [benefitTypeId], references: [id], onDelete: Restrict)
-  rewardTier              KpiRewardTier?         @relation(fields: [rewardTierId], references: [id], onDelete: SetNull)
-  rewardComponent         KpiRewardComponent     @relation(fields: [rewardComponentId], references: [id], onDelete: Restrict)
-  events                  ContributorRewardEvent[]
+  contributorUserId        String?
+  benefitTypeId            String
+  rewardTierId             String?
+  rewardComponentId        String
+  recurrenceKey            String?
+  state                    ContributorRewardState   @default(DRAFT)
+  statusRemark             String?
+  releasedAt               DateTime?
+  releasedById             String?
+  releaseReference         String?
+  revokedAt                DateTime?
+  revokedById              String?
+  revocationReason         String?
+  supersedesRewardId       String?
+  replacedByRewardId       String?
+  rewardOwnerUnitId        String?
+  rewardOwnerUnitName      String?
+  rewardOwnerUnitPath      String?
+  rewardOwnerUnitTypeKey   String?
+  reporterUnitId           String?
+  reporterUnitName         String?
+  reporterUnitPath         String?
+  reporterUnitTypeKey      String?
+  baseAmount               Float
+  finalAmount              Float
+  roundingAdjustment       Float                    @default(0)
+  explanation              Json?
+  idempotencyKey           String                   @unique
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
+  tenant                   Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kpiDefinition            KpiDefinition            @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  achievement              Achievement              @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  achievementContributor   AchievementContributor?  @relation(fields: [achievementContributorId], references: [id], onDelete: SetNull)
+  contributorUser          User?                    @relation("ContributorRewardUser", fields: [contributorUserId], references: [id], onDelete: SetNull)
+  benefitType              BenefitType              @relation(fields: [benefitTypeId], references: [id], onDelete: Restrict)
+  rewardTier               KpiRewardTier?           @relation(fields: [rewardTierId], references: [id], onDelete: SetNull)
+  rewardComponent          KpiRewardComponent       @relation(fields: [rewardComponentId], references: [id], onDelete: Restrict)
+  events                   ContributorRewardEvent[]
 
   @@index([tenantId, periodId, kpiDefinitionId])
   @@index([achievementId])
@@ -1684,24 +1887,24 @@ model ReviewCycle {
 }
 
 model Notification {
-  id          String   @id @default(cuid())
-  tenantId    String
-  userId      String   // recipient
-  type        String   // "KPI_ALLOCATED", "ACHIEVEMENT_VERIFIED", etc.
-  eventKey    String?
-  title       String
-  message     String
-  entityType  String?  // "Achievement", "TargetAllocation"
-  entityId    String?
-  linkUrl     String?  // deep link to the relevant page
-  isRead      Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String // recipient
+  type       String // "KPI_ALLOCATED", "ACHIEVEMENT_VERIFIED", etc.
+  eventKey   String?
+  title      String
+  message    String
+  entityType String? // "Achievement", "TargetAllocation"
+  entityId   String?
+  linkUrl    String? // deep link to the relevant page
+  isRead     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([tenantId, userId, eventKey])
   @@index([userId, isRead, createdAt])
   @@index([tenantId, userId])
-  @@unique([tenantId, userId, eventKey])
 }
 
 // ── Module 3: Personnel Lifecycle ────────────────────────────────────────────
@@ -1799,13 +2002,13 @@ model ActingAssignment {
 }
 
 model TransferRecord {
-  id                   String             @id @default(cuid())
+  id                   String                 @id @default(cuid())
   tenantId             String
   membershipId         String
   sourceUnitId         String
   targetUnitId         String
   effectiveDate        DateTime
-  status               TransferStatus     @default(PROPOSED)
+  status               TransferStatus         @default(PROPOSED)
   reason               String?
   newRoleDefinitionIds String[]
   initiatedByUserId    String?
@@ -1814,13 +2017,13 @@ model TransferRecord {
   kpiTransferPolicy    TransferKpiPolicy?
   kpiTransferDetails   Json?
   completionNotes      String?
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
-  tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  membership           Membership         @relation("TransferSourceMember", fields: [membershipId], references: [id], onDelete: Cascade)
-  sourceUnit           OrgUnit            @relation("TransferSource", fields: [sourceUnitId], references: [id], onDelete: Restrict)
-  targetUnit           OrgUnit            @relation("TransferTarget", fields: [targetUnitId], references: [id], onDelete: Restrict)
-  actingAssignments    ActingAssignment[] @relation("TransferActing")
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  tenant               Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  membership           Membership             @relation("TransferSourceMember", fields: [membershipId], references: [id], onDelete: Cascade)
+  sourceUnit           OrgUnit                @relation("TransferSource", fields: [sourceUnitId], references: [id], onDelete: Restrict)
+  targetUnit           OrgUnit                @relation("TransferTarget", fields: [targetUnitId], references: [id], onDelete: Restrict)
+  actingAssignments    ActingAssignment[]     @relation("TransferActing")
   targetActions        TransferTargetAction[]
   statusEvents         TransferStatusEvent[]
 

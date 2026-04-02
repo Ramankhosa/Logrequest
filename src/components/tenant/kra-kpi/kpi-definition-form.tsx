@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2, Check, X, AlertCircle } from "lucide-react";
 import { TooltipHint } from "./tooltip-hint";
 import { TOOLTIPS, ACHIEVEMENT_TEMPLATES } from "@/lib/kra-kpi/shared";
@@ -74,6 +74,8 @@ type KpiFormProps = {
     achievementFormConfig?: AchievementFormConfig | null;
     keyUnitId?: string | null;
     finalUnitId?: string | null;
+    keyReviewerUserId?: string | null;
+    finalReviewerUserId?: string | null;
     evidenceRequired?: boolean;
     evidenceTypes?: string[];
     evidenceInstructions?: string | null;
@@ -84,6 +86,17 @@ type KpiFormProps = {
   };
   onDone: () => void;
   onCancel: () => void;
+};
+
+type WorkflowReviewerOption = {
+  userId: string;
+  name: string;
+  email: string;
+  employeeId: string | null;
+  designation: string | null;
+  membershipStatus: string;
+  unitIds: string[];
+  unitLabels: string[];
 };
 
 function supportsEditableMaxCap(measurementType: string): boolean {
@@ -177,6 +190,8 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   // R2 state
   const [keyUnitId, setKeyUnitId] = useState(initial?.keyUnitId ?? "");
   const [finalUnitId, setFinalUnitId] = useState(initial?.finalUnitId ?? "");
+  const [keyReviewerUserId, setKeyReviewerUserId] = useState(initial?.keyReviewerUserId ?? "");
+  const [finalReviewerUserId, setFinalReviewerUserId] = useState(initial?.finalReviewerUserId ?? "");
   const [evidenceRequired, setEvidenceRequired] = useState(initial?.evidenceRequired ?? true);
   const [allowMultipleAchievementsPerAllocation, setAllowMultipleAchievementsPerAllocation] =
     useState(initial?.allowMultipleAchievementsPerAllocation ?? true);
@@ -186,11 +201,50 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   const [showR2Sections, setShowR2Sections] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workflowReviewerOptions, setWorkflowReviewerOptions] = useState<WorkflowReviewerOption[]>([]);
 
   const initDateConfig = initial?.measurementConfig?.type === "DATE_TARGET" ? initial.measurementConfig : null;
   const [dtGracePeriodDays, setDtGracePeriodDays] = useState(initDateConfig?.gracePeriodDays ?? 0);
   const [dtLatePenaltyEnabled, setDtLatePenaltyEnabled] = useState(initDateConfig?.latePenaltyEnabled ?? false);
   const [dtLatePenaltyRate, setDtLatePenaltyRate] = useState(initDateConfig?.latePenaltyPercentPerDay ?? 5);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadWorkflowReviewerOptions() {
+      try {
+        const response = await fetch("/api/tenant/kra-kpi/workflow/reviewer-options");
+        const payload = (await response.json()) as WorkflowReviewerOption[];
+        if (!cancelled) {
+          setWorkflowReviewerOptions(Array.isArray(payload) ? payload : []);
+        }
+      } catch {
+        if (!cancelled) {
+          setWorkflowReviewerOptions([]);
+        }
+      }
+    }
+
+    void loadWorkflowReviewerOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const keyReviewerOptions = useMemo(
+    () =>
+      keyUnitId
+        ? workflowReviewerOptions.filter((option) => option.unitIds.includes(keyUnitId))
+        : [],
+    [keyUnitId, workflowReviewerOptions],
+  );
+  const finalReviewerOptions = useMemo(
+    () =>
+      finalUnitId
+        ? workflowReviewerOptions.filter((option) => option.unitIds.includes(finalUnitId))
+        : [],
+    [finalUnitId, workflowReviewerOptions],
+  );
 
   const handleTemplateSelect = (key: string) => {
     setTemplateKey(key);
@@ -312,6 +366,8 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
         sortOrder,
         keyUnitId: keyUnitId || (mode === "edit" ? null : undefined),
         finalUnitId: finalUnitId || (mode === "edit" ? null : undefined),
+        keyReviewerUserId: keyReviewerUserId || (mode === "edit" ? null : undefined),
+        finalReviewerUserId: finalReviewerUserId || (mode === "edit" ? null : undefined),
         evidenceRequired,
         allowMultipleAchievementsPerAllocation,
         evidenceTypes,
@@ -575,7 +631,14 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <label className={labelCls}>Key Department</label>
-                  <select value={keyUnitId} onChange={(e) => setKeyUnitId(e.target.value)} className={inputCls}>
+                  <select
+                    value={keyUnitId}
+                    onChange={(e) => {
+                      setKeyUnitId(e.target.value);
+                      setKeyReviewerUserId("");
+                    }}
+                    className={inputCls}
+                  >
                     <option value="">None</option>
                     {units.filter((u) => u.id !== startingUnitId).map((u) => (
                       <option key={u.id} value={u.id}>{u.name}</option>
@@ -585,13 +648,52 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
                 </div>
                 <div>
                   <label className={labelCls}>Final Department</label>
-                  <select value={finalUnitId} onChange={(e) => setFinalUnitId(e.target.value)} className={inputCls}>
+                  <select
+                    value={finalUnitId}
+                    onChange={(e) => {
+                      setFinalUnitId(e.target.value);
+                      setFinalReviewerUserId("");
+                    }}
+                    className={inputCls}
+                  >
                     <option value="">Defaults to starting dept</option>
                     {units.map((u) => (
                       <option key={u.id} value={u.id}>{u.name}</option>
                     ))}
                   </select>
                   <p className="mt-0.5 text-[10px] text-slate-400">Final verifier department</p>
+                </div>
+                <div>
+                  <label className={labelCls}>Key Reviewer</label>
+                  <select
+                    value={keyReviewerUserId}
+                    onChange={(e) => setKeyReviewerUserId(e.target.value)}
+                    className={inputCls}
+                    disabled={!keyUnitId}
+                  >
+                    <option value="">Fallback to key department head</option>
+                    {keyReviewerOptions.map((option) => (
+                      <option key={option.userId} value={option.userId}>
+                        {option.name}{option.employeeId ? ` (${option.employeeId})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>Final Reviewer</label>
+                  <select
+                    value={finalReviewerUserId}
+                    onChange={(e) => setFinalReviewerUserId(e.target.value)}
+                    className={inputCls}
+                    disabled={!finalUnitId}
+                  >
+                    <option value="">Fallback to final department head</option>
+                    {finalReviewerOptions.map((option) => (
+                      <option key={option.userId} value={option.userId}>
+                        {option.name}{option.employeeId ? ` (${option.employeeId})` : ""}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>

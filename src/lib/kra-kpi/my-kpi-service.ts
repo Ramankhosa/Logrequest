@@ -946,6 +946,10 @@ export async function getMyReviewQueue(
       periodId,
       state: { in: ["SUBMITTED", "RECOMMENDED"] },
       currentVerifierUnitId: { in: reviewScope.unitIds },
+      OR: [
+        { currentVerifierUserId: null },
+        { currentVerifierUserId: userId },
+      ],
       reportedByUserId: { not: userId },
     },
     include: {
@@ -1443,6 +1447,10 @@ export async function getMyPendingCount(
       ...(periodId ? { periodId } : {}),
       state: { in: ["SUBMITTED", "RECOMMENDED"] },
       currentVerifierUnitId: { in: reviewScope.unitIds },
+      OR: [
+        { currentVerifierUserId: null },
+        { currentVerifierUserId: userId },
+      ],
       reportedByUserId: { not: userId },
     },
   });

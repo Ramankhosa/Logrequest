@@ -1,6 +1,7 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   Calendar,
   Target,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MeasurementConfig } from "@/lib/kra-kpi/shared";
+import type { TenantCapability } from "@/lib/tenant-permissions/service";
 import { AssessmentPeriodList } from "@/components/tenant/kra-kpi/assessment-period-list";
 import { KraCategoryList } from "@/components/tenant/kra-kpi/kra-category-list";
 import { KraDefinitionList } from "@/components/tenant/kra-kpi/kra-definition-list";
@@ -76,8 +78,43 @@ type KpiView = {
   kraState: string;
 };
 
-export function KraKpiHub() {
-  const [activeTab, setActiveTab] = useState<Tab>("periods");
+type KraKpiHubProps = {
+  capabilities: TenantCapability[];
+  isFullAccess: boolean;
+};
+
+function canAccessTab(tab: Tab, capabilities: TenantCapability[], isFullAccess: boolean) {
+  if (isFullAccess) return true;
+
+  switch (tab) {
+    case "periods":
+    case "categories":
+    case "kras":
+      return capabilities.includes("MANAGE_KRA");
+    case "benefitTypes":
+    case "contributorRoles":
+    case "externalContributors":
+    case "kpis":
+      return capabilities.includes("MANAGE_KPI");
+    case "targets":
+      return capabilities.includes("MANAGE_TARGETS");
+    case "achievements":
+      return capabilities.includes("MANAGE_WORKFLOW") || capabilities.includes("MANAGE_KPI");
+    case "rewards":
+      return capabilities.includes("MANAGE_REWARDS");
+    case "dashboard":
+      return capabilities.length > 0;
+    default:
+      return false;
+  }
+}
+
+export function KraKpiHub({ capabilities, isFullAccess }: KraKpiHubProps) {
+  const availableTabs = useMemo(
+    () => TABS.filter((tab) => canAccessTab(tab.key, capabilities, isFullAccess)),
+    [capabilities, isFullAccess],
+  );
+  const [activeTab, setActiveTab] = useState<Tab>(availableTabs[0]?.key ?? "dashboard");
 
   const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
   const [selectedPeriodName, setSelectedPeriodName] = useState<string | null>(null);
@@ -100,7 +137,6 @@ export function KraKpiHub() {
     } catch { /* ignore */ }
   }, []);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchPeriods(); }, [fetchPeriods]);
 
   useEffect(() => {
@@ -219,11 +255,17 @@ export function KraKpiHub() {
 
   const selectCls = "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:border-brand focus:ring-1 focus:ring-brand/30";
 
+  useEffect(() => {
+    if (!availableTabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab(availableTabs[0]?.key ?? "dashboard");
+    }
+  }, [activeTab, availableTabs]);
+
   return (
     <div className="space-y-6">
       {/* Tab bar */}
       <div className="flex flex-wrap gap-1 rounded-2xl border border-slate-200/80 bg-white/60 p-1.5">
-        {TABS.map(({ key, label, icon: Icon }) => (
+        {availableTabs.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
             type="button"

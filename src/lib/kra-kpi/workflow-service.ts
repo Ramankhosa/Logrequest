@@ -1,4 +1,4 @@
-import { MembershipStatus, Prisma, Role } from "@prisma/client";
+import { MembershipStatus, PersonnelStatus, Prisma, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   createBulkNotifications,
@@ -15,6 +15,12 @@ const ACTIVE_MEMBERSHIP_STATUSES = [
   MembershipStatus.LOCKED,
   MembershipStatus.SUSPENDED,
 ] satisfies MembershipStatus[];
+const ACTIVE_PERSONNEL_STATUSES = [
+  PersonnelStatus.ONBOARDING,
+  PersonnelStatus.ACTIVE,
+  PersonnelStatus.ON_LEAVE,
+  PersonnelStatus.NOTICE_PERIOD,
+] satisfies PersonnelStatus[];
 
 type WorkflowStep = "INITIAL" | "FINAL";
 
@@ -84,10 +90,6 @@ export type OpenWorkflowAssignmentView = {
   currentVerifierUserName: string | null;
   reportingDate: Date;
 };
-
-function isAdminOrOwner(role: Role | null | undefined) {
-  return role === Role.SUPERADMIN || role === Role.TENANT_OWNER || role === Role.TENANT_ADMIN;
-}
 
 async function canManageWorkflow(
   tenantId: string,
@@ -179,6 +181,7 @@ export async function isUserEligibleForWorkflowUnit(
         tenantId,
         userId,
         status: { in: ACTIVE_MEMBERSHIP_STATUSES },
+        personnelStatus: { in: ACTIVE_PERSONNEL_STATUSES },
       },
       select: { id: true },
     }),
@@ -235,7 +238,6 @@ export async function resolveWorkflowReviewerForUnit(input: {
   requestedUserId: string | null;
   tx?: Prisma.TransactionClient;
 }): Promise<WorkflowReviewerResolution> {
-  const db = input.tx ?? prisma;
   const requestedUserName = await loadUserNameById(input.requestedUserId);
 
   if (!input.unitId) {
@@ -273,7 +275,13 @@ export async function resolveWorkflowReviewerForUnit(input: {
   }
 
   const fallbackUserIds = await resolveUnitHeadUserIds(input.tenantId, input.unitId);
-  const fallbackUserId = fallbackUserIds[0] ?? null;
+  let fallbackUserId: string | null = null;
+  for (const candidateUserId of fallbackUserIds) {
+    if (await isUserEligibleForWorkflowUnit(input.tenantId, candidateUserId, input.unitId, input.tx)) {
+      fallbackUserId = candidateUserId;
+      break;
+    }
+  }
   const fallbackUserName = await loadUserNameById(fallbackUserId);
 
   return {
@@ -318,6 +326,7 @@ export async function listWorkflowReviewerOptions(
       where: {
         tenantId,
         status: { in: ACTIVE_MEMBERSHIP_STATUSES },
+        personnelStatus: { in: ACTIVE_PERSONNEL_STATUSES },
       },
       include: {
         user: { select: { id: true, firstName: true, lastName: true, officialEmail: true } },
@@ -694,8 +703,12 @@ export async function rebindOpenAchievementsForUserChange(input: {
   let reboundCount = 0;
   for (const achievement of achievements) {
     if (!achievement.currentVerifierUnitId) continue;
-    const fallbackUserIds = await resolveUnitHeadUserIds(input.tenantId, achievement.currentVerifierUnitId);
-    const fallbackUserId = fallbackUserIds[0] ?? null;
+    const fallback = await resolveWorkflowReviewerForUnit({
+      tenantId: input.tenantId,
+      unitId: achievement.currentVerifierUnitId,
+      requestedUserId: null,
+    });
+    const fallbackUserId = fallback.resolvedUserId;
     if (fallbackUserId === achievement.currentVerifierUserId) continue;
 
     await prisma.$transaction(async (tx) => {

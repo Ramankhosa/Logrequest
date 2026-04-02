@@ -6,7 +6,7 @@ import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
 import { getShellIdentity } from "@/lib/auth/access";
 import { tenantNavigationGroups } from "@/lib/navigation";
-import { requireTenantAdmin } from "@/lib/auth/session";
+import { requireTenantAnyCapability } from "@/lib/auth/session";
 import {
   getPersonnelDashboardCounts,
   getPersonnelDirectory,
@@ -17,7 +17,7 @@ export default async function PersonnelPage({
 }: {
   searchParams?: Promise<{ onboarded?: string }>;
 }) {
-  const context = await requireTenantAdmin();
+  const context = await requireTenantAnyCapability(["MANAGE_PERSONNEL", "MANAGE_ACCESS"]);
   const tenantId = context.tenant?.id ?? "";
   const [counts, directory] = await Promise.all([
     getPersonnelDashboardCounts(tenantId),
@@ -136,6 +136,9 @@ export default async function PersonnelPage({
                     Role
                   </th>
                   <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                    Permission Roles
+                  </th>
+                  <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
                     Personnel Status
                   </th>
                   <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
@@ -171,6 +174,22 @@ export default async function PersonnelPage({
                         {row.appRole}
                       </td>
                       <td className="px-4 py-4">
+                        {row.permissionRoles.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {row.permissionRoles.map((roleCode) => (
+                              <span
+                                key={`${row.membershipId}:${roleCode}`}
+                                className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-xs font-medium text-slate-700"
+                              >
+                                {roleCode}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-sm text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4">
                         <StatusBadge label={row.personnelStatus} />
                       </td>
                       <td className="px-4 py-4">
@@ -181,7 +200,7 @@ export default async function PersonnelPage({
                 ) : (
                   <tr>
                     <td
-                      colSpan={8}
+                      colSpan={9}
                       className="px-4 py-8 text-center text-sm text-slate-500"
                     >
                       No personnel records

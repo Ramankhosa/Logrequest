@@ -8,6 +8,8 @@ type Props = {
   canCreateAdmin: boolean;
   units: OnboardingOptions["units"];
   roles: OnboardingOptions["roles"];
+  permissionRoles: OnboardingOptions["permissionRoles"];
+  canAssignPermissionRoles: boolean;
 };
 
 type FormValues = {
@@ -21,6 +23,7 @@ type FormValues = {
   primaryUnitCode: string;
   secondaryUnitCodes: string[];
   roleKeys: string[];
+  permissionRoleCodes: OnboardingOptions["permissionRoles"][number]["code"][];
 };
 
 const INITIAL_VALUES: FormValues = {
@@ -34,6 +37,7 @@ const INITIAL_VALUES: FormValues = {
   primaryUnitCode: "",
   secondaryUnitCodes: [],
   roleKeys: [],
+  permissionRoleCodes: [],
 };
 
 const STEPS = ["User Details", "Unit & Role Assignment", "Review & Confirm"] as const;
@@ -41,7 +45,13 @@ const STEPS = ["User Details", "Unit & Role Assignment", "Review & Confirm"] as 
 const inputClassName =
   "w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-slate-900";
 
-export function PersonnelOnboardForm({ canCreateAdmin, units, roles }: Props) {
+export function PersonnelOnboardForm({
+  canCreateAdmin,
+  units,
+  roles,
+  permissionRoles,
+  canAssignPermissionRoles,
+}: Props) {
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [values, setValues] = useState<FormValues>(INITIAL_VALUES);
@@ -112,6 +122,9 @@ export function PersonnelOnboardForm({ canCreateAdmin, units, roles }: Props) {
         secondaryUnitCodes: values.secondaryUnitCodes,
         roleKeys: values.roleKeys,
       };
+      if (canAssignPermissionRoles) {
+        body.permissionRoleCodes = values.permissionRoleCodes;
+      }
       if (values.employeeId.trim()) body.employeeId = values.employeeId.trim();
       if (values.designation.trim()) body.designation = values.designation.trim();
       if (values.dateOfJoining) body.dateOfJoining = values.dateOfJoining;
@@ -142,6 +155,9 @@ export function PersonnelOnboardForm({ canCreateAdmin, units, roles }: Props) {
   const primaryUnit = units.find((u) => u.code === values.primaryUnitCode);
   const secondaryUnits = units.filter((u) => values.secondaryUnitCodes.includes(u.code));
   const selectedRoles = roles.filter((r) => values.roleKeys.includes(r.roleKey));
+  const selectedPermissionRoles = permissionRoles.filter((role) =>
+    values.permissionRoleCodes.includes(role.code),
+  );
 
   return (
     <div className="space-y-6">
@@ -405,6 +421,65 @@ export function PersonnelOnboardForm({ canCreateAdmin, units, roles }: Props) {
               </div>
             }
           />
+
+          {canAssignPermissionRoles ? (
+            <Field
+              label="Permission roles"
+              input={
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-2">
+                    {values.permissionRoleCodes.map((code) => {
+                      const role = permissionRoles.find((entry) => entry.code === code);
+                      return (
+                        <span
+                          key={code}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700"
+                        >
+                          {role?.label ?? code}
+                          <button
+                            type="button"
+                            className="text-slate-400 transition hover:text-rose-500"
+                            onClick={() =>
+                              set(
+                                "permissionRoleCodes",
+                                values.permissionRoleCodes.filter((value) => value !== code),
+                              )
+                            }
+                          >
+                            &times;
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <select
+                    className={inputClassName}
+                    value=""
+                    onChange={(e) => {
+                      const value = e.target.value as FormValues["permissionRoleCodes"][number];
+                      if (value && !values.permissionRoleCodes.includes(value)) {
+                        set("permissionRoleCodes", [...values.permissionRoleCodes, value]);
+                      }
+                    }}
+                  >
+                    <option value="">Add a permission role...</option>
+                    {permissionRoles.map((role) => (
+                      <option
+                        key={role.code}
+                        value={role.code}
+                        disabled={values.permissionRoleCodes.includes(role.code)}
+                      >
+                        {role.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-500">
+                    Permission roles are additive and do not replace the user&apos;s base tenant role.
+                  </p>
+                </div>
+              }
+            />
+          ) : null}
         </div>
       )}
 
@@ -443,6 +518,16 @@ export function PersonnelOnboardForm({ canCreateAdmin, units, roles }: Props) {
                   : "None"
               }
             />
+            {canAssignPermissionRoles ? (
+              <ReviewRow
+                label="Permission roles"
+                value={
+                  selectedPermissionRoles.length
+                    ? selectedPermissionRoles.map((role) => role.label).join(", ")
+                    : "None"
+                }
+              />
+            ) : null}
           </ReviewSection>
         </div>
       )}

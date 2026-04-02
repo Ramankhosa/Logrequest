@@ -5,14 +5,21 @@ import { AppShell } from "@/components/app-shell";
 import { Panel } from "@/components/panel";
 import { PersonnelOnboardForm } from "@/components/tenant/personnel-onboard-form";
 import { getShellIdentity } from "@/lib/auth/access";
-import { requireTenantAdmin } from "@/lib/auth/session";
+import { requireTenantAnyCapability } from "@/lib/auth/session";
 import { getOnboardingOptions } from "@/lib/personnel/service";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import { tenantNavigationGroups } from "@/lib/navigation";
 
 export default async function PersonnelOnboardPage() {
-  const context = await requireTenantAdmin();
+  const context = await requireTenantAnyCapability(["MANAGE_PERSONNEL", "MANAGE_ACCESS"]);
   const tenantId = context.tenant!.id;
   const canCreateAdmin = context.role === Role.TENANT_OWNER;
+  const canAssignPermissionRoles = await hasTenantCapability({
+    tenantId,
+    userId: context.user.id,
+    baseRole: context.role,
+    capability: "MANAGE_ACCESS",
+  });
   const options = await getOnboardingOptions(tenantId);
 
   return (
@@ -36,6 +43,8 @@ export default async function PersonnelOnboardPage() {
           canCreateAdmin={canCreateAdmin}
           units={options.units}
           roles={options.roles}
+          permissionRoles={options.permissionRoles}
+          canAssignPermissionRoles={canAssignPermissionRoles}
         />
       </Panel>
     </AppShell>

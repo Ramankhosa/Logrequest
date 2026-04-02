@@ -1,5 +1,6 @@
 import {
   MembershipStatus,
+  PersonnelStatus,
   Prisma,
   Role,
   TenantPermissionRole,
@@ -57,6 +58,13 @@ const ACCESSIBLE_MEMBERSHIP_STATUSES = [
   MembershipStatus.LOCKED,
   MembershipStatus.SUSPENDED,
 ] satisfies MembershipStatus[];
+
+const ACTIVE_PERSONNEL_STATUSES = [
+  PersonnelStatus.ONBOARDING,
+  PersonnelStatus.ACTIVE,
+  PersonnelStatus.ON_LEAVE,
+  PersonnelStatus.NOTICE_PERIOD,
+] satisfies PersonnelStatus[];
 
 const ALL_CAPABILITIES: TenantCapability[] = [
   "MANAGE_KRA",
@@ -160,6 +168,25 @@ export async function getTenantPermissionAccessContext(input: {
       permissionRoles: ROLE_DEFINITIONS.map((definition) => definition.code),
       capabilities: ALL_CAPABILITIES,
       isFullAccess: true,
+    };
+  }
+
+  const membership = await prisma.membership.findFirst({
+    where: {
+      tenantId: input.tenantId,
+      userId: input.userId,
+      status: { in: ACCESSIBLE_MEMBERSHIP_STATUSES },
+      personnelStatus: { in: ACTIVE_PERSONNEL_STATUSES },
+    },
+    select: { id: true },
+  });
+
+  if (!membership) {
+    return {
+      baseRole: input.baseRole,
+      permissionRoles: [],
+      capabilities: [],
+      isFullAccess: false,
     };
   }
 

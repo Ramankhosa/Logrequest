@@ -4,11 +4,11 @@ import { AppShell } from "@/components/app-shell";
 import { Panel } from "@/components/panel";
 import { PersonnelBulkUpload } from "@/components/tenant/personnel-bulk-upload";
 import { getShellIdentity } from "@/lib/auth/access";
-import { requireTenantAdmin } from "@/lib/auth/session";
+import { requireTenantCapability } from "@/lib/auth/session";
 import { tenantNavigationGroups } from "@/lib/navigation";
 
 export default async function PersonnelBulkOnboardPage() {
-  const context = await requireTenantAdmin();
+  const context = await requireTenantCapability("MANAGE_PERSONNEL");
 
   return (
     <AppShell

@@ -43,6 +43,7 @@ import { correctAchievementAndRefreshRewards } from "./reward-ops-service";
 import { deriveAchievementTitle } from "./allocation-achievement-utils";
 import { enrichPublicationJournalFormData } from "./publication-journal-service";
 import { normalizeGalgotiaRewardData } from "./galgotia-reward-policy";
+import { resolveWorkflowAssigneeForKpiStep } from "./workflow-service";
 import {
   readAchievementDraftState,
   stripAchievementDraftState,
@@ -509,6 +510,59 @@ function currentReviewUnitIdForAchievement(achievement: {
   }
 
   return initialReviewUnitIdForKpi(achievement.kpiDefinition);
+}
+
+async function resolveWorkflowStepAssignment(input: {
+  tenantId: string;
+  kpi: {
+    id: string;
+    title?: string | null;
+    startingUnitId: string;
+    keyUnitId: string | null;
+    finalUnitId: string | null;
+    keyReviewerUserId: string | null;
+    finalReviewerUserId: string | null;
+  };
+  step: "INITIAL" | "FINAL";
+}) {
+  const resolution = await resolveWorkflowAssigneeForKpiStep(
+    input.tenantId,
+    input.kpi,
+    input.step,
+  );
+  const notifyUserIds =
+    resolution.mode === "named" && resolution.resolvedUserId
+      ? [resolution.resolvedUserId]
+      : resolution.unitId
+        ? await resolveUnitHeadUserIds(input.tenantId, resolution.unitId)
+        : [];
+
+  return {
+    resolution,
+    verifierUnitId: resolution.unitId,
+    verifierUserId:
+      resolution.mode === "named"
+        ? resolution.resolvedUserId
+        : null,
+    notifyUserIds: [...new Set(notifyUserIds)],
+  };
+}
+
+async function canActorHandleAchievementReview(input: {
+  tenantId: string;
+  actorUserId: string;
+  currentVerifierUnitId: string | null;
+  currentVerifierUserId: string | null;
+}): Promise<boolean> {
+  if (input.currentVerifierUserId) {
+    return input.currentVerifierUserId === input.actorUserId;
+  }
+
+  return canActorReviewUnit(
+    input.tenantId,
+    input.actorUserId,
+    input.currentVerifierUnitId,
+  );
 }
 
 function calculateEffectiveScore(
@@ -1476,6 +1530,8 @@ export async function correctVerifiedAchievement(
           startingUnitId: true,
           keyUnitId: true,
           finalUnitId: true,
+          keyReviewerUserId: true,
+          finalReviewerUserId: true,
           allowMultipleAchievementsPerAllocation: true,
           measurementType: true,
           scoringMethod: true,
@@ -2237,6 +2293,8 @@ export async function submitForVerification(
           startingUnitId: true,
           keyUnitId: true,
           finalUnitId: true,
+          keyReviewerUserId: true,
+          finalReviewerUserId: true,
           allowPartialCompletion: true,
           contributionRoles: true,
           achievementFormConfig: true,
@@ -2355,9 +2413,26 @@ export async function submitForVerification(
     at: new Date().toISOString(),
   };
 
-  const reviewUnitId = initialReviewUnitIdForKpi(kpi);
-  const headIds = await resolveUnitHeadUserIds(tenantId, reviewUnitId);
-  const firstHead = headIds[0] ?? null;
+  const initialAssignment = await resolveWorkflowStepAssignment({
+    tenantId,
+    kpi: {
+      id: achievement.kpiDefinitionId,
+      title: kpi.title,
+      startingUnitId: kpi.startingUnitId,
+      keyUnitId: kpi.keyUnitId,
+      finalUnitId: kpi.finalUnitId,
+      keyReviewerUserId: kpi.keyReviewerUserId ?? null,
+      finalReviewerUserId: kpi.finalReviewerUserId ?? null,
+    },
+    step: "INITIAL",
+  });
+  const reviewUnitId = initialAssignment.verifierUnitId;
+  if (!reviewUnitId) {
+    return {
+      status: "error",
+      message: "No review unit is configured for this KPI.",
+    };
+  }
 
   const latest = await prisma.achievement.findFirst({
     where: { id: achievementId },
@@ -2461,7 +2536,7 @@ export async function submitForVerification(
           ) as object | undefined) ?? Prisma.JsonNull,
         verificationLog: [...existingLog, newLogEntry] as unknown as object[],
         currentVerifierUnitId: reviewUnitId,
-        currentVerifierUserId: firstHead,
+        currentVerifierUserId: initialAssignment.verifierUserId,
         duplicateCheckResult: duplicateCheckResult as unknown as object,
         ...(stageCount === 0
           ? { effectiveScore: nextEffective, stageCompletionScore: null }
@@ -2508,7 +2583,7 @@ export async function submitForVerification(
 
   try {
     const title = achievement.title ?? kpi.title;
-    const notifyIds = headIds.filter((id) => id !== actorUserId);
+    const notifyIds = initialAssignment.notifyUserIds.filter((id) => id !== actorUserId);
     if (notifyIds.length > 0) {
       await createBulkNotifications(
         tenantId,
@@ -2560,6 +2635,8 @@ export async function verifyAchievement(
           startingUnitId: true,
           keyUnitId: true,
           finalUnitId: true,
+          keyReviewerUserId: true,
+          finalReviewerUserId: true,
           title: true,
           stages: { select: { id: true } },
         },
@@ -2602,15 +2679,18 @@ export async function verifyAchievement(
       };
     }
 
-    const canVerify = await canActorReviewUnit(
+    const canVerify = await canActorHandleAchievementReview({
       tenantId,
       actorUserId,
-      reviewUnitId,
-    );
+      currentVerifierUnitId: reviewUnitId,
+      currentVerifierUserId: achievement.currentVerifierUserId,
+    });
     if (!canVerify) {
       return {
         status: "error",
-        message: "You do not have permission to verify this achievement.",
+        message: achievement.currentVerifierUserId
+          ? "This achievement is currently assigned to another reviewer."
+          : "You do not have permission to verify this achievement.",
       };
     }
   }
@@ -2803,6 +2883,8 @@ export async function recommendAchievement(
           title: true,
           keyUnitId: true,
           finalUnitId: true,
+          keyReviewerUserId: true,
+          finalReviewerUserId: true,
         },
       },
     },
@@ -2827,19 +2909,22 @@ export async function recommendAchievement(
   }
 
   if (!isAdminOrOwner(actorRole)) {
-    const canRecommend = await canActorReviewUnit(
+    const canRecommend = await canActorHandleAchievementReview({
       tenantId,
       actorUserId,
-      currentReviewUnitIdForAchievement({
+      currentVerifierUnitId: currentReviewUnitIdForAchievement({
         state: achievement.state,
         currentVerifierUnitId: achievement.currentVerifierUnitId,
         kpiDefinition: achievement.kpiDefinition,
       }),
-    );
+      currentVerifierUserId: achievement.currentVerifierUserId,
+    });
     if (!canRecommend) {
       return {
         status: "error",
-        message: "Only the configured first-review unit head can recommend this achievement.",
+        message: achievement.currentVerifierUserId
+          ? "This achievement is currently assigned to another reviewer."
+          : "Only the configured first-review unit head can recommend this achievement.",
       };
     }
   }
@@ -2863,9 +2948,26 @@ export async function recommendAchievement(
       at: new Date().toISOString(),
     };
 
-    const finalUnitId = finalReviewUnitIdForKpi(achievement.kpiDefinition);
-    const finalHeadIds = await resolveUnitHeadUserIds(tenantId, finalUnitId);
-    const nextVerifier = finalHeadIds[0] ?? null;
+    const finalAssignment = await resolveWorkflowStepAssignment({
+      tenantId,
+      kpi: {
+        id: achievement.kpiDefinitionId,
+        title: achievement.kpiDefinition.title,
+        startingUnitId: achievement.kpiDefinition.startingUnitId,
+        keyUnitId: achievement.kpiDefinition.keyUnitId,
+        finalUnitId: achievement.kpiDefinition.finalUnitId,
+        keyReviewerUserId: achievement.kpiDefinition.keyReviewerUserId ?? null,
+        finalReviewerUserId: achievement.kpiDefinition.finalReviewerUserId ?? null,
+      },
+      step: "FINAL",
+    });
+    const finalUnitId = finalAssignment.verifierUnitId;
+    if (!finalUnitId) {
+      return {
+        status: "error",
+        message: "No final review unit is configured for this KPI.",
+      };
+    }
 
     const actorUnitNameR = await getActorUnitName(tenantId, actorUserId);
 
@@ -2879,7 +2981,7 @@ export async function recommendAchievement(
           recommendationNote: normalizedNote,
           verificationLog: [...existingLog, logEntry] as unknown as object[],
           currentVerifierUnitId: finalUnitId,
-          currentVerifierUserId: nextVerifier,
+          currentVerifierUserId: finalAssignment.verifierUserId,
         },
       });
 
@@ -2908,7 +3010,7 @@ export async function recommendAchievement(
     });
 
     try {
-      const notifyIds = finalHeadIds.filter((id) => id !== actorUserId);
+      const notifyIds = finalAssignment.notifyUserIds.filter((id) => id !== actorUserId);
       if (notifyIds.length > 0) {
         await createBulkNotifications(
           tenantId,
@@ -3057,9 +3159,11 @@ export async function withdrawAchievement(
   });
   const actorName = actor ? `${actor.firstName} ${actor.lastName}` : "Unknown";
   const actorUnitName = await getActorUnitName(tenantId, actorUserId);
-  const reviewHeadIds = achievement.currentVerifierUnitId
-    ? await resolveUnitHeadUserIds(tenantId, achievement.currentVerifierUnitId)
-    : [];
+  const reviewHeadIds = achievement.currentVerifierUserId
+    ? [achievement.currentVerifierUserId]
+    : achievement.currentVerifierUnitId
+      ? await resolveUnitHeadUserIds(tenantId, achievement.currentVerifierUnitId)
+      : [];
 
   const logEntry: VerificationLogEntry = {
     level: "WITHDRAW",

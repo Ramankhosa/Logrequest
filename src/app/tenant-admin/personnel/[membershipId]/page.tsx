@@ -6,7 +6,7 @@ import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
 import { getShellIdentity } from "@/lib/auth/access";
 import { tenantNavigationGroups } from "@/lib/navigation";
-import { requireTenantAdmin } from "@/lib/auth/session";
+import { requireTenantAnyCapability } from "@/lib/auth/session";
 import {
   getUserPlacementSummary,
   getPersonnelTimeline,
@@ -19,7 +19,7 @@ export default async function PersonnelDetailPage({
 }: {
   params: Promise<{ membershipId: string }>;
 }) {
-  const context = await requireTenantAdmin();
+  const context = await requireTenantAnyCapability(["MANAGE_PERSONNEL", "MANAGE_ACCESS"]);
   const tenantId = context.tenant?.id ?? "";
   const { membershipId } = await params;
 
@@ -95,6 +95,42 @@ export default async function PersonnelDetailPage({
             </div>
           </div>
         </div>
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-2">
+        <Panel eyebrow="Access" title="Permission Roles">
+          {summary.permissionRoles.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {summary.permissionRoles.map((roleCode) => (
+                <span
+                  key={`${summary.membershipId}:${roleCode}`}
+                  className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                >
+                  {roleCode}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">No tenant permission roles assigned.</p>
+          )}
+        </Panel>
+
+        <Panel eyebrow="Workflow" title="Reviewer Warnings">
+          {summary.workflowWarnings.length > 0 ? (
+            <div className="space-y-2">
+              {summary.workflowWarnings.map((warning, index) => (
+                <div
+                  key={`${summary.membershipId}:warning:${index}`}
+                  className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700"
+                >
+                  {warning}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">No workflow ownership warnings.</p>
+          )}
+        </Panel>
       </section>
 
       {/* Unit assignments */}
