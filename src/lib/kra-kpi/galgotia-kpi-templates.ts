@@ -310,6 +310,7 @@ const journalFields = [
     type: "SELECT",
     required: true,
     options: ["CASE_1", "CASE_2", "CASE_3", "CASE_4", "CASE_5"],
+    helpText: "Auto-calculated from the internal author roles and counts entered below.",
     sortOrder: 11,
     marker: "CATEGORY_FIELD",
   } satisfies AchievementFieldConfig,
@@ -353,7 +354,7 @@ export const GALGOTIA_KPI_TEMPLATES: KpiTemplateWriteDraft[] = [
       achievementTemplateKey: "GU_JOURNAL_PUB",
       fields: journalFields,
       guidanceNotes:
-        "Use the Galgotias 5-case matrix when setting contributor credit. Case 1: 35/35/30. Case 2: 50/50. Case 3: 60/40. Case 4: 100. Case 5 pays only the 40% GU co-author pool and the template already reduces the amount. External contributors are recorded but excluded from payout. Reviewer must confirm full-time or regular faculty eligibility, Galgotias affiliation, Scopus or WoS indexing, and any PhD minimum-publication exception.",
+        "The system derives the Galgotias 5-case journal payout automatically from the internal author count and the selected contributor roles. Case 1: 35/35/30. Case 2: 50/50. Case 3: 60/40. Case 4: 100. Case 5 pays only the 40% GU co-author pool. External contributors are recorded but excluded from payout. Reviewer must confirm full-time or regular faculty eligibility, Galgotias affiliation, Scopus or WoS indexing, and any PhD minimum-publication exception.",
       evidenceInstructions:
         "Attach the paper first page, DOI or publisher URL, and a Scopus or WoS screenshot showing indexing and quartile.",
       isTeamKpi: true,
@@ -1155,7 +1156,7 @@ export const GALGOTIA_KPI_TEMPLATES: KpiTemplateWriteDraft[] = [
     sortOrder: 111,
     definition: {
       title: "EDP/MDP Convenor Incentive",
-      description: "70% of program savings distributed using the convenor's approved chart.",
+      description: "70% of program savings split equally across the eligible internal program team.",
       measurementType: "CURRENCY",
       unitLabel: "INR",
       achievementTemplateKey: "GU_EDP_MDP",
@@ -1175,11 +1176,11 @@ export const GALGOTIA_KPI_TEMPLATES: KpiTemplateWriteDraft[] = [
         ),
       ],
       guidanceNotes:
-        "Policy pays 70% of savings and distributes it according to the convenor's submitted distribution chart. Enter contributor credit percentages exactly as approved in that chart.",
+        "Policy pays 70% of savings and splits it equally across the eligible internal contributors recorded on the achievement.",
       evidenceInstructions:
-        "Attach the approval document, financial summary, and the distribution chart approved for the program.",
+        "Attach the approval document, financial summary, and the supporting program records.",
       isTeamKpi: true,
-      teamCreditMethod: "WEIGHTED_SPLIT",
+      teamCreditMethod: "EQUAL_SPLIT",
       participantMode: "OPTIONAL_TEAM",
       rewardRecurrencePolicy: "ONCE_PER_UNIQUE_KEY",
       policyDateFieldKey: "startDate",
@@ -1206,7 +1207,7 @@ export const GALGOTIA_KPI_TEMPLATES: KpiTemplateWriteDraft[] = [
         amountMode: "PERCENT_OF_FIELD" as const,
         amountValue: 70,
         amountFieldKey: "savings",
-        distributionMode: "CREDIT_PERCENT_SPLIT" as const,
+        distributionMode: "EQUAL_SPLIT" as const,
         singleEligibleHandling: "FULL_TO_SINGLE" as const,
         emptyShareHandling: "DROP_UNALLOCATED" as const,
         isActive: true,

@@ -92,33 +92,33 @@ export function MyAllocationCard({
     : "";
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
+    <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_70px_-50px_rgba(15,23,42,0.35)]">
       {/* Must cascade banner */}
       {mustCascadeFlag && (
-        <div className="flex items-center gap-2 rounded-t-lg bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm text-amber-800">
+        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800">
           <AlertTriangle className="h-4 w-4 flex-shrink-0" />
           <span className="font-medium">Must Distribute</span>
           <span className="text-xs">— This KPI must be distributed to individuals before recording.</span>
         </div>
       )}
 
-      <div className="p-4 space-y-3">
+      <div className="space-y-4 p-5">
         {/* Header */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h4 className="text-sm font-semibold text-gray-900 truncate">{a.kpiTitle}</h4>
-              <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+              <h4 className="truncate text-base font-semibold tracking-tight text-slate-950">{a.kpiTitle}</h4>
+              <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
                 {a.measurementType}
               </span>
-              <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
+              <span className="inline-flex items-center rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
                 W: {a.kpiWeightage}
               </span>
             </div>
-            <div className="mt-1 flex items-center gap-3 text-xs text-gray-500 flex-wrap">
+            <div className="mt-2 flex items-center gap-3 text-xs text-slate-500 flex-wrap">
               <span>KRA: {a.kraTitle} ({a.kraWeightage})</span>
               {a.categoryLabel && (
-                <span className="rounded bg-purple-50 px-1.5 py-0.5 text-purple-700">
+                <span className="rounded-full bg-cyan-50 px-2.5 py-1 text-cyan-700">
                   {a.categoryLabel}
                 </span>
               )}
@@ -132,14 +132,14 @@ export function MyAllocationCard({
               a.achievementAggregate.totalRequests > 0 ? (
               <AchievementStateBadge state={mapLifecycleToBadgeState(lifecycle)} />
               ) : (
-                <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-500">
+                <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
                   Not Started
                 </span>
               )
             ) : ach ? (
               <AchievementStateBadge state={ach.state} />
             ) : (
-              <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-500">
+              <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
                 Not Started
               </span>
             )}
@@ -157,14 +157,14 @@ export function MyAllocationCard({
 
         {/* Target + Deadline */}
         <div className="flex items-center gap-4 flex-wrap text-sm">
-          <span className="text-gray-700">
+          <span className="rounded-full bg-slate-50 px-3 py-1 text-slate-700">
             <strong>Target:</strong>{" "}
             {a.targetValue != null
               ? `${a.targetValue}${a.unitLabel ? ` ${a.unitLabel}` : ""}`
               : "Not set yet"}
           </span>
           {a.parentTargetValue != null && a.targetValue != null && (
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-slate-500">
               Department target: {a.parentTargetValue} | Your share: {a.targetValue} (
               {Math.round((a.targetValue / a.parentTargetValue) * 100)}%)
             </span>
@@ -173,12 +173,12 @@ export function MyAllocationCard({
             <DeadlineBadge days={daysRemaining} />
           )}
           {a.scoringDirection === "DESCENDING" && (
-            <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-3 py-1 text-xs text-slate-500">
               <TrendingDown className="h-3 w-3" /> Lower is better
             </span>
           )}
           {a.isPerCapita && (
-            <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-3 py-1 text-xs text-slate-500">
               <Users className="h-3 w-3" /> Per capita metric
             </span>
           )}
@@ -186,7 +186,7 @@ export function MyAllocationCard({
 
         {/* Period message */}
         {periodMessage && (
-          <div className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1">
+          <div className="rounded-2xl bg-amber-50 px-3 py-2 text-xs text-amber-700">
             {periodMessage}
           </div>
         )}
@@ -204,7 +204,7 @@ export function MyAllocationCard({
           {!showBothChoice && canRecordFlag && (!ach || isMultiRequest) && (
             <button
               onClick={() => onRecordAchievement(null)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+              className="inline-flex items-center gap-1.5 rounded-full bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-700"
             >
               <FileText className="h-3.5 w-3.5" />
               {isMultiRequest ? "Add Achievement Request" : "Record Achievement"}
@@ -215,7 +215,7 @@ export function MyAllocationCard({
           {!isMultiRequest && !showBothChoice && canRecordFlag && ach?.state === "DRAFT" && (
             <button
               onClick={() => onRecordAchievement(ach)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+              className="inline-flex items-center gap-1.5 rounded-full bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-700"
             >
               Edit & Submit
             </button>
@@ -225,7 +225,7 @@ export function MyAllocationCard({
           {!isMultiRequest && !showBothChoice && canRecordFlag && ach?.state === "REJECTED" && (
             <button
               onClick={() => onRecordAchievement(ach)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-600 px-4 py-2 text-xs font-medium text-white hover:bg-amber-700"
             >
               Revise & Resubmit
             </button>
@@ -240,7 +240,7 @@ export function MyAllocationCard({
           {!showBothChoice && canCascadeFlag && (
             <button
               onClick={onCascade}
-              className="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+              className="inline-flex items-center gap-1.5 rounded-full bg-green-600 px-4 py-2 text-xs font-medium text-white hover:bg-green-700"
             >
               <ArrowDownToLine className="h-3.5 w-3.5" />
               Distribute
@@ -252,13 +252,13 @@ export function MyAllocationCard({
             <div className="flex gap-2">
               <button
                 onClick={() => onRecordAchievement(null)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                className="inline-flex items-center gap-1.5 rounded-full bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-700"
               >
                 Record at Dept Level
               </button>
               <button
                 onClick={onCascade}
-                className="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                className="inline-flex items-center gap-1.5 rounded-full bg-green-600 px-4 py-2 text-xs font-medium text-white hover:bg-green-700"
               >
                 Distribute
               </button>
@@ -268,7 +268,7 @@ export function MyAllocationCard({
           {/* Expand / collapse */}
           <button
             onClick={() => setExpanded(!expanded)}
-            className="ml-auto inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+            className="ml-auto inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
           >
             {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             {expanded ? "Less" : "More"}
@@ -276,7 +276,7 @@ export function MyAllocationCard({
         </div>
 
         {isMultiRequest && (
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
             <div className="flex flex-wrap items-center gap-3 text-sm text-slate-700">
               <span>
                 <strong>Verified progress:</strong>{" "}
@@ -299,7 +299,7 @@ export function MyAllocationCard({
             </div>
 
             {a.achievements.length === 0 ? (
-              <div className="mt-3 rounded bg-white px-3 py-2 text-xs text-slate-500">
+              <div className="mt-3 rounded-2xl bg-white px-3 py-3 text-xs text-slate-500">
                 No achievement requests have been recorded for this KPI yet.
               </div>
             ) : (
@@ -309,7 +309,7 @@ export function MyAllocationCard({
                     canRecordFlag && (request.state === "DRAFT" || request.state === "REJECTED");
                   const expandedRequest = expandedRequestId === request.id;
                   return (
-                    <div key={request.id} className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                    <div key={request.id} className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.35)]">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
@@ -326,7 +326,7 @@ export function MyAllocationCard({
                           {canEditRequest ? (
                             <button
                               onClick={() => onRecordAchievement(request)}
-                              className={`rounded-md px-3 py-1.5 text-xs font-medium text-white ${
+                              className={`rounded-full px-3 py-1.5 text-xs font-medium text-white ${
                                 request.state === "REJECTED"
                                   ? "bg-amber-600 hover:bg-amber-700"
                                   : "bg-blue-600 hover:bg-blue-700"
@@ -340,7 +340,7 @@ export function MyAllocationCard({
                           ) : null}
                           <button
                             onClick={() => setExpandedRequestId(expandedRequest ? null : request.id)}
-                            className="text-xs text-slate-500 hover:text-slate-700"
+                            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
                           >
                             {expandedRequest ? "Hide details" : "Show details"}
                           </button>
@@ -392,15 +392,15 @@ export function MyAllocationCard({
 
         {/* Expanded section */}
         {expanded && (
-          <div className="border-t border-gray-100 pt-3 space-y-3">
+          <div className="space-y-3 border-t border-slate-100 pt-4">
             {a.guidanceNotes && (
-              <div className="text-xs text-gray-600">
+              <div className="rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-600">
                 <span className="font-medium">Guidance:</span> {a.guidanceNotes}
               </div>
             )}
 
             {!isMultiRequest && ach?.duplicateCheckResult?.matches?.length ? (
-              <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                 <div className="mb-2 flex items-center gap-2 font-semibold">
                   <AlertTriangle className="h-4 w-4" />
                   Duplicate and policy checks
@@ -433,7 +433,7 @@ export function MyAllocationCard({
 
             {/* Rejection reason */}
             {!isMultiRequest && ach?.rejectionReason && (
-              <div className="rounded bg-red-50 p-2 text-xs text-red-700">
+              <div className="rounded-2xl bg-red-50 p-3 text-xs text-red-700">
                 <strong>Not Approved:</strong> {ach.rejectionReason}
               </div>
             )}
@@ -443,20 +443,20 @@ export function MyAllocationCard({
               <div>
                 <button
                   onClick={() => setShowChildren(!showChildren)}
-                  className="text-xs text-blue-600 hover:underline"
+                  className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
                 >
                   {showChildren ? "Hide" : "Show"} {a.childAllocations.length} distributed allocation(s)
                 </button>
                 {showChildren && (
-                  <div className="mt-2 space-y-1">
+                  <div className="mt-3 space-y-2">
                     {a.childAllocations.map((c) => (
                       <div
                         key={c.id}
-                        className="flex items-center gap-3 text-xs text-gray-600 bg-gray-50 rounded px-2 py-1"
+                        className="flex items-center gap-3 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-600"
                       >
                         <span className="font-medium">{c.assignedToUserName ?? c.assignedToUnitName}</span>
-                        <span>Target: {c.targetValue ?? "—"}</span>
-                        <span>Actual: {c.actualValue ?? "—"}</span>
+                        <span>Target: {c.targetValue ?? "--"}</span>
+                        <span>Actual: {c.actualValue ?? "--"}</span>
                         {c.achievementState && <AchievementStateBadge state={c.achievementState} />}
                         {c.computedScore != null && (
                           <span className="font-semibold">Score: {Math.round(c.computedScore)}</span>
@@ -465,7 +465,7 @@ export function MyAllocationCard({
                     ))}
                     {/* Aggregate */}
                     {a.targetValue != null && (
-                      <div className="mt-1 text-xs text-gray-500 font-medium border-t border-gray-200 pt-1">
+                      <div className="mt-1 border-t border-slate-200 pt-2 text-xs font-medium text-slate-500">
                         Aggregate: {a.childAllocations.reduce((s, c) => s + (c.actualValue ?? 0), 0)} of {a.targetValue} achieved |{" "}
                         {a.childAllocations.filter((c) => c.achievementState === "SUBMITTED" || c.achievementState === "RECOMMENDED").length} submitted,{" "}
                         {a.childAllocations.filter((c) => c.achievementState === "VERIFIED").length} verified
@@ -509,7 +509,7 @@ function AchievementStateBadge({ state }: { state: string }) {
   };
   const c = config[state] ?? config.DRAFT;
   return (
-    <span className={cn("inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium", c.bg, c.text)}>
+    <span className={cn("inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium", c.bg, c.text)}>
       {state === "VERIFIED" && <CheckCircle2 className="h-3 w-3 mr-1" />}
       {c.label}
     </span>
@@ -519,20 +519,20 @@ function AchievementStateBadge({ state }: { state: string }) {
 function DeadlineBadge({ days }: { days: number }) {
   if (days < 0) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-1 text-xs font-medium text-red-700">
         <Clock className="h-3 w-3" /> Overdue
       </span>
     );
   }
   if (days <= 14) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700">
         <Clock className="h-3 w-3" /> {days} days left
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
       <Clock className="h-3 w-3" /> {days} days left
     </span>
   );
@@ -587,7 +587,7 @@ function WithdrawButton({ achievementId, onDone }: { achievementId: string; onDo
     <button
       onClick={handleWithdraw}
       disabled={loading}
-      className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+      className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
     >
       {loading ? "..." : "Withdraw"}
     </button>

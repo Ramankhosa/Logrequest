@@ -305,6 +305,7 @@ export type KpiCopySelection = z.infer<typeof kpiCopySelectionSchema>;
 
 export const rewardPreviewContributorSchema = z.object({
   id: z.string().trim().min(1).optional(),
+  type: z.enum(["INTERNAL", "EXTERNAL"]).optional(),
   userId: z.string().trim().min(1).nullable().optional(),
   contributorRoleId: z.string().trim().min(1).nullable().optional(),
   creditPercent: z.number().min(0).max(100).default(0),

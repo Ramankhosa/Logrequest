@@ -5,9 +5,11 @@ import {
   type RewardPreviewInput,
 } from "./builder-shared";
 import { enrichPublicationJournalFormData } from "./publication-journal-service";
+import { normalizeGalgotiaRewardData } from "./galgotia-reward-policy";
 
 type RewardContributor = {
   id: string | null;
+  type: "INTERNAL" | "EXTERNAL";
   userId: string | null;
   contributorRoleId: string | null;
   creditPercent: number;
@@ -89,6 +91,7 @@ type RewardConfig = {
   periodId: string;
   kpiDefinitionId: string;
   title: string;
+  achievementTemplateKey: string | null;
   rewardRecurrencePolicy:
     | "RECURRING"
     | "ONCE_PER_PERIOD"
@@ -174,6 +177,7 @@ type LoadedAchievementRewardContext = {
     achievementFormData: Record<string, unknown>;
     contributors: Array<{
       id: string;
+      type: "INTERNAL" | "EXTERNAL";
       userId: string | null;
       contributorRoleId: string | null;
       creditPercent: number;
@@ -232,6 +236,34 @@ export type RewardPreviewResult = {
     benefitTypeCode: string;
     totalAmount: number;
   }>;
+};
+
+export type SubmissionRewardPreviewInput = RewardPreviewInput;
+
+export type SubmissionRewardPreviewResult = {
+  normalizedFormData: Record<string, unknown>;
+  normalizedContributors: Array<{
+    id: string | null;
+    type: "INTERNAL" | "EXTERNAL";
+    userId: string | null;
+    contributorRoleId: string | null;
+    creditPercent: number;
+    isExcludedFromReward: boolean;
+    selectorTags: string[];
+    rewardBucket: string | null;
+    exclusionReason: string | null;
+  }>;
+  derivedAuthorshipCase: string | null;
+  warnings: string[];
+  errors: string[];
+  rationale: string[];
+  counts: {
+    internal: number;
+    external: number;
+    eligible: number;
+    excluded: number;
+  };
+  rewardPreview: RewardPreviewResult;
 };
 
 function extractBaseRewardKey(idempotencyKey: string): string {
@@ -579,12 +611,95 @@ function isDateWithinWindow(
 function normalizeContributors(contributors: RewardPreviewInput["contributors"]): RewardContributor[] {
   return contributors.map((contributor) => ({
     id: contributor.id ?? null,
+    type:
+      contributor.type ??
+      (typeof contributor.userId === "string" && contributor.userId.trim().length > 0
+        ? "INTERNAL"
+        : "EXTERNAL"),
     userId: contributor.userId ?? null,
     contributorRoleId: contributor.contributorRoleId ?? null,
     creditPercent: contributor.creditPercent ?? 0,
     isExcludedFromReward: contributor.isExcludedFromReward ?? false,
     selectorTags: contributor.selectorTags ?? [],
   }));
+}
+
+async function loadContributorRoleCodeMap(
+  contributorRoleIds: Array<string | null | undefined>,
+): Promise<Map<string, string>> {
+  const ids = [...new Set(
+    contributorRoleIds.filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    ),
+  )];
+  if (ids.length === 0) {
+    return new Map();
+  }
+
+  const roles = await prisma.contributorRole.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, code: true },
+  });
+
+  return new Map(roles.map((role) => [role.id, role.code]));
+}
+
+async function applyGalgotiaRewardNormalization(
+  config: RewardConfig,
+  input: RewardPreviewInput,
+): Promise<{
+  input: RewardPreviewInput;
+  normalizedContributors: RewardContributor[];
+}> {
+  const contributors = normalizeContributors(input.contributors);
+  if (!config.achievementTemplateKey) {
+    return { input, normalizedContributors: contributors };
+  }
+
+  const roleCodeById = await loadContributorRoleCodeMap(
+    contributors.map((contributor) => contributor.contributorRoleId),
+  );
+  const normalization = normalizeGalgotiaRewardData({
+    templateKey: config.achievementTemplateKey,
+    formData: input.achievementFormData,
+    contributors: contributors.map((contributor) => ({
+      type: contributor.type,
+      userId: contributor.userId,
+      contributorRoleId: contributor.contributorRoleId,
+      roleCode:
+        contributor.contributorRoleId != null
+          ? (roleCodeById.get(contributor.contributorRoleId) ?? null)
+          : null,
+      selectorTags: contributor.selectorTags,
+      creditPercent: contributor.creditPercent,
+      isExcludedFromReward: contributor.isExcludedFromReward,
+    })),
+  });
+
+  const normalizedContributors = normalization.normalizedContributors.map((contributor, index) => ({
+    ...contributors[index]!,
+    type: contributor.type,
+    creditPercent: contributor.creditPercent,
+    isExcludedFromReward: contributor.isExcludedFromReward,
+    selectorTags: contributor.selectorTags,
+  }));
+
+  return {
+    input: {
+      ...input,
+      achievementFormData: normalization.normalizedFormData,
+      contributors: normalizedContributors.map((contributor) => ({
+        id: contributor.id ?? undefined,
+        type: contributor.type,
+        userId: contributor.userId ?? undefined,
+        contributorRoleId: contributor.contributorRoleId ?? undefined,
+        creditPercent: contributor.creditPercent,
+        isExcludedFromReward: contributor.isExcludedFromReward,
+        selectorTags: contributor.selectorTags,
+      })),
+    },
+    normalizedContributors,
+  };
 }
 
 function contributorKey(contributor: RewardContributor): string {
@@ -664,6 +779,7 @@ async function loadRewardConfig(
     select: {
       id: true,
       title: true,
+      achievementTemplateKey: true,
       rewardRecurrencePolicy: true,
       policyDateFieldKey: true,
       kraDefinition: {
@@ -732,6 +848,7 @@ async function loadRewardConfig(
     periodId: row.kraDefinition.periodId,
     kpiDefinitionId: row.id,
     title: row.title,
+    achievementTemplateKey: row.achievementTemplateKey,
     rewardRecurrencePolicy: row.rewardRecurrencePolicy,
     policyDateFieldKey: row.policyDateFieldKey,
     duplicateCheckFields: asStringArray(row.contributorConfig?.duplicateCheckFields),
@@ -1343,6 +1460,7 @@ function withSyntheticOwner(
     contributors: [
       {
         id: undefined,
+        type: "INTERNAL",
         userId: reportedByUserId,
         contributorRoleId: null,
         creditPercent: 100,
@@ -1390,6 +1508,7 @@ async function loadAchievementRewardContext(
       contributors: {
         select: {
           id: true,
+          type: true,
           userId: true,
           contributorRoleId: true,
           creditPercent: true,
@@ -1418,6 +1537,7 @@ async function loadAchievementRewardContext(
       (achievement.achievementFormData as Record<string, unknown> | null) ?? {},
     contributors: achievement.contributors.map((contributor) => ({
       id: contributor.id,
+      type: contributor.type,
       userId: contributor.userId ?? undefined,
       contributorRoleId: contributor.contributorRoleId ?? undefined,
       creditPercent: contributor.creditPercent,
@@ -1426,10 +1546,12 @@ async function loadAchievementRewardContext(
     })),
     systemMetrics: {},
   });
-  const input = withSyntheticOwner(
+  const enrichedInput = withSyntheticOwner(
     await enrichRewardPreviewInputFormData(tenantId, parsedInput),
     achievement.reportedByUserId,
   );
+  const normalized = await applyGalgotiaRewardNormalization(config, enrichedInput);
+  const input = normalized.input;
 
   const resolution = await resolveRewards(config, input);
   const rows = buildPersistableRows(achievement.id, config, resolution);
@@ -1468,8 +1590,85 @@ export async function previewKpiRewards(
     tenantId,
     parsedInput,
   );
-  const resolution = await resolveRewards(config, enrichedInput);
+  const normalized = await applyGalgotiaRewardNormalization(config, enrichedInput);
+  const resolution = await resolveRewards(config, normalized.input);
   return buildPreviewResult(config, resolution);
+}
+
+export async function previewSubmissionRewards(
+  kpiDefinitionId: string,
+  tenantId: string,
+  input: SubmissionRewardPreviewInput,
+): Promise<SubmissionRewardPreviewResult | null> {
+  const config = await loadRewardConfig(kpiDefinitionId, tenantId);
+  if (!config) return null;
+
+  const parsedInput = parseInput(input);
+  const enrichedInput = await enrichRewardPreviewInputFormData(tenantId, parsedInput);
+  const roleCodeById = await loadContributorRoleCodeMap(
+    enrichedInput.contributors.map((contributor) => contributor.contributorRoleId ?? null),
+  );
+  const normalization = normalizeGalgotiaRewardData({
+    templateKey: config.achievementTemplateKey,
+    formData: enrichedInput.achievementFormData,
+    contributors: enrichedInput.contributors.map((contributor) => ({
+      type:
+        contributor.type ??
+        (typeof contributor.userId === "string" && contributor.userId.trim().length > 0
+          ? "INTERNAL"
+          : "EXTERNAL"),
+      userId: contributor.userId ?? null,
+      contributorRoleId: contributor.contributorRoleId ?? null,
+      roleCode:
+        contributor.contributorRoleId != null
+          ? (roleCodeById.get(contributor.contributorRoleId) ?? null)
+          : null,
+      selectorTags: contributor.selectorTags ?? [],
+      creditPercent: contributor.creditPercent,
+      isExcludedFromReward: contributor.isExcludedFromReward,
+    })),
+  });
+  const normalizedInput: RewardPreviewInput = {
+    ...enrichedInput,
+    achievementFormData: normalization.normalizedFormData,
+    contributors: normalization.normalizedContributors.map((contributor, index) => ({
+      id: enrichedInput.contributors[index]?.id,
+      type: contributor.type,
+      userId: contributor.userId ?? undefined,
+      contributorRoleId: contributor.contributorRoleId ?? undefined,
+      creditPercent: contributor.creditPercent,
+      isExcludedFromReward: contributor.isExcludedFromReward,
+      selectorTags: contributor.selectorTags,
+    })),
+  };
+  const resolution = await resolveRewards(config, normalizedInput);
+  const rewardPreview = buildPreviewResult(config, resolution);
+
+  return {
+    normalizedFormData: normalization.normalizedFormData,
+    normalizedContributors: normalization.normalizedContributors.map((contributor, index) => ({
+      id: enrichedInput.contributors[index]?.id ?? null,
+      type: contributor.type,
+      userId: contributor.userId,
+      contributorRoleId: contributor.contributorRoleId,
+      creditPercent: contributor.creditPercent,
+      isExcludedFromReward: contributor.isExcludedFromReward,
+      selectorTags: contributor.selectorTags,
+      rewardBucket: contributor.rewardBucket,
+      exclusionReason: contributor.exclusionReason,
+    })),
+    derivedAuthorshipCase: normalization.derivedAuthorshipCase,
+    warnings: normalization.warnings,
+    errors: normalization.errors,
+    rationale: normalization.rationale,
+    counts: {
+      internal: normalization.normalizedContributors.filter((row) => row.type === "INTERNAL").length,
+      external: normalization.normalizedContributors.filter((row) => row.type === "EXTERNAL").length,
+      eligible: normalization.normalizedContributors.filter((row) => !row.isExcludedFromReward).length,
+      excluded: normalization.normalizedContributors.filter((row) => row.isExcludedFromReward).length,
+    },
+    rewardPreview,
+  };
 }
 
 export async function syncContributorRewardsForAchievement(

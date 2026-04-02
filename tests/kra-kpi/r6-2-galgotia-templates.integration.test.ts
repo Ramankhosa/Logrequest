@@ -11,6 +11,7 @@ import {
 import {
   GALGOTIA_TEMPLATE_CODES,
 } from "@/lib/kra-kpi/galgotia-template-constants";
+import { writeAchievementDraftState } from "@/lib/kra-kpi/achievement-draft-state";
 import { getMyReviewQueue } from "@/lib/kra-kpi/my-kpi-service";
 import { listKpiTemplates, applyTemplateToKpi, seedSystemKpiTemplates } from "@/lib/kra-kpi/kpi-template-service";
 import { previewKpiRewards } from "@/lib/kra-kpi/reward-service";
@@ -37,14 +38,14 @@ afterEach(async () => {
 function previewContributor(input: {
   userId: string | null;
   contributorRoleId: string | null;
-  creditPercent: number;
+  creditPercent?: number;
   isExcludedFromReward?: boolean;
   selectorTags?: string[];
 }) {
   return {
     userId: input.userId ?? undefined,
     contributorRoleId: input.contributorRoleId,
-    creditPercent: input.creditPercent,
+    creditPercent: input.creditPercent ?? 0,
     isExcludedFromReward: input.isExcludedFromReward ?? false,
     selectorTags: input.selectorTags ?? [],
   };
@@ -267,7 +268,6 @@ describe("R6.2 Galgotia templates", () => {
             pdfLink: "https://example.com/paper.pdf",
             doi: `10.1000/${quartile.toLowerCase()}-${testCase.caseCode.toLowerCase()}`,
             journalQuartile: quartile,
-            authorshipCase: testCase.caseCode,
             totalAuthors: testCase.contributors.length,
             guAuthorsCount: testCase.contributors.length,
           },
@@ -386,9 +386,9 @@ describe("R6.2 Galgotia templates", () => {
         degreeCertificateLink: "https://example.com/phd.pdf",
       },
       contributors: [
-        previewContributor({ userId: fixture.users.facultyCse.id, contributorRoleId: roles.get("SUPERVISOR")!, creditPercent: 60 }),
-        previewContributor({ userId: fixture.users.facultyEce.id, contributorRoleId: roles.get("CO_SUPERVISOR")!, creditPercent: 20 }),
-        previewContributor({ userId: fixture.users.schoolHead.id, contributorRoleId: roles.get("CO_SUPERVISOR")!, creditPercent: 20 }),
+        previewContributor({ userId: fixture.users.facultyCse.id, contributorRoleId: roles.get("SUPERVISOR")!, creditPercent: 10 }),
+        previewContributor({ userId: fixture.users.facultyEce.id, contributorRoleId: roles.get("CO_SUPERVISOR")!, creditPercent: 80 }),
+        previewContributor({ userId: fixture.users.schoolHead.id, contributorRoleId: roles.get("CO_SUPERVISOR")!, creditPercent: 10 }),
       ],
       systemMetrics: {},
     });
@@ -410,9 +410,9 @@ describe("R6.2 Galgotia templates", () => {
         grantType: "Government",
       },
       contributors: [
-        previewContributor({ userId: fixture.users.facultyCse.id, contributorRoleId: roles.get("PI")!, creditPercent: 60 }),
-        previewContributor({ userId: fixture.users.facultyEce.id, contributorRoleId: roles.get("CO_PI")!, creditPercent: 20 }),
-        previewContributor({ userId: fixture.users.schoolHead.id, contributorRoleId: roles.get("CO_PI")!, creditPercent: 20 }),
+        previewContributor({ userId: fixture.users.facultyCse.id, contributorRoleId: roles.get("PI")!, creditPercent: 5 }),
+        previewContributor({ userId: fixture.users.facultyEce.id, contributorRoleId: roles.get("CO_PI")!, creditPercent: 90 }),
+        previewContributor({ userId: fixture.users.schoolHead.id, contributorRoleId: roles.get("CO_PI")!, creditPercent: 5 }),
       ],
       systemMetrics: {},
     });
@@ -436,9 +436,9 @@ describe("R6.2 Galgotia templates", () => {
         approvalLink: "https://example.com/consultancy.pdf",
       },
       contributors: [
-        previewContributor({ userId: fixture.users.facultyCse.id, contributorRoleId: roles.get("LEAD_CONSULTANT")!, creditPercent: 34 }),
-        previewContributor({ userId: fixture.users.facultyEce.id, contributorRoleId: roles.get("CONSULTANT")!, creditPercent: 33 }),
-        previewContributor({ userId: fixture.users.schoolHead.id, contributorRoleId: roles.get("CONSULTANT")!, creditPercent: 33 }),
+        previewContributor({ userId: fixture.users.facultyCse.id, contributorRoleId: roles.get("LEAD_CONSULTANT")!, creditPercent: 90 }),
+        previewContributor({ userId: fixture.users.facultyEce.id, contributorRoleId: roles.get("CONSULTANT")!, creditPercent: 5 }),
+        previewContributor({ userId: fixture.users.schoolHead.id, contributorRoleId: roles.get("CONSULTANT")!, creditPercent: 5 }),
       ],
       systemMetrics: {},
     });
@@ -585,18 +585,18 @@ describe("R6.2 Galgotia templates", () => {
         programType: "EDP",
       },
       contributors: [
-        previewContributor({ userId: fixture.users.cseHead.id, contributorRoleId: roles.get("CONVENOR")!, creditPercent: 70 }),
-        previewContributor({ userId: fixture.users.facultyCse.id, contributorRoleId: roles.get("TEAM_MEMBER")!, creditPercent: 30 }),
+        previewContributor({ userId: fixture.users.cseHead.id, contributorRoleId: roles.get("CONVENOR")!, creditPercent: 95 }),
+        previewContributor({ userId: fixture.users.facultyCse.id, contributorRoleId: roles.get("TEAM_MEMBER")!, creditPercent: 5 }),
       ],
       systemMetrics: {},
     });
     const edpComponent = edpPreview?.components.find((row) => row.componentCode === "EDP_MDP_INCENTIVE");
     expect(edpComponent?.totalAmount).toBe(70000);
-    expect(edpComponent?.contributors.find((row) => row.userId === fixture.users.cseHead.id)?.amount).toBeCloseTo(49000, 2);
-    expect(edpComponent?.contributors.find((row) => row.userId === fixture.users.facultyCse.id)?.amount).toBeCloseTo(21000, 2);
+    expect(edpComponent?.contributors.find((row) => row.userId === fixture.users.cseHead.id)?.amount).toBeCloseTo(35000, 2);
+    expect(edpComponent?.contributors.find((row) => row.userId === fixture.users.facultyCse.id)?.amount).toBeCloseTo(35000, 2);
   });
 
-  test("journal achievement stores manual credits and auto-excludes external contributors", async () => {
+  test("journal achievement derives the authorship case and auto-excludes external contributors", async () => {
     const fixture = await createGalgotiaFixture();
     const journalKpi = await applyGalgotiaTemplate(
       fixture.tenant.id,
@@ -635,7 +635,6 @@ describe("R6.2 Galgotia templates", () => {
           pdfLink: "https://example.com/paper.pdf",
           doi: "10.1000/case-5",
           journalQuartile: "Q1",
-          authorshipCase: "CASE_5",
           totalAuthors: 3,
           guAuthorsCount: 1,
           selfDeclaration: true,
@@ -645,7 +644,6 @@ describe("R6.2 Galgotia templates", () => {
             type: "INTERNAL",
             userId: fixture.users.facultyCse.id,
             contributorRoleId: roles.get("CO_AUTHOR")!,
-            creditPercent: 100,
           },
           {
             type: "EXTERNAL",
@@ -664,11 +662,16 @@ describe("R6.2 Galgotia templates", () => {
 
     const achievement = await prisma.achievement.findUniqueOrThrow({
       where: { id: created.id! },
-      include: { contributors: true },
+      select: {
+        id: true,
+        achievementFormData: true,
+        contributors: true,
+      },
     });
 
     const internal = achievement.contributors.find((row) => row.userId === fixture.users.facultyCse.id);
     const external = achievement.contributors.find((row) => row.type === "EXTERNAL");
+    expect((achievement.achievementFormData as Record<string, unknown> | null)?.authorshipCase).toBe("CASE_5");
     expect(internal?.creditPercent).toBe(100);
     expect(external?.isExcludedFromReward).toBe(true);
 
@@ -680,6 +683,79 @@ describe("R6.2 Galgotia templates", () => {
       "Submitting case 5 claim",
     );
     expect(submitResult.status).toBe("success");
+  });
+
+  test("partial draft saves persist incomplete Galgotias journal progress without contributor validation", async () => {
+    const fixture = await createGalgotiaFixture();
+    const journalKpi = await applyGalgotiaTemplate(
+      fixture.tenant.id,
+      fixture.actor.id,
+      fixture.kra.id,
+      fixture.structure.cseUnitId,
+      "GU_SCOPUS_JOURNAL_PUBLICATION",
+    );
+    const allocation = await createScenarioAllocation({
+      fixture,
+      kpiId: journalKpi.id,
+      assignedToUserId: fixture.users.facultyCse.id,
+      targetValue: 1,
+      notes: "GALGOTIA_PARTIAL_DRAFT",
+    });
+
+    await setPeriodInProgress(fixture.period.id);
+
+    const partial = await recordAchievement(
+      fixture.tenant.id,
+      {
+        periodId: fixture.period.id,
+        kpiDefinitionId: journalKpi.id,
+        targetAllocationId: allocation.id,
+        saveMode: "DRAFT_PARTIAL",
+        achievementFormData: writeAchievementDraftState(
+          {
+            paperTitle: "Half-entered journal draft",
+          },
+          {
+            submissionNote: "still collecting co-author data",
+            contributors: [
+              {
+                id: "draft-1",
+                type: "INTERNAL",
+                userId: null,
+                contributorRoleId: "",
+                creditPercent: "",
+                selectorTags: [],
+                note: "",
+                externalData: {},
+              },
+            ],
+          },
+        ),
+      },
+      fixture.users.facultyCse.id,
+      "TENANT_USER",
+    );
+
+    expect(partial.status).toBe("success");
+
+    const saved = await prisma.achievement.findUniqueOrThrow({
+      where: { id: partial.id! },
+      select: {
+        state: true,
+        achievementFormData: true,
+        contributors: {
+          select: { id: true },
+        },
+      },
+    });
+
+    const formData = saved.achievementFormData as Record<string, unknown> | null;
+    expect(saved.state).toBe("DRAFT");
+    expect(saved.contributors).toHaveLength(0);
+    expect(formData?.paperTitle).toBe("Half-entered journal draft");
+    expect((formData?.__draftState as Record<string, unknown> | undefined)?.submissionNote).toBe(
+      "still collecting co-author data",
+    );
   });
 
   test("edited-book and chapter claims surface same-ISBN reviewer warnings", async () => {

@@ -5,6 +5,7 @@ import { ensureApplicableRolesBaseline } from "./contributor-role-service";
 import { validateExternalData } from "./external-contrib-template-service";
 import { getEffectiveConfig } from "./kpi-contributor-config-service";
 import { GALGOTIA_AUTO_EXCLUDE_EXTERNAL_TEMPLATE_KEYS } from "./galgotia-template-constants";
+import { isGalgotiaAutoCalculatedTemplate, normalizeGalgotiaRewardData } from "./galgotia-reward-policy";
 import type { AchievementContributorView, KraKpiActionResult } from "./shared";
 
 const JOURNAL_ARTICLE_TEMPLATE_KEY = "JOURNAL_ARTICLE_TEMPLATE";
@@ -443,6 +444,7 @@ async function prepareContributors(input: {
   tenantId: string;
   kpiDefinitionId: string;
   legacyContributionRoles?: unknown;
+  achievementFormData?: Record<string, unknown> | null;
   reportedByUserId: string;
   oboReportedForUserId?: string | null;
   contributors: AchievementContributorInput[];
@@ -615,8 +617,31 @@ async function prepareContributors(input: {
           })),
         )
       : null;
+  const galgotiaNormalization =
+    isGalgotiaAutoCalculatedTemplate(contributorPolicy.templateKey)
+      ? normalizeGalgotiaRewardData({
+          templateKey: contributorPolicy.templateKey,
+          formData: input.achievementFormData,
+          contributors: preparedBase.map((row) => ({
+            type: row.type,
+            userId: row.userId,
+            contributorRoleId: row.contributorRoleId,
+            roleCode: row.roleCode,
+            selectorTags: row.selectorTags,
+            creditPercent: row.providedCreditPercent,
+            isExcludedFromReward: row.isExcludedFromReward,
+          })),
+        })
+      : null;
+  if (galgotiaNormalization?.errors.length) {
+    return {
+      ok: false,
+      message: galgotiaNormalization.errors[0]!,
+      code: "CONTRIBUTOR_NOT_FOUND",
+    };
+  }
   const manualCredits =
-    journalCredits == null
+    journalCredits == null && galgotiaNormalization == null
       ? resolveManualCredits(
           preparedBase.map((row) => ({
             isExcludedFromReward: row.isExcludedFromReward,
@@ -633,11 +658,15 @@ async function prepareContributors(input: {
     };
   }
   const credits =
+    galgotiaNormalization?.normalizedContributors.map((contributor) => contributor.creditPercent)
+    ??
     journalCredits?.credits
     ?? manualCredits?.credits
     ?? computeCredits(
-      preparedBase.map((row) => ({
-        isExcludedFromReward: row.isExcludedFromReward,
+      preparedBase.map((row, index) => ({
+        isExcludedFromReward:
+          galgotiaNormalization?.normalizedContributors[index]?.isExcludedFromReward
+          ?? row.isExcludedFromReward,
         contributorRoleId: row.contributorRoleId,
         roleName: row.roleName,
         defaultCreditPercent: row.defaultCreditPercent,
@@ -655,7 +684,10 @@ async function prepareContributors(input: {
     contributorRoleId: row.contributorRoleId,
     selectorTags: row.selectorTags,
     creditPercent: credits[index] ?? 0,
-    isExcludedFromReward: journalCredits?.excludedFlags[index] ?? row.isExcludedFromReward,
+    isExcludedFromReward:
+      galgotiaNormalization?.normalizedContributors[index]?.isExcludedFromReward
+      ?? journalCredits?.excludedFlags[index]
+      ?? row.isExcludedFromReward,
     note: row.note,
     roleName: row.roleName,
     roleCode: row.roleCode,
@@ -682,6 +714,7 @@ export async function setAchievementContributors(input: {
   tenantId: string;
   kpiDefinitionId: string;
   legacyContributionRoles?: unknown;
+  achievementFormData?: Record<string, unknown> | null;
   reportedByUserId: string;
   oboReportedForUserId?: string | null;
   contributors: AchievementContributorInput[];
@@ -692,6 +725,7 @@ export async function setAchievementContributors(input: {
     tenantId: input.tenantId,
     kpiDefinitionId: input.kpiDefinitionId,
     legacyContributionRoles: input.legacyContributionRoles,
+    achievementFormData: input.achievementFormData,
     reportedByUserId: input.reportedByUserId,
     oboReportedForUserId: input.oboReportedForUserId,
     contributors: input.contributors,
@@ -742,6 +776,7 @@ export async function ensureAchievementContributorRows(input: {
   tenantId: string;
   kpiDefinitionId: string;
   legacyContributionRoles?: unknown;
+  achievementFormData?: Record<string, unknown> | null;
   reportedByUserId: string;
   oboReportedForUserId?: string | null;
   contributionRole?: string | null;
@@ -808,6 +843,7 @@ export async function ensureAchievementContributorRows(input: {
     tenantId: input.tenantId,
     kpiDefinitionId: input.kpiDefinitionId,
     legacyContributionRoles: input.legacyContributionRoles,
+    achievementFormData: input.achievementFormData,
     reportedByUserId: input.reportedByUserId,
     oboReportedForUserId: input.oboReportedForUserId,
     contributors: starter,

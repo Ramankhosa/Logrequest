@@ -1,4 +1,4 @@
-import type { GradeValue, MilestoneStatus, Prisma, Role } from "@prisma/client";
+import { type GradeValue, type MilestoneStatus, Prisma, type Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { getDescendantUnitIds } from "@/lib/org-structure/hierarchy-utils";
@@ -42,11 +42,20 @@ import { syncContributorRewardsForAchievement } from "./reward-service";
 import { correctAchievementAndRefreshRewards } from "./reward-ops-service";
 import { deriveAchievementTitle } from "./allocation-achievement-utils";
 import { enrichPublicationJournalFormData } from "./publication-journal-service";
+import { normalizeGalgotiaRewardData } from "./galgotia-reward-policy";
+import {
+  readAchievementDraftState,
+  stripAchievementDraftState,
+  writeAchievementDraftState,
+  type AchievementFormDraftState,
+} from "./achievement-draft-state";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
+const achievementSaveModeSchema = z.enum(["DRAFT_PARTIAL", "DRAFT_COMPLETE", "SUBMIT"]);
+type AchievementSaveMode = z.infer<typeof achievementSaveModeSchema>;
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -71,6 +80,7 @@ const createAchievementSchema = z.object({
   isOBO: z.boolean().default(false),
   oboReportedForUserId: z.string().trim().min(1).optional(),
   contributors: z.array(achievementContributorInputSchema).optional(),
+  saveMode: achievementSaveModeSchema.optional(),
 });
 
 const updateAchievementSchema = z.object({
@@ -88,6 +98,7 @@ const updateAchievementSchema = z.object({
   title: z.string().trim().max(200).nullable().optional(),
   contributionRole: z.string().trim().max(100).nullable().optional(),
   contributors: z.array(achievementContributorInputSchema).optional(),
+  saveMode: achievementSaveModeSchema.optional(),
 });
 
 export type CreateAchievementInput = z.input<typeof createAchievementSchema>;
@@ -213,6 +224,106 @@ function mergeAchievementFormPatch(
     ...(existing ?? {}),
     ...patch,
   };
+}
+
+function resolveAchievementSaveMode(value: AchievementSaveMode | undefined): AchievementSaveMode {
+  return value ?? "DRAFT_COMPLETE";
+}
+
+function shouldSkipDraftValidation(saveMode: AchievementSaveMode): boolean {
+  return saveMode === "DRAFT_PARTIAL";
+}
+
+function buildDraftStateForPersistence(input: {
+  saveMode: AchievementSaveMode;
+  formData: Record<string, unknown> | undefined;
+}): AchievementFormDraftState | null {
+  if (input.saveMode !== "DRAFT_PARTIAL") {
+    return input.saveMode === "SUBMIT"
+      ? null
+      : readAchievementDraftState(input.formData ?? null);
+  }
+
+  return readAchievementDraftState(input.formData ?? null);
+}
+
+function prepareAchievementFormDataForPersistence(input: {
+  saveMode: AchievementSaveMode;
+  formData: Record<string, unknown> | undefined;
+}): Record<string, unknown> | undefined {
+  const base =
+    input.saveMode === "SUBMIT"
+      ? stripAchievementDraftState(input.formData)
+      : stripAchievementDraftState(input.formData);
+  const draftState = buildDraftStateForPersistence(input);
+  return writeAchievementDraftState(base ?? undefined, draftState);
+}
+
+function applyGalgotiaFormDerivations(input: {
+  saveMode: AchievementSaveMode;
+  templateKey: string | null | undefined;
+  formData: Record<string, unknown> | undefined;
+  contributors: Array<{
+    type?: "INTERNAL" | "EXTERNAL";
+    userId?: string | null;
+    contributorRoleId?: string | null;
+    contributorRoleCode?: string | null;
+    selectorTags?: string[];
+    isExcludedFromReward?: boolean;
+  }>;
+}): {
+  formData: Record<string, unknown> | undefined;
+  warnings: string[];
+  errors: string[];
+} {
+  if (!input.templateKey) {
+    return {
+      formData: input.formData,
+      warnings: [],
+      errors: [],
+    };
+  }
+
+  const normalization = normalizeGalgotiaRewardData({
+    templateKey: input.templateKey,
+    formData: stripAchievementDraftState(input.formData),
+    contributors: input.contributors.map((contributor) => ({
+      type: contributor.type,
+      userId: contributor.userId,
+      contributorRoleId: contributor.contributorRoleId,
+      roleCode: contributor.contributorRoleCode,
+      selectorTags: contributor.selectorTags,
+      isExcludedFromReward: contributor.isExcludedFromReward,
+    })),
+  });
+
+  return {
+    formData: prepareAchievementFormDataForPersistence({
+      saveMode: input.saveMode,
+      formData: writeAchievementDraftState(
+        normalization.normalizedFormData,
+        readAchievementDraftState(input.formData ?? null),
+      ),
+    }),
+    warnings: normalization.warnings,
+    errors: normalization.errors,
+  };
+}
+
+function buildContributorRoleCodeMap(
+  applicableRoles:
+    | Array<{
+        contributorRoleId?: string;
+        contributorRole: { id: string; code: string };
+      }>
+    | undefined,
+): Map<string, string> {
+  return new Map(
+    (applicableRoles ?? []).map((row) => [
+      row.contributorRoleId ?? row.contributorRole.id,
+      row.contributorRole.code,
+    ]),
+  );
 }
 
 function buildChangedFieldSummary(
@@ -873,6 +984,36 @@ export async function listAchievements(
   );
 }
 
+export async function getAchievementById(
+  achievementId: string,
+  tenantId: string,
+): Promise<AchievementView | null> {
+  const achievement = await prisma.achievement.findFirst({
+    where: {
+      id: achievementId,
+      tenantId,
+    },
+    include: {
+      kpiDefinition: { select: { title: true } },
+      contributors: { include: achievementContributorInclude },
+      submissionTrail: { orderBy: { createdAt: "asc" } },
+    },
+  });
+  if (!achievement) {
+    return null;
+  }
+
+  const reporter = await prisma.user.findUnique({
+    where: { id: achievement.reportedByUserId },
+    select: { firstName: true, lastName: true },
+  });
+
+  return mapAchievementView(
+    achievement,
+    reporter ? `${reporter.firstName} ${reporter.lastName}`.trim() : "Unknown",
+  );
+}
+
 // ── Record Achievement ───────────────────────────────────────────────────────
 
 export async function recordAchievement(
@@ -929,6 +1070,17 @@ export async function recordAchievement(
     include: {
       kraDefinition: {
         select: { state: true },
+      },
+      applicableRoles: {
+        select: {
+          contributorRoleId: true,
+          contributorRole: {
+            select: {
+              id: true,
+              code: true,
+            },
+          },
+        },
       },
       _count: { select: { stages: true } },
     },
@@ -1027,6 +1179,7 @@ export async function recordAchievement(
   const isMultiRequestAllocation = Boolean(
     allocation && kpi.allowMultipleAchievementsPerAllocation,
   );
+  const saveMode = resolveAchievementSaveMode(data.saveMode);
   const actualValueForWrite =
     isMultiRequestAllocation ? 1 : data.actualValue;
   const titleForWrite = isMultiRequestAllocation
@@ -1073,22 +1226,52 @@ export async function recordAchievement(
 
   // Validate achievementFormData against KPI's form config if present
   const formConfig = kpi.achievementFormConfig as AchievementFormConfig | null;
+  const contributorRoleCodeMap = buildContributorRoleCodeMap(kpi.applicableRoles);
+  const mergedInputFormData = prepareAchievementFormDataForPersistence({
+    saveMode,
+    formData: data.achievementFormData,
+  });
   const enrichedJournalFormData = await enrichPublicationJournalFormData({
     tenantId,
-    formData: data.achievementFormData,
+    formData: stripAchievementDraftState(mergedInputFormData),
     fields: formConfig?.fields ?? null,
     mode: "fillMissing",
   });
-  const achievementFormDataForWrite = enrichedJournalFormData.formData;
-  const formValidationError = validateAchievementFormData(
-    formConfig,
-    achievementFormDataForWrite,
-  );
-  if (formValidationError) {
+  const derivedGalgotiaFormData = applyGalgotiaFormDerivations({
+    saveMode,
+    templateKey: kpi.achievementTemplateKey,
+    formData: writeAchievementDraftState(
+      enrichedJournalFormData.formData,
+      readAchievementDraftState(mergedInputFormData ?? null),
+    ),
+    contributors: (data.contributors ?? []).map((contributor) => ({
+      type: contributor.type,
+      userId: contributor.userId ?? null,
+      contributorRoleId: contributor.contributorRoleId,
+      contributorRoleCode:
+        contributorRoleCodeMap.get(contributor.contributorRoleId) ?? null,
+      selectorTags: contributor.selectorTags ?? [],
+      isExcludedFromReward: contributor.isExcludedFromReward,
+    })),
+  });
+  if (derivedGalgotiaFormData.errors.length > 0 && !shouldSkipDraftValidation(saveMode)) {
     return {
       status: "error",
-      message: formValidationError,
+      message: derivedGalgotiaFormData.errors[0]!,
     };
+  }
+  const achievementFormDataForWrite = derivedGalgotiaFormData.formData;
+  if (!shouldSkipDraftValidation(saveMode)) {
+    const formValidationError = validateAchievementFormData(
+      formConfig,
+      achievementFormDataForWrite,
+    );
+    if (formValidationError) {
+      return {
+        status: "error",
+        message: formValidationError,
+      };
+    }
   }
 
   const contributionRoleError = validateLegacyContributionRoleSelection(
@@ -1161,30 +1344,35 @@ export async function recordAchievement(
       },
     });
 
-    const contributorInputs =
-      data.contributors ??
-      (await buildStarterContributorInputs({
+    const shouldPersistContributors =
+      data.contributors !== undefined || saveMode !== "DRAFT_PARTIAL";
+    if (shouldPersistContributors) {
+      const contributorInputs =
+        data.contributors ??
+        (await buildStarterContributorInputs({
+          tenantId,
+          kpiDefinitionId: data.kpiDefinitionId,
+          legacyContributionRoles: kpi.contributionRoles,
+          userId: creditedUserId,
+          preferredRoleName: data.contributionRole ?? null,
+          tx,
+        }));
+
+      const contributorResult = await setAchievementContributors({
+        achievementId: achievement.id,
         tenantId,
         kpiDefinitionId: data.kpiDefinitionId,
         legacyContributionRoles: kpi.contributionRoles,
-        userId: creditedUserId,
-        preferredRoleName: data.contributionRole ?? null,
+        achievementFormData: stripAchievementDraftState(achievementFormDataForWrite ?? null),
+        reportedByUserId: actorUserId,
+        oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
+        contributors: contributorInputs,
         tx,
-      }));
-
-    const contributorResult = await setAchievementContributors({
-      achievementId: achievement.id,
-      tenantId,
-      kpiDefinitionId: data.kpiDefinitionId,
-      legacyContributionRoles: kpi.contributionRoles,
-      reportedByUserId: actorUserId,
-      oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
-      contributors: contributorInputs,
-      tx,
-    });
-    const contributorError = contributorMutationToActionResult(contributorResult);
-    if (contributorError) {
-      return contributorError;
+      });
+      const contributorError = contributorMutationToActionResult(contributorResult);
+      if (contributorError) {
+        return contributorError;
+      }
     }
 
     await tx.auditLog.create({
@@ -1207,7 +1395,10 @@ export async function recordAchievement(
 
     return {
       status: "success",
-      message: "Achievement recorded.",
+      message:
+        saveMode === "DRAFT_PARTIAL"
+          ? "Draft progress saved."
+          : "Achievement recorded.",
       id: achievement.id,
     } satisfies KraKpiActionResult;
   });
@@ -1227,6 +1418,30 @@ export async function recordAchievement(
       data.kpiDefinitionId,
     );
     await calculateStageScore(result.id);
+  }
+
+  if (result.status !== "success" || !result.id) {
+    return result;
+  }
+
+  if (saveMode === "SUBMIT") {
+    const submitResult = await submitForVerification(
+      result.id,
+      tenantId,
+      actorUserId,
+      actorRole,
+      null,
+    );
+    if (submitResult.status === "success") {
+      return {
+        ...submitResult,
+        id: result.id,
+      };
+    }
+    return {
+      ...submitResult,
+      id: result.id,
+    };
   }
 
   return result;
@@ -1735,6 +1950,7 @@ export async function updateAchievement(
     where: { id: achievement.kpiDefinitionId, kraDefinition: { tenantId } },
     select: {
       title: true,
+      achievementTemplateKey: true,
       measurementType: true,
       scoringMethod: true,
       scoringDirection: true,
@@ -1743,29 +1959,70 @@ export async function updateAchievement(
       achievementFormConfig: true,
       contributionRoles: true,
       allowMultipleAchievementsPerAllocation: true,
+      applicableRoles: {
+        select: {
+          contributorRoleId: true,
+          contributorRole: {
+            select: {
+              id: true,
+              code: true,
+            },
+          },
+        },
+      },
       _count: { select: { stages: true } },
     },
   });
+  const saveMode = resolveAchievementSaveMode(data.saveMode);
   const mergedFormData = mergeAchievementFormPatch(
     (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
     data.achievementFormData,
   );
+  const preparedMergedFormData = prepareAchievementFormDataForPersistence({
+    saveMode,
+    formData: mergedFormData,
+  });
   const updatedJournalFormData = await enrichPublicationJournalFormData({
     tenantId,
-    formData: mergedFormData,
+    formData: stripAchievementDraftState(preparedMergedFormData),
     fields: (kpi?.achievementFormConfig as AchievementFormConfig | null)?.fields ?? null,
     mode: "fillMissing",
   });
-  const updatedFormData = updatedJournalFormData.formData;
-  const formValidationError = validateAchievementFormData(
-    (kpi?.achievementFormConfig as AchievementFormConfig | null) ?? null,
-    updatedFormData,
-  );
-  if (formValidationError) {
+  const contributorRoleCodeMap = buildContributorRoleCodeMap(kpi?.applicableRoles);
+  const updatedFormData = applyGalgotiaFormDerivations({
+    saveMode,
+    templateKey: kpi?.achievementTemplateKey,
+    formData: writeAchievementDraftState(
+      updatedJournalFormData.formData,
+      readAchievementDraftState(preparedMergedFormData ?? null),
+    ),
+    contributors: (data.contributors ?? []).map((contributor) => ({
+      type: contributor.type,
+      userId: contributor.userId ?? null,
+      contributorRoleId: contributor.contributorRoleId,
+      contributorRoleCode:
+        contributorRoleCodeMap.get(contributor.contributorRoleId) ?? null,
+      selectorTags: contributor.selectorTags ?? [],
+      isExcludedFromReward: contributor.isExcludedFromReward,
+    })),
+  });
+  if (updatedFormData.errors.length > 0 && !shouldSkipDraftValidation(saveMode)) {
     return {
       status: "error",
-      message: formValidationError,
+      message: updatedFormData.errors[0]!,
     };
+  }
+  if (!shouldSkipDraftValidation(saveMode)) {
+    const formValidationError = validateAchievementFormData(
+      (kpi?.achievementFormConfig as AchievementFormConfig | null) ?? null,
+      updatedFormData.formData,
+    );
+    if (formValidationError) {
+      return {
+        status: "error",
+        message: formValidationError,
+      };
+    }
   }
 
   const contributionRoleError = validateLegacyContributionRoleSelection(
@@ -1788,7 +2045,7 @@ export async function updateAchievement(
   const nextTitle = isMultiRequestAllocation && kpi
     ? deriveAchievementTitle({
         explicitTitle: data.title !== undefined ? data.title : achievement.title,
-        formData: updatedFormData,
+        formData: updatedFormData.formData,
         kpiTitle: kpi.title,
         reportingDate: achievement.reportingDate,
       })
@@ -1846,7 +2103,7 @@ export async function updateAchievement(
         }),
         ...(data.evidenceLinks !== undefined && { evidenceLinks: data.evidenceLinks }),
         ...(data.achievementFormData !== undefined && {
-          achievementFormData: updatedFormData as object,
+          achievementFormData: updatedFormData.formData as object,
         }),
         title: nextTitle,
         effectiveScore,
@@ -1874,6 +2131,7 @@ export async function updateAchievement(
         tenantId,
         kpiDefinitionId: achievement.kpiDefinitionId,
         legacyContributionRoles: kpi?.contributionRoles ?? null,
+        achievementFormData: stripAchievementDraftState(updatedFormData.formData ?? null),
         reportedByUserId: achievement.reportedByUserId,
         oboReportedForUserId: achievement.oboReportedForUserId,
         contributors: data.contributors,
@@ -1883,7 +2141,11 @@ export async function updateAchievement(
       if (contributorError) {
         return contributorError;
       }
-    } else if (achievement.contributors.length === 0 && data.contributionRole !== undefined) {
+    } else if (
+      saveMode !== "DRAFT_PARTIAL" &&
+      achievement.contributors.length === 0 &&
+      data.contributionRole !== undefined
+    ) {
       const starter = await buildStarterContributorInputs({
         tenantId,
         kpiDefinitionId: achievement.kpiDefinitionId,
@@ -1900,6 +2162,7 @@ export async function updateAchievement(
         tenantId,
         kpiDefinitionId: achievement.kpiDefinitionId,
         legacyContributionRoles: kpi?.contributionRoles ?? null,
+        achievementFormData: stripAchievementDraftState(updatedFormData.formData ?? null),
         reportedByUserId: achievement.reportedByUserId,
         oboReportedForUserId: achievement.oboReportedForUserId,
         contributors: starter,
@@ -1927,8 +2190,30 @@ export async function updateAchievement(
       },
     });
 
-    return { status: "success", message: "Achievement updated." } satisfies KraKpiActionResult;
+    return {
+      status: "success",
+      message: saveMode === "DRAFT_PARTIAL" ? "Draft progress saved." : "Achievement updated.",
+      id: achievementId,
+    } satisfies KraKpiActionResult;
   });
+
+  if (result.status !== "success" || !result.id) {
+    return result;
+  }
+
+  if (saveMode === "SUBMIT") {
+    const submitResult = await submitForVerification(
+      achievementId,
+      tenantId,
+      actorUserId,
+      actorRole,
+      null,
+    );
+    return {
+      ...submitResult,
+      id: achievementId,
+    };
+  }
 
   return result;
 }
@@ -2109,6 +2394,10 @@ export async function submitForVerification(
         tenantId,
         kpiDefinitionId: achievement.kpiDefinitionId,
         legacyContributionRoles: kpi.contributionRoles,
+        achievementFormData:
+          stripAchievementDraftState(
+            (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
+          ) ?? null,
         reportedByUserId: achievement.reportedByUserId,
         oboReportedForUserId: achievement.oboReportedForUserId,
         contributionRole: achievement.contributionRole,
@@ -2124,6 +2413,10 @@ export async function submitForVerification(
         tenantId,
         kpiDefinitionId: achievement.kpiDefinitionId,
         legacyContributionRoles: kpi.contributionRoles,
+        achievementFormData:
+          stripAchievementDraftState(
+            (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
+          ) ?? null,
         reportedByUserId: achievement.reportedByUserId,
         oboReportedForUserId: achievement.oboReportedForUserId,
         contributors: achievement.contributors.map((contributor) => ({
@@ -2162,6 +2455,10 @@ export async function submitForVerification(
       where: { id: achievementId },
       data: {
         state: "SUBMITTED",
+        achievementFormData:
+          (stripAchievementDraftState(
+            (achievement.achievementFormData as Record<string, unknown> | null) ?? null,
+          ) as object | undefined) ?? Prisma.JsonNull,
         verificationLog: [...existingLog, newLogEntry] as unknown as object[],
         currentVerifierUnitId: reviewUnitId,
         currentVerifierUserId: firstHead,
@@ -3091,6 +3388,17 @@ export async function recordAdditionalAchievement(
     },
     include: {
       kraDefinition: { select: { state: true } },
+      applicableRoles: {
+        select: {
+          contributorRoleId: true,
+          contributorRole: {
+            select: {
+              id: true,
+              code: true,
+            },
+          },
+        },
+      },
       _count: { select: { stages: true } },
     },
   });
@@ -3142,20 +3450,47 @@ export async function recordAdditionalAchievement(
   }
 
   // Validate form data
+  const saveMode = resolveAchievementSaveMode(data.saveMode);
   const formConfig = kpi.achievementFormConfig as AchievementFormConfig | null;
+  const contributorRoleCodeMap = buildContributorRoleCodeMap(kpi.applicableRoles);
+  const preparedAdditionalFormData = prepareAchievementFormDataForPersistence({
+    saveMode,
+    formData: data.achievementFormData,
+  });
   const enrichedAdditionalFormData = await enrichPublicationJournalFormData({
     tenantId,
-    formData: data.achievementFormData,
+    formData: stripAchievementDraftState(preparedAdditionalFormData),
     fields: formConfig?.fields ?? null,
     mode: "fillMissing",
   });
-  const additionalFormData = enrichedAdditionalFormData.formData;
-  const formValidationError = validateAchievementFormData(
-    formConfig,
-    additionalFormData,
-  );
-  if (formValidationError) {
-    return { status: "error", message: formValidationError };
+  const additionalFormData = applyGalgotiaFormDerivations({
+    saveMode,
+    templateKey: kpi.achievementTemplateKey,
+    formData: writeAchievementDraftState(
+      enrichedAdditionalFormData.formData,
+      readAchievementDraftState(preparedAdditionalFormData ?? null),
+    ),
+    contributors: (data.contributors ?? []).map((contributor) => ({
+      type: contributor.type,
+      userId: contributor.userId ?? null,
+      contributorRoleId: contributor.contributorRoleId,
+      contributorRoleCode:
+        contributorRoleCodeMap.get(contributor.contributorRoleId) ?? null,
+      selectorTags: contributor.selectorTags ?? [],
+      isExcludedFromReward: contributor.isExcludedFromReward,
+    })),
+  });
+  if (additionalFormData.errors.length > 0 && !shouldSkipDraftValidation(saveMode)) {
+    return { status: "error", message: additionalFormData.errors[0]! };
+  }
+  if (!shouldSkipDraftValidation(saveMode)) {
+    const formValidationError = validateAchievementFormData(
+      formConfig,
+      additionalFormData.formData,
+    );
+    if (formValidationError) {
+      return { status: "error", message: formValidationError };
+    }
   }
 
   const contributionRoleError = validateLegacyContributionRoleSelection(
@@ -3218,7 +3553,7 @@ export async function recordAdditionalAchievement(
         actualRating: data.actualRating,
         evidenceDescription: data.evidenceDescription,
         evidenceLinks: data.evidenceLinks,
-        achievementFormData: additionalFormData as object | undefined,
+        achievementFormData: additionalFormData.formData as object | undefined,
         computedScore: computedScoreValue,
         effectiveScore:
           kpi._count.stages > 0
@@ -3228,29 +3563,34 @@ export async function recordAdditionalAchievement(
       },
     });
 
-    const contributorInputs =
-      data.contributors ??
-      (await buildStarterContributorInputs({
+    const shouldPersistContributors =
+      data.contributors !== undefined || saveMode !== "DRAFT_PARTIAL";
+    if (shouldPersistContributors) {
+      const contributorInputs =
+        data.contributors ??
+        (await buildStarterContributorInputs({
+          tenantId,
+          kpiDefinitionId: data.kpiDefinitionId,
+          legacyContributionRoles: kpi.contributionRoles,
+          userId: creditedUserId,
+          preferredRoleName: data.contributionRole ?? null,
+          tx,
+        }));
+      const contributorResult = await setAchievementContributors({
+        achievementId: achievement.id,
         tenantId,
         kpiDefinitionId: data.kpiDefinitionId,
         legacyContributionRoles: kpi.contributionRoles,
-        userId: creditedUserId,
-        preferredRoleName: data.contributionRole ?? null,
+        achievementFormData: stripAchievementDraftState(additionalFormData.formData ?? null),
+        reportedByUserId: actorUserId,
+        oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
+        contributors: contributorInputs,
         tx,
-      }));
-    const contributorResult = await setAchievementContributors({
-      achievementId: achievement.id,
-      tenantId,
-      kpiDefinitionId: data.kpiDefinitionId,
-      legacyContributionRoles: kpi.contributionRoles,
-      reportedByUserId: actorUserId,
-      oboReportedForUserId: data.isOBO ? data.oboReportedForUserId ?? null : null,
-      contributors: contributorInputs,
-      tx,
-    });
-    const contributorError = contributorMutationToActionResult(contributorResult);
-    if (contributorError) {
-      return contributorError;
+      });
+      const contributorError = contributorMutationToActionResult(contributorResult);
+      if (contributorError) {
+        return contributorError;
+      }
     }
 
     await tx.auditLog.create({
@@ -3273,10 +3613,31 @@ export async function recordAdditionalAchievement(
 
     return {
       status: "success",
-      message: "Additional achievement recorded.",
+      message:
+        saveMode === "DRAFT_PARTIAL"
+          ? "Draft progress saved."
+          : "Additional achievement recorded.",
       id: achievement.id,
     } satisfies KraKpiActionResult;
   });
+
+  if (result.status !== "success" || !result.id) {
+    return result;
+  }
+
+  if (saveMode === "SUBMIT") {
+    const submitResult = await submitForVerification(
+      result.id,
+      tenantId,
+      actorUserId,
+      actorRole,
+      null,
+    );
+    return {
+      ...submitResult,
+      id: result.id,
+    };
+  }
 
   return result;
 }
