@@ -2,6 +2,7 @@ import type { Role, BenefitType } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult } from "./shared";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -36,6 +37,19 @@ function isTenantAdmin(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+async function canManageBenefitTypes(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_REWARDS",
+  });
 }
 
 const DEFAULT_BENEFIT_TYPES: Array<{
@@ -117,7 +131,7 @@ export async function createBenefitType(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageBenefitTypes(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -183,7 +197,7 @@ export async function updateBenefitType(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageBenefitTypes(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -236,7 +250,7 @@ export async function archiveBenefitType(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageBenefitTypes(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",

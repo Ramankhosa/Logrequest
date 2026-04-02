@@ -12,6 +12,7 @@ import { GALGOTIA_KPI_TEMPLATES } from "./galgotia-kpi-templates";
 import { saveKpiBuilder } from "./kpi-builder-service";
 import { seedDefaultBenefitTypes } from "./benefit-type-service";
 import { seedDefaultContributorRoles } from "./contributor-role-service";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -23,6 +24,19 @@ function isTenantAdmin(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+async function canManageKpiTemplates(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KPI",
+  });
 }
 
 const PUBLICATION_TIER_ROWS = [
@@ -625,7 +639,7 @@ export async function createKpiTemplate(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageKpiTemplates(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions.", code: "PERMISSION_DENIED" };
   }
 
@@ -678,7 +692,7 @@ export async function updateKpiTemplate(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageKpiTemplates(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions.", code: "PERMISSION_DENIED" };
   }
 

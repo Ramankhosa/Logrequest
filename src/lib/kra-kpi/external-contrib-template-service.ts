@@ -12,6 +12,7 @@ import {
   type AchievementFieldConfig,
   type KraKpiActionResult,
 } from "./shared";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -40,6 +41,19 @@ function isTenantAdmin(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+async function canManageExternalContributorTemplates(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KPI",
+  });
 }
 
 function cloneFields(fields: AchievementFieldConfig[]): AchievementFieldConfig[] {
@@ -195,7 +209,7 @@ export async function createTemplate(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageExternalContributorTemplates(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -253,7 +267,7 @@ export async function updateTemplate(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageExternalContributorTemplates(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -329,7 +343,7 @@ export async function archiveTemplate(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageExternalContributorTemplates(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -424,7 +438,7 @@ export async function setDefault(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageExternalContributorTemplates(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",

@@ -2,7 +2,16 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, FileText, Loader2, Save, ShieldCheck } from "lucide-react";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Loader2,
+  Save,
+  ShieldCheck,
+} from "lucide-react";
 import type {
   DuplicateCheckResult,
   AchievementFieldConfig,
@@ -104,8 +113,12 @@ type UserOption = {
   lastName: string | null;
   name: string;
   email: string | null;
+  employeeId: string | null;
   designation: string | null;
+  role: string | null;
+  status: string | null;
   primaryUnit: string | null;
+  primaryUnitCode: string | null;
 };
 
 type ContributorDraft = {
@@ -377,6 +390,10 @@ function autoExcludesExternalContributors(subject: FormSubject): boolean {
     typeof subject.achievementTemplateKey === "string"
     && GALGOTIA_AUTO_EXCLUDE_EXTERNAL_TEMPLATE_KEYS.has(subject.achievementTemplateKey)
   );
+}
+
+function isEditableAchievementState(state: string | null | undefined) {
+  return state === "DRAFT" || state === "REJECTED";
 }
 
 function emptyContributor(
@@ -857,8 +874,19 @@ export function MyAchievementForm({
       return;
     }
 
-    if (localDraft.achievementId) {
-      setWorkingAchievementId(localDraft.achievementId);
+    const resolvedAchievementId =
+      ach && isEditableAchievementState(ach.state)
+        ? ach.id
+        : localDraft.achievementId ?? null;
+
+    if (resolvedAchievementId) {
+      setWorkingAchievementId(resolvedAchievementId);
+    }
+    if (resolvedAchievementId !== (localDraft.achievementId ?? null)) {
+      writeLocalDraftState(storageKey, {
+        ...localDraft,
+        achievementId: resolvedAchievementId,
+      });
     }
     if (localDraft.formData) {
       setFormData(applyAchievementFieldDefaults(fields, localDraft.formData));
@@ -897,7 +925,7 @@ export function MyAchievementForm({
         Object.fromEntries(localDraft.contributors.map((contributor) => [contributor.id, true])),
       );
     }
-  }, [fields, forceSingleItemActualValue, storageKey]);
+  }, [ach, fields, forceSingleItemActualValue, storageKey]);
 
   useEffect(() => {
     setOpenContributorCards((prev) => {
@@ -1341,7 +1369,7 @@ export function MyAchievementForm({
     const persistedActualValue = forceSingleItemActualValue ? 1 : actualValue;
 
     const body = {
-      saveMode: submitAfter ? "SUBMIT" : "DRAFT_COMPLETE",
+      saveMode: "DRAFT_COMPLETE",
       periodId: subject.periodId,
       kpiDefinitionId: subject.kpiDefinitionId,
       ...(!subject.isAdditional &&
@@ -1377,7 +1405,7 @@ export function MyAchievementForm({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            saveMode: submitAfter ? "SUBMIT" : "DRAFT_COMPLETE",
+            saveMode: "DRAFT_COMPLETE",
             ...(persistedActualValue !== undefined && { actualValue: persistedActualValue }),
             ...(actualDate && { actualDate }),
             ...(actualMilestone && { actualMilestone }),

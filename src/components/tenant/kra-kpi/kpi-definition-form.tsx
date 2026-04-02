@@ -179,7 +179,7 @@ export function KpiDefinitionForm({ mode, kraDefinitionId, units, initial, onDon
   const [finalUnitId, setFinalUnitId] = useState(initial?.finalUnitId ?? "");
   const [evidenceRequired, setEvidenceRequired] = useState(initial?.evidenceRequired ?? true);
   const [allowMultipleAchievementsPerAllocation, setAllowMultipleAchievementsPerAllocation] =
-    useState(initial?.allowMultipleAchievementsPerAllocation ?? false);
+    useState(initial?.allowMultipleAchievementsPerAllocation ?? true);
   const [evidenceTypes, setEvidenceTypes] = useState<string[]>(initial?.evidenceTypes ?? []);
   const [evidenceInstructions, setEvidenceInstructions] = useState(initial?.evidenceInstructions ?? "");
   const [sopDescription, setSopDescription] = useState(initial?.sopDescription ?? "");

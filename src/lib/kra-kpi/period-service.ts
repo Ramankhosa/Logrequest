@@ -5,6 +5,7 @@ import {
   createBulkNotifications,
   resolveAllocateeUserId,
 } from "@/lib/notifications/notification-service";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import type {
   KraKpiActionResult,
   AssessmentPeriodView,
@@ -71,6 +72,19 @@ function isAdminOrOwner(role: Role): boolean {
   );
 }
 
+async function canManagePeriods(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KRA",
+  });
+}
+
 function mapPeriodView(
   p: Awaited<ReturnType<typeof prisma.assessmentPeriod.findFirst>> & {
     _count: { kraDefinitions: number; reviewCycles: number };
@@ -132,7 +146,7 @@ export async function createPeriod(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManagePeriods(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions to create assessment periods." };
   }
 
@@ -200,7 +214,7 @@ export async function updatePeriod(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManagePeriods(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions to update assessment periods." };
   }
 
@@ -282,7 +296,7 @@ export async function transitionPeriodState(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManagePeriods(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions to change period state." };
   }
 
@@ -506,7 +520,7 @@ export async function generateReviewCycles(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult & { data?: StoredReviewCycleView[] }> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManagePeriods(tenantId, actorUserId, actorRole))) {
     return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
   }
 
@@ -669,7 +683,7 @@ export async function bulkLockTargets(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManagePeriods(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 

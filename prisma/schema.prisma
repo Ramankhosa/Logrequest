@@ -63,6 +63,16 @@ enum Role {
   TENANT_USER
 }
 
+enum TenantPermissionRole {
+  KRA_MANAGER
+  KPI_EDITOR
+  TARGET_MANAGER
+  WORKFLOW_MANAGER
+  REWARD_MANAGER
+  ACCESS_ADMIN
+  PERSONNEL_MANAGER
+}
+
 enum ContributorType {
   INTERNAL
   EXTERNAL
@@ -493,6 +503,7 @@ model Tenant {
   benefitTypes          BenefitType[]
   contributorRoles      ContributorRole[]
   externalContribTemplates ExternalContributorTemplate[]
+  permissionAssignments TenantPermissionAssignment[]
   kpiTemplates          KpiTemplate[]
   contributorRewards    ContributorReward[]
   journalCatalogRecords JournalCatalogRecord[]
@@ -542,10 +553,14 @@ model User {
   passwordResetTokens PasswordResetToken[]
   orgAssignments      UserOrgAssignment[]
   orgRoleAssignments  OrgRoleAssignment[]
+  tenantPermissionAssignments TenantPermissionAssignment[] @relation("TenantPermissionAssignmentUser")
+  grantedTenantPermissionAssignments TenantPermissionAssignment[] @relation("TenantPermissionAssignmentCreatedBy")
   managerLines        ReportingLine[]      @relation("OrgManagerLines")
   memberLines         ReportingLine[]      @relation("OrgMemberLines")
   targetAllocations   TargetAllocation[]   @relation("TargetUser")
   notifications       Notification[]
+  keyReviewKpis       KpiDefinition[]      @relation("KpiKeyReviewer")
+  finalReviewKpis     KpiDefinition[]      @relation("KpiFinalReviewer")
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
@@ -564,6 +579,23 @@ model SocialAccount {
 
   @@unique([provider, providerAccountId])
   @@unique([userId, provider])
+}
+
+model TenantPermissionAssignment {
+  id              String               @id @default(cuid())
+  tenantId        String
+  userId          String
+  roleCode        TenantPermissionRole
+  createdByUserId String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  tenant          Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user            User                 @relation("TenantPermissionAssignmentUser", fields: [userId], references: [id], onDelete: Cascade)
+  createdByUser   User?                @relation("TenantPermissionAssignmentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, userId, roleCode])
+  @@index([tenantId, roleCode])
+  @@index([tenantId, userId])
 }
 
 model PasswordResetToken {
@@ -1084,6 +1116,8 @@ model KpiDefinition {
   // ── R2: Verification Routing ──
   keyUnitId             String?
   finalUnitId           String?
+  keyReviewerUserId     String?
+  finalReviewerUserId   String?
   // ── R2: SOP & Evidence ──
   sopDescription        String?
   sopFiles              Json?
@@ -1095,7 +1129,7 @@ model KpiDefinition {
   teamCreditMethod      TeamCreditMethod   @default(FULL_EACH)
   // ── R2.2: Stages & submission ──
   allowPartialCompletion Boolean           @default(true)
-  allowMultipleAchievementsPerAllocation Boolean @default(false)
+  allowMultipleAchievementsPerAllocation Boolean @default(true)
   contributionRoles      Json?
   participantMode        KpiParticipantMode        @default(SINGLE_OWNER)
   rewardRecurrencePolicy KpiRewardRecurrencePolicy @default(RECURRING)
@@ -1111,6 +1145,8 @@ model KpiDefinition {
   startingUnit      OrgUnit            @relation("KpiStartingUnit", fields: [startingUnitId], references: [id], onDelete: Restrict)
   keyUnit           OrgUnit?           @relation("KpiKeyUnit", fields: [keyUnitId], references: [id], onDelete: SetNull)
   finalUnit         OrgUnit?           @relation("KpiFinalUnit", fields: [finalUnitId], references: [id], onDelete: SetNull)
+  keyReviewerUser   User?              @relation("KpiKeyReviewer", fields: [keyReviewerUserId], references: [id], onDelete: SetNull)
+  finalReviewerUser User?              @relation("KpiFinalReviewer", fields: [finalReviewerUserId], references: [id], onDelete: SetNull)
   targetAllocations TargetAllocation[]
   achievements      Achievement[]
   targetUnits       KpiTargetUnit[]
@@ -1125,6 +1161,8 @@ model KpiDefinition {
   @@index([startingUnitId])
   @@index([keyUnitId])
   @@index([finalUnitId])
+  @@index([keyReviewerUserId])
+  @@index([finalReviewerUserId])
 }
 
 model BenefitType {

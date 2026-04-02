@@ -8,6 +8,7 @@ import {
 } from "./external-contrib-shared";
 import { seedDefaultTemplates } from "./external-contrib-template-service";
 import type { KraKpiActionResult } from "./shared";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -27,6 +28,19 @@ function isTenantAdmin(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+async function canManageKpiContributorConfig(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KPI",
+  });
 }
 
 function mapConfigView(row: {
@@ -86,7 +100,7 @@ export async function setConfig(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageKpiContributorConfig(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",

@@ -2,6 +2,7 @@ import type { Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult, KraCategoryView } from "./shared";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -49,6 +50,19 @@ const updateCategorySchema = z.object({
 
 export type CreateCategoryInput = z.input<typeof createCategorySchema>;
 export type UpdateCategoryInput = z.input<typeof updateCategorySchema>;
+
+async function canManageCategories(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KRA",
+  });
+}
 
 // ── List Categories ──────────────────────────────────────────────────────────
 
@@ -139,9 +153,7 @@ export async function createCategory(
   }
   if (
     tenantId !== null &&
-    actorRole !== tenantOwnerRole &&
-    actorRole !== tenantAdminRole &&
-    actorRole !== "SUPERADMIN"
+    !(await canManageCategories(tenantId, actorUserId, actorRole))
   ) {
     return { status: "error", message: "Insufficient permissions to create categories." };
   }
@@ -228,9 +240,7 @@ export async function updateCategory(
   }
   if (
     category.scope === "TENANT" &&
-    actorRole !== tenantOwnerRole &&
-    actorRole !== tenantAdminRole &&
-    actorRole !== "SUPERADMIN"
+    !(await canManageCategories(category.tenantId ?? "", actorUserId, actorRole))
   ) {
     return { status: "error", message: "Insufficient permissions to update this category." };
   }
@@ -289,9 +299,7 @@ export async function deleteCategory(
   }
   if (
     category.scope === "TENANT" &&
-    actorRole !== tenantOwnerRole &&
-    actorRole !== tenantAdminRole &&
-    actorRole !== "SUPERADMIN"
+    !(await canManageCategories(category.tenantId ?? "", actorUserId, actorRole))
   ) {
     return { status: "error", message: "Insufficient permissions to delete this category." };
   }

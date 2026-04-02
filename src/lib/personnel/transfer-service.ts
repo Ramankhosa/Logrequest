@@ -8,6 +8,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 import { formatTargetDisplay } from "@/lib/kra-kpi/measurement-display";
+import { rebindOpenAchievementsForUserChange } from "@/lib/kra-kpi/workflow-service";
 import {
   createBulkNotifications,
   createNotification,
@@ -18,6 +19,7 @@ import {
 } from "@/lib/org-structure/hierarchy-utils";
 import { prisma } from "@/lib/prisma";
 import { getPersonnelPolicy } from "@/lib/personnel/policy";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import type {
   OnboardingOptions,
   PersonnelActionResult,
@@ -147,6 +149,23 @@ type VersionUnitMapping = {
 
 function canManageTransfers(role: Role): boolean {
   return MANAGE_ROLES.includes(role);
+}
+
+async function canManageTransferWorkspace(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  if (canManageTransfers(actorRole)) {
+    return true;
+  }
+
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_PERSONNEL",
+  });
 }
 
 function dedupeStrings(values: string[]) {
@@ -1215,7 +1234,7 @@ export async function initiateTransfer(input: {
   actorRole: Role;
   values: z.input<typeof initiateTransferSchema>;
 }): Promise<TransferActionResult> {
-  if (!canManageTransfers(input.actorRole)) {
+  if (!(await canManageTransferWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -1406,7 +1425,7 @@ export async function approveTransfer(input: {
   actorRole: Role;
   transferId: string;
 }): Promise<TransferActionResult> {
-  if (!canManageTransfers(input.actorRole)) {
+  if (!(await canManageTransferWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -1464,7 +1483,7 @@ export async function rejectTransfer(input: {
   transferId: string;
   reason?: string;
 }): Promise<TransferActionResult> {
-  if (!canManageTransfers(input.actorRole)) {
+  if (!(await canManageTransferWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -1524,7 +1543,7 @@ export async function cancelTransfer(input: {
   transferId: string;
   reason?: string;
 }): Promise<TransferActionResult> {
-  if (!canManageTransfers(input.actorRole)) {
+  if (!(await canManageTransferWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -1598,7 +1617,7 @@ export async function configureTransferPortability(input: {
   transferId: string;
   values: z.input<typeof configureTransferSchema>;
 }): Promise<TransferActionResult> {
-  if (!canManageTransfers(input.actorRole)) {
+  if (!(await canManageTransferWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -1665,7 +1684,7 @@ export async function executeTransfer(input: {
   transferId: string;
   values?: z.input<typeof executeTransferSchema>;
 }): Promise<TransferActionResult> {
-  if (!canManageTransfers(input.actorRole)) {
+  if (!(await canManageTransferWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -1941,6 +1960,18 @@ export async function executeTransfer(input: {
     }
   } catch (error) {
     console.warn("[transfer-service] Failed to send execution notifications:", error);
+  }
+
+  try {
+    await rebindOpenAchievementsForUserChange({
+      tenantId: input.tenantId,
+      affectedUserId: transfer.membership.user.id,
+      actorUserId: input.actorUserId,
+      actorRole: input.actorRole,
+      note: `Reviewer auto-rebound because the reviewer was transferred to ${transfer.targetUnit.name}.`,
+    });
+  } catch (error) {
+    console.warn("[transfer-service] Failed to rebind workflow reviewers after transfer:", error);
   }
 
   return {

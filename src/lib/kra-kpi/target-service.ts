@@ -13,6 +13,7 @@ import {
   createBulkNotifications,
   resolveAllocateeUserId,
 } from "@/lib/notifications/notification-service";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,19 @@ function isAdminOrOwner(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+async function canManageTargets(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_TARGETS",
+  });
 }
 
 /** Types where child target values must sum to parent */
@@ -362,7 +376,7 @@ export async function createAllocation(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageTargets(tenantId, actorUserId, actorRole))) {
     return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
   }
 
@@ -389,7 +403,7 @@ export async function createAllocations(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageTargets(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 
@@ -418,7 +432,7 @@ export async function updateAllocation(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageTargets(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 
@@ -557,7 +571,7 @@ export async function lockTarget(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageTargets(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 
@@ -585,7 +599,7 @@ export async function unlockTarget(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageTargets(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 
@@ -1150,7 +1164,7 @@ export async function allocateToTargetUnits(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageTargets(tenantId, actorUserId, actorRole))) {
     return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
   }
 
@@ -1300,7 +1314,7 @@ export async function deleteAllocation(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageTargets(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 

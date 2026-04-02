@@ -17,6 +17,7 @@ import { createNotification } from "@/lib/notifications/notification-service";
 import { recalculateContributorRewardsForAchievement } from "./reward-service";
 import { getUserAssignments } from "@/lib/org-structure/roles-service";
 import { getDescendantUnitIds } from "@/lib/org-structure/hierarchy-utils";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 type RewardListFilters = {
   periodId?: string;
@@ -93,6 +94,19 @@ async function resolveRewardAccessScope(
   actorRole: Role | null | undefined,
 ): Promise<RewardAccessScope | null> {
   if (isRewardAdmin(actorRole)) {
+    return {
+      mode: "global",
+      accessibleUnitIds: [],
+    };
+  }
+
+  const hasGlobalRewardCapability = await hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_REWARDS",
+  });
+  if (hasGlobalRewardCapability) {
     return {
       mode: "global",
       accessibleUnitIds: [],

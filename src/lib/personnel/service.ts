@@ -4,6 +4,7 @@ import {
   OrgAssignmentType,
   PersonnelStatus,
   Role,
+  TenantPermissionRole,
   UserLifecycleState,
   type PersonnelActionType,
 } from "@prisma/client";
@@ -19,6 +20,16 @@ import type {
   PlacementSummary,
   PlacementSummaryUnit,
 } from "@/lib/personnel/shared";
+import {
+  hasTenantCapability,
+  listTenantPermissionRoleDefinitions,
+  listTenantPermissionRolesForUser,
+  replaceTenantPermissionAssignments,
+} from "@/lib/tenant-permissions/service";
+import {
+  rebindOpenAchievementsForUserChange,
+  resolveWorkflowReviewerForUnit,
+} from "@/lib/kra-kpi/workflow-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -37,6 +48,7 @@ const onboardSchema = z.object({
   primaryUnitCode: z.string().trim().min(1),
   secondaryUnitCodes: z.array(z.string().trim().min(1)).default([]),
   roleKeys: z.array(z.string().trim().min(1)).default([]),
+  permissionRoleCodes: z.array(z.nativeEnum(TenantPermissionRole)).default([]),
 });
 
 export type OnboardInput = z.input<typeof onboardSchema>;
@@ -53,6 +65,23 @@ export type AssignUnitInput = z.input<typeof assignUnitSchema>;
 
 function canManagePersonnel(role: Role): boolean {
   return MANAGE_ROLES.includes(role);
+}
+
+async function canManagePersonnelWorkspace(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  if (canManagePersonnel(actorRole)) {
+    return true;
+  }
+
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_PERSONNEL",
+  });
 }
 
 async function getActiveVersionId(tenantId: string): Promise<string | null> {
@@ -79,7 +108,17 @@ export async function getOnboardingOptions(
   tenantId: string,
 ): Promise<OnboardingOptions> {
   const versionId = await getActiveVersionId(tenantId);
-  if (!versionId) return { units: [], roles: [] };
+  if (!versionId) {
+    return {
+      units: [],
+      roles: [],
+      permissionRoles: listTenantPermissionRoleDefinitions().map((definition) => ({
+        code: definition.code,
+        label: definition.label,
+        description: definition.description,
+      })),
+    };
+  }
 
   const [units, roles] = await Promise.all([
     prisma.orgUnit.findMany({
@@ -114,6 +153,11 @@ export async function getOnboardingOptions(
       isUnitHead: r.isUnitHead,
       maxPerUnit: r.maxPerUnit,
     })),
+    permissionRoles: listTenantPermissionRoleDefinitions().map((definition) => ({
+      code: definition.code,
+      label: definition.label,
+      description: definition.description,
+    })),
   };
 }
 
@@ -125,7 +169,7 @@ export async function onboardMember(input: {
   actorRole: Role;
   values: OnboardInput;
 }): Promise<PersonnelActionResult> {
-  if (!canManagePersonnel(input.actorRole)) {
+  if (!(await canManagePersonnelWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "You do not have permission to onboard members." };
   }
 
@@ -138,9 +182,22 @@ export async function onboardMember(input: {
   const email = normalizeEmail(v.officialEmail);
   const trimmedEmployeeId = v.employeeId?.trim() || null;
   const appRole = v.role === "TENANT_ADMIN" ? Role.TENANT_ADMIN : Role.TENANT_USER;
+  const canManageAccess = v.permissionRoleCodes.length === 0
+    || (await hasTenantCapability({
+      tenantId: input.tenantId,
+      userId: input.actorUserId,
+      baseRole: input.actorRole,
+      capability: "MANAGE_ACCESS",
+    }));
 
   if (appRole === Role.TENANT_ADMIN && input.actorRole !== Role.TENANT_OWNER) {
     return { status: "error", message: "Only the tenant owner can create a tenant admin." };
+  }
+  if (!canManageAccess) {
+    return {
+      status: "error",
+      message: "Only Access Admin, Tenant Admin, or Tenant Owner can assign permission roles during onboarding.",
+    };
   }
 
   const versionId = await getActiveVersionId(input.tenantId);
@@ -340,10 +397,23 @@ export async function onboardMember(input: {
       },
     });
 
-    return { email: user.officialEmail };
+    return { email: user.officialEmail, userId: user.id };
   });
 
   let message = "Member onboarded successfully.";
+  if (v.permissionRoleCodes.length > 0) {
+    const permissionResult = await replaceTenantPermissionAssignments({
+      tenantId: input.tenantId,
+      actorUserId: input.actorUserId,
+      actorRole: input.actorRole,
+      targetUserId: created.userId,
+      roleCodes: v.permissionRoleCodes,
+    });
+    if (permissionResult.status === "error") {
+      return permissionResult;
+    }
+    message += " Permission roles assigned.";
+  }
   try {
     await sendAuthEmail({
       to: created.email,
@@ -367,7 +437,7 @@ export async function assignToUnit(input: {
   actorRole: Role;
   values: AssignUnitInput;
 }): Promise<PersonnelActionResult> {
-  if (!canManagePersonnel(input.actorRole)) {
+  if (!(await canManagePersonnelWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -483,7 +553,7 @@ export async function removeFromUnit(input: {
   membershipId: string;
   unitCode: string;
 }): Promise<PersonnelActionResult> {
-  if (!canManagePersonnel(input.actorRole)) {
+  if (!(await canManagePersonnelWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -571,7 +641,7 @@ export async function changePrimaryUnit(input: {
   membershipId: string;
   newPrimaryUnitCode: string;
 }): Promise<PersonnelActionResult> {
-  if (!canManagePersonnel(input.actorRole)) {
+  if (!(await canManagePersonnelWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -667,6 +737,8 @@ export async function getUserPlacementSummary(
   });
   if (!membership) return null;
 
+  const permissionRoles = await listTenantPermissionRolesForUser(tenantId, membership.userId);
+
   const versionId = await getActiveVersionId(tenantId);
   if (!versionId) {
     return {
@@ -679,6 +751,8 @@ export async function getUserPlacementSummary(
       personnelStatus: membership.personnelStatus,
       membershipStatus: membership.status,
       dateOfJoining: membership.dateOfJoining,
+      permissionRoles,
+      workflowWarnings: [],
       units: [],
     };
   }
@@ -732,6 +806,55 @@ export async function getUserPlacementSummary(
     };
   });
 
+  const workflowAssignments = await prisma.kpiDefinition.findMany({
+    where: {
+      kraDefinition: { tenantId },
+      OR: [
+        { keyReviewerUserId: membership.userId },
+        { finalReviewerUserId: membership.userId },
+      ],
+    },
+    include: {
+      kraDefinition: {
+        select: {
+          title: true,
+          period: { select: { name: true } },
+        },
+      },
+      keyUnit: { select: { name: true } },
+      finalUnit: { select: { name: true } },
+    },
+    orderBy: [{ title: "asc" }],
+  });
+
+  const workflowWarnings: string[] = [];
+  for (const workflowAssignment of workflowAssignments) {
+    if (workflowAssignment.keyReviewerUserId === membership.userId && workflowAssignment.keyUnitId) {
+      const resolution = await resolveWorkflowReviewerForUnit({
+        tenantId,
+        unitId: workflowAssignment.keyUnitId,
+        requestedUserId: membership.userId,
+      });
+      if (resolution.warning) {
+        workflowWarnings.push(
+          `${workflowAssignment.title} (${workflowAssignment.kraDefinition.period.name}) - key reviewer warning: ${resolution.warning}`,
+        );
+      }
+    }
+    if (workflowAssignment.finalReviewerUserId === membership.userId && workflowAssignment.finalUnitId) {
+      const resolution = await resolveWorkflowReviewerForUnit({
+        tenantId,
+        unitId: workflowAssignment.finalUnitId,
+        requestedUserId: membership.userId,
+      });
+      if (resolution.warning) {
+        workflowWarnings.push(
+          `${workflowAssignment.title} (${workflowAssignment.kraDefinition.period.name}) - final reviewer warning: ${resolution.warning}`,
+        );
+      }
+    }
+  }
+
   return {
     membershipId: membership.id,
     userId: membership.userId,
@@ -742,6 +865,8 @@ export async function getUserPlacementSummary(
     personnelStatus: membership.personnelStatus,
     membershipStatus: membership.status,
     dateOfJoining: membership.dateOfJoining,
+    permissionRoles,
+    workflowWarnings,
     units,
   };
 }
@@ -764,7 +889,7 @@ export async function updatePersonnelStatus(input: {
   newStatus: PersonnelStatus;
   reason?: string;
 }): Promise<PersonnelActionResult> {
-  if (!canManagePersonnel(input.actorRole)) {
+  if (!(await canManagePersonnelWorkspace(input.tenantId, input.actorUserId, input.actorRole))) {
     return { status: "error", message: "Permission denied." };
   }
 
@@ -834,6 +959,19 @@ export async function updatePersonnelStatus(input: {
     });
   });
 
+  if (
+    input.newStatus === PersonnelStatus.SEPARATED
+    || input.newStatus === PersonnelStatus.SUSPENDED_HR
+  ) {
+    await rebindOpenAchievementsForUserChange({
+      tenantId: input.tenantId,
+      affectedUserId: membership.userId,
+      actorUserId: input.actorUserId,
+      actorRole: input.actorRole,
+      note: `Reviewer auto-rebound because personnel status changed to ${input.newStatus}.`,
+    });
+  }
+
   const name = `${membership.user.firstName} ${membership.user.lastName}`;
   const label = input.newStatus.replace(/_/g, " ").toLowerCase();
   return { status: "success", message: `${name} marked as ${label}.` };
@@ -855,6 +993,7 @@ export type PersonnelDirectoryRow = {
   membershipStatus: string;
   primaryUnit: string | null;
   primaryUnitCode: string | null;
+  permissionRoles: TenantPermissionRole[];
   dateOfJoining: string | null;
   lastAccess: string | null;
 };
@@ -864,25 +1003,36 @@ export async function getPersonnelDirectory(
 ): Promise<PersonnelDirectoryRow[]> {
   const versionId = await getActiveVersionId(tenantId);
 
-  const memberships = await prisma.membership.findMany({
-    where: { tenantId },
-    include: {
-      user: { select: { id: true, firstName: true, lastName: true, officialEmail: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  // Batch-load primary assignments if we have a version
-  const primaryAssignments = versionId
-    ? await prisma.userOrgAssignment.findMany({
-        where: { versionId, isPrimary: true },
-        include: { unit: { select: { name: true, code: true } } },
-      })
-    : [];
+  const [memberships, primaryAssignments, permissionAssignments] = await Promise.all([
+    prisma.membership.findMany({
+      where: { tenantId },
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, officialEmail: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+    versionId
+      ? prisma.userOrgAssignment.findMany({
+          where: { versionId, isPrimary: true },
+          include: { unit: { select: { name: true, code: true } } },
+        })
+      : Promise.resolve([]),
+    prisma.tenantPermissionAssignment.findMany({
+      where: { tenantId },
+      orderBy: { roleCode: "asc" },
+      select: { userId: true, roleCode: true },
+    }),
+  ]);
 
   const primaryByUser = new Map(
     primaryAssignments.map((a) => [a.userId, a]),
   );
+  const permissionRolesByUser = new Map<string, TenantPermissionRole[]>();
+  for (const assignment of permissionAssignments) {
+    const current = permissionRolesByUser.get(assignment.userId) ?? [];
+    current.push(assignment.roleCode);
+    permissionRolesByUser.set(assignment.userId, current);
+  }
 
   return memberships.map((m) => {
     const primary = primaryByUser.get(m.userId);
@@ -900,6 +1050,7 @@ export async function getPersonnelDirectory(
       membershipStatus: m.status,
       primaryUnit: primary?.unit.name ?? null,
       primaryUnitCode: primary?.unit.code ?? null,
+      permissionRoles: permissionRolesByUser.get(m.userId) ?? [],
       dateOfJoining: m.dateOfJoining?.toISOString() ?? null,
       lastAccess: m.lastAccessTimestamp?.toISOString() ?? null,
     };

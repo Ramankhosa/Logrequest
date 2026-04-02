@@ -334,6 +334,15 @@ export type KpiDefinitionView = {
   keyUnitName: string | null;
   finalUnitId: string | null;
   finalUnitName: string | null;
+  keyReviewerUserId: string | null;
+  keyReviewerUserName: string | null;
+  keyReviewerValid: boolean;
+  keyReviewerWarning: string | null;
+  finalReviewerUserId: string | null;
+  finalReviewerUserName: string | null;
+  finalReviewerValid: boolean;
+  finalReviewerWarning: string | null;
+  workflowWarnings: string[];
   targetUnitCount: number;
   evidenceRequired: boolean;
   evidenceTypes: string[];

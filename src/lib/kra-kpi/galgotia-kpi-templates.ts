@@ -120,7 +120,7 @@ function buildTemplate(input: TemplateInput): KpiTemplateWriteDraft {
         teamCreditMethod: input.definition.teamCreditMethod,
         allowPartialCompletion: true,
         allowMultipleAchievementsPerAllocation:
-          input.definition.allowMultipleAchievementsPerAllocation ?? false,
+          input.definition.allowMultipleAchievementsPerAllocation ?? true,
         participantMode: input.definition.participantMode,
         rewardRecurrencePolicy: input.definition.rewardRecurrencePolicy,
         policyDateFieldKey: input.definition.policyDateFieldKey ?? null,

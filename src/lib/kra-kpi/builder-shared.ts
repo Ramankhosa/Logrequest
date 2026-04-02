@@ -217,6 +217,8 @@ export const builderKpiDefinitionSchema = z.object({
   sortOrder: z.number().int().min(0).max(9999).default(0),
   keyUnitId: z.string().trim().min(1).nullable().optional(),
   finalUnitId: z.string().trim().min(1).nullable().optional(),
+  keyReviewerUserId: z.string().trim().min(1).nullable().optional(),
+  finalReviewerUserId: z.string().trim().min(1).nullable().optional(),
   sopDescription: z.string().trim().max(5000).nullable().optional(),
   evidenceRequired: z.boolean().default(true),
   evidenceTypes: z.array(
@@ -238,7 +240,7 @@ export const builderKpiDefinitionSchema = z.object({
     "PRIMARY_ONLY",
   ]).default("FULL_EACH"),
   allowPartialCompletion: z.boolean().default(true),
-  allowMultipleAchievementsPerAllocation: z.boolean().default(false),
+  allowMultipleAchievementsPerAllocation: z.boolean().default(true),
   participantMode: participantModeSchema.default("SINGLE_OWNER"),
   rewardRecurrencePolicy: rewardRecurrencePolicySchema.default("RECURRING"),
   policyDateFieldKey: z.string().trim().max(80).nullable().optional(),

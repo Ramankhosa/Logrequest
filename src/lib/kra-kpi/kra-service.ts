@@ -2,6 +2,7 @@ import { Prisma, type KraDefinitionState, type Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult, KraDefinitionView } from "./shared";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,19 @@ function isAdminOrOwner(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+async function canManageKras(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KRA",
+  });
 }
 
 function canModifyKraInPeriodState(state: string): boolean {
@@ -157,7 +171,7 @@ export async function createKra(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageKras(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions to create KRAs." };
   }
 
@@ -255,7 +269,7 @@ export async function copyKrasFromPeriod(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageKras(tenantId, actorUserId, actorRole))) {
     return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
   }
 
@@ -621,7 +635,7 @@ export async function updateKra(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageKras(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 
@@ -708,7 +722,7 @@ export async function changeKraState(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageKras(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 
@@ -849,7 +863,7 @@ export async function archiveKra(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageKras(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 
@@ -915,7 +929,7 @@ export async function deleteKra(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageKras(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions." };
   }
 

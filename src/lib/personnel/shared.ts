@@ -1,3 +1,5 @@
+import type { TenantPermissionRole } from "@prisma/client";
+
 export type PersonnelActionResult = {
   status: "idle" | "success" | "error";
   message: string;
@@ -42,6 +44,8 @@ export type PlacementSummary = {
   personnelStatus: string;
   membershipStatus: string;
   dateOfJoining: Date | null;
+  permissionRoles: TenantPermissionRole[];
+  workflowWarnings: string[];
   units: PlacementSummaryUnit[];
 };
 
@@ -61,6 +65,11 @@ export type OnboardingOptions = {
     displayLabel: string;
     isUnitHead: boolean;
     maxPerUnit: number;
+  }>;
+  permissionRoles: Array<{
+    code: TenantPermissionRole;
+    label: string;
+    description: string;
   }>;
 };
 

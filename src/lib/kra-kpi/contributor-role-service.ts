@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult } from "./shared";
 import { parseContributionRoles } from "./kpi-service";
 import { getTemplateApplicableRoleBaseline } from "./applicable-role-defaults";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -54,6 +55,19 @@ function isTenantAdmin(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+async function canManageContributorRoles(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KPI",
+  });
 }
 
 const DEFAULT_CONTRIBUTOR_ROLES: Array<{
@@ -437,7 +451,7 @@ export async function createContributorRole(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageContributorRoles(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -503,7 +517,7 @@ export async function updateContributorRole(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageContributorRoles(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -568,7 +582,7 @@ export async function archiveContributorRole(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageContributorRoles(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -653,7 +667,7 @@ export async function setApplicableRoles(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageContributorRoles(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",

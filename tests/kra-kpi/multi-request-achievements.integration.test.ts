@@ -11,6 +11,7 @@ import { createKra } from "@/lib/kra-kpi/kra-service";
 import { createKpi, updateKpi } from "@/lib/kra-kpi/kpi-service";
 import { getMyAllocations, getMyDashboardSummary } from "@/lib/kra-kpi/my-kpi-service";
 import { createPeriod } from "@/lib/kra-kpi/period-service";
+import { markStageComplete } from "@/lib/kra-kpi/stage-progress-service";
 import {
   cleanupTrackedData,
   createTenantActor,
@@ -436,14 +437,51 @@ describe("parallel achievement requests under one allocation", () => {
     expect(updateResult.message).toContain("multiple linked achievements");
   });
 
-  test("builder rejects parallel mode for staged KPIs", async () => {
+  test("non-numeric KPIs can also enable parallel achievement requests", async () => {
+    const base = await createBaseFixture();
+    const kpiTitle = rand("BOOLEAN_MULTI_KPI");
+
+    const result = await createKpi(
+      base.tenant.id,
+      {
+        kraDefinitionId: base.kra.id,
+        title: kpiTitle,
+        description: "Boolean KPI with parallel request mode enabled.",
+        measurementType: "BOOLEAN",
+        weightage: 100,
+        allocationType: "INDIVIDUAL",
+        startingUnitId: base.unit.id,
+        evidenceRequired: true,
+        allowMultipleAchievementsPerAllocation: true,
+      },
+      base.actor.id,
+      "TENANT_OWNER",
+    );
+
+    expect(result.status).toBe("success");
+
+    const kpi = await prisma.kpiDefinition.findFirst({
+      where: { kraDefinitionId: base.kra.id, title: kpiTitle },
+      select: {
+        allowMultipleAchievementsPerAllocation: true,
+        measurementType: true,
+      },
+    });
+
+    expect(kpi).toMatchObject({
+      allowMultipleAchievementsPerAllocation: true,
+      measurementType: "BOOLEAN",
+    });
+  });
+
+  test("staged KPIs can keep parallel requests open while earlier requests are already submitted", async () => {
     const base = await createBaseFixture();
 
     const payload: KpiBuilderPayload = {
       definition: {
         kraDefinitionId: base.kra.id,
         title: "Staged Publication Workflow",
-        description: "Should reject parallel mode for staged KPIs.",
+        description: "Allows multiple staged requests in parallel.",
         measurementType: "NUMERIC",
         unitLabel: "papers",
         weightage: 100,
@@ -515,7 +553,104 @@ describe("parallel achievement requests under one allocation", () => {
       "TENANT_OWNER",
     );
 
-    expect(result.status).toBe("error");
-    expect(result.message).toContain("staged KPIs");
+    expect(result.status).toBe("success");
+    expect(result.id).toBeTruthy();
+
+    const kpi = await prisma.kpiDefinition.findUnique({
+      where: { id: result.id! },
+      select: { id: true },
+    });
+    expect(kpi).toBeTruthy();
+
+    await prisma.kpiDefinition.update({
+      where: { id: result.id! },
+      data: { state: "ACTIVE" },
+    });
+    await prisma.assessmentPeriod.update({
+      where: { id: base.period.id },
+      data: { state: "IN_PROGRESS" },
+    });
+
+    const allocation = await prisma.targetAllocation.create({
+      data: {
+        tenantId: base.tenant.id,
+        periodId: base.period.id,
+        kpiDefinitionId: result.id!,
+        assignedToUserId: base.faculty.id,
+        allocatedByUserId: base.actor.id,
+        targetValue: 2,
+        state: "ACTIVE",
+      },
+    });
+
+    const first = await recordAchievement(
+      base.tenant.id,
+      {
+        periodId: base.period.id,
+        kpiDefinitionId: result.id!,
+        targetAllocationId: allocation.id,
+        actualValue: 7,
+        reportingDate: new Date("2026-06-01T00:00:00.000Z"),
+        evidenceDescription: "Initial staged request evidence",
+        achievementFormData: {
+          paperTitle: "Staged Request One",
+        },
+      },
+      base.faculty.id,
+      "TENANT_USER",
+    );
+    expect(first.status).toBe("success");
+    expect(first.id).toBeTruthy();
+
+    const progress = await prisma.kpiStageProgress.findFirst({
+      where: { achievementId: first.id! },
+      select: { id: true },
+    });
+    expect(progress).toBeTruthy();
+
+    const completeResult = await markStageComplete(
+      progress!.id,
+      base.tenant.id,
+      { notes: "Department review completed." },
+      base.faculty.id,
+      "TENANT_USER",
+    );
+    expect(completeResult.ok).toBe(true);
+
+    const submitResult = await submitForVerification(
+      first.id!,
+      base.tenant.id,
+      base.faculty.id,
+      "TENANT_USER",
+    );
+    expect(submitResult.status).toBe("success");
+
+    const second = await recordAchievement(
+      base.tenant.id,
+      {
+        periodId: base.period.id,
+        kpiDefinitionId: result.id!,
+        targetAllocationId: allocation.id,
+        actualValue: 9,
+        reportingDate: new Date("2026-06-15T00:00:00.000Z"),
+        evidenceDescription: "Follow-up staged request evidence",
+        achievementFormData: {
+          paperTitle: "Staged Request Two",
+        },
+      },
+      base.faculty.id,
+      "TENANT_USER",
+    );
+    expect(second.status).toBe("success");
+
+    const achievements = await prisma.achievement.findMany({
+      where: { targetAllocationId: allocation.id },
+      orderBy: { reportingDate: "asc" },
+      select: { state: true, title: true },
+    });
+    expect(achievements).toEqual([
+      { state: "SUBMITTED", title: "Staged Request One" },
+      { state: "DRAFT", title: "Staged Request Two" },
+    ]);
   });
 });

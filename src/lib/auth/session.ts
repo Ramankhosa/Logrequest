@@ -8,6 +8,11 @@ import {
   getPayloadForUserId,
 } from "@/lib/auth/access";
 import {
+  hasAnyTenantCapability,
+  hasTenantCapability,
+  type TenantCapability,
+} from "@/lib/tenant-permissions/service";
+import {
   getAccessibleMemberships,
   roleLandingPath,
   selectMembership,
@@ -79,6 +84,48 @@ export async function requireTenantAdmin() {
     context.role === Role.TENANT_OWNER ||
     context.role === Role.TENANT_ADMIN
   ) {
+    return context;
+  }
+
+  redirect(roleLandingPath(context));
+}
+
+export async function requireTenantCapability(capability: TenantCapability) {
+  const context = await requireSessionContext();
+
+  if (!context.user.id || !context.tenant?.id) {
+    redirect(roleLandingPath(context));
+  }
+
+  const allowed = await hasTenantCapability({
+    tenantId: context.tenant.id,
+    userId: context.user.id,
+    baseRole: context.role,
+    capability,
+  });
+
+  if (allowed) {
+    return context;
+  }
+
+  redirect(roleLandingPath(context));
+}
+
+export async function requireTenantAnyCapability(capabilities: TenantCapability[]) {
+  const context = await requireSessionContext();
+
+  if (!context.user.id || !context.tenant?.id) {
+    redirect(roleLandingPath(context));
+  }
+
+  const allowed = await hasAnyTenantCapability({
+    tenantId: context.tenant.id,
+    userId: context.user.id,
+    baseRole: context.role,
+    capabilities,
+  });
+
+  if (allowed) {
     return context;
   }
 

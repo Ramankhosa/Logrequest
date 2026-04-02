@@ -13,6 +13,8 @@ import {
   type KpiBuilderPayloadInput,
 } from "./builder-shared";
 import { ensureApplicableRolesBaseline } from "./contributor-role-service";
+import { hasTenantCapability } from "@/lib/tenant-permissions/service";
+import { validateWorkflowReviewerSelection } from "./workflow-service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -25,6 +27,19 @@ function isTenantAdmin(role: Role): boolean {
     role === tenantAdminRole ||
     role === "SUPERADMIN"
   );
+}
+
+async function canManageKpiBuilder(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KPI",
+  });
 }
 
 function canModifyKpiInPeriodState(state: string): boolean {
@@ -203,15 +218,7 @@ function validateMultiAchievementModeCompatibility(input: {
   stageCount: number;
   allowMultipleAchievementsPerAllocation: boolean;
 }): string | null {
-  if (!input.allowMultipleAchievementsPerAllocation) {
-    return null;
-  }
-  if (input.measurementType !== "NUMERIC") {
-    return "Parallel achievement requests can only be enabled for numeric KPIs.";
-  }
-  if (input.stageCount > 0) {
-    return "Parallel achievement requests cannot be enabled for staged KPIs in this release.";
-  }
+  void input;
   return null;
 }
 
@@ -668,6 +675,8 @@ function mapPayloadFromKpi(kpi: {
   sortOrder: number;
   keyUnitId: string | null;
   finalUnitId: string | null;
+  keyReviewerUserId: string | null;
+  finalReviewerUserId: string | null;
   sopDescription: string | null;
   evidenceRequired: boolean;
   evidenceTypes: BuilderKpiDefinition["evidenceTypes"];
@@ -791,6 +800,8 @@ function mapPayloadFromKpi(kpi: {
       sortOrder: kpi.sortOrder,
       keyUnitId: kpi.keyUnitId,
       finalUnitId: kpi.finalUnitId,
+      keyReviewerUserId: kpi.keyReviewerUserId,
+      finalReviewerUserId: kpi.finalReviewerUserId,
       sopDescription: kpi.sopDescription,
       evidenceRequired: kpi.evidenceRequired,
       evidenceTypes: kpi.evidenceTypes,
@@ -944,7 +955,7 @@ export async function saveKpiBuilder(
   actorUserId: string,
   actorRole: Role,
 ): Promise<KraKpiActionResult> {
-  if (!isTenantAdmin(actorRole)) {
+  if (!(await canManageKpiBuilder(tenantId, actorUserId, actorRole))) {
     return {
       status: "error",
       message: "Insufficient permissions.",
@@ -1012,6 +1023,21 @@ export async function saveKpiBuilder(
           message: "One or more selected units are invalid.",
         } satisfies KraKpiActionResult;
       }
+    }
+
+    const workflowReviewerError = await validateWorkflowReviewerSelection({
+      tenantId,
+      keyUnitId: payload.definition.keyUnitId ?? null,
+      finalUnitId: payload.definition.finalUnitId ?? null,
+      keyReviewerUserId: payload.definition.keyReviewerUserId ?? null,
+      finalReviewerUserId: payload.definition.finalReviewerUserId ?? null,
+      tx,
+    });
+    if (workflowReviewerError) {
+      return {
+        status: "error",
+        message: workflowReviewerError,
+      } satisfies KraKpiActionResult;
     }
 
     const existing = payload.definition.id
@@ -1099,6 +1125,8 @@ export async function saveKpiBuilder(
       sortOrder: payload.definition.sortOrder,
       keyUnitId: normalizeNullableString(payload.definition.keyUnitId ?? null),
       finalUnitId: normalizeNullableString(payload.definition.finalUnitId ?? null),
+      keyReviewerUserId: normalizeNullableString(payload.definition.keyReviewerUserId ?? null),
+      finalReviewerUserId: normalizeNullableString(payload.definition.finalReviewerUserId ?? null),
       sopDescription: normalizeNullableString(payload.definition.sopDescription ?? null),
       evidenceRequired: payload.definition.evidenceRequired,
       evidenceTypes: payload.definition.evidenceTypes,

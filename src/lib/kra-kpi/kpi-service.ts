@@ -16,6 +16,10 @@ import {
   getMeasurementCapValue,
 } from "./shared";
 import { ensureApplicableRolesBaseline } from "./contributor-role-service";
+import {
+  hasTenantCapability,
+} from "@/lib/tenant-permissions/service";
+import { resolveWorkflowReviewerForUnit, validateWorkflowReviewerSelection } from "./workflow-service";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -103,6 +107,8 @@ const createKpiSchema = z.object({
   // R2 fields
   keyUnitId: z.string().trim().min(1).optional(),
   finalUnitId: z.string().trim().min(1).optional(),
+  keyReviewerUserId: z.string().trim().min(1).optional(),
+  finalReviewerUserId: z.string().trim().min(1).optional(),
   sopDescription: z.string().trim().max(5000).optional(),
   evidenceRequired: z.boolean().default(true),
   evidenceTypes: z.array(z.enum([
@@ -112,7 +118,7 @@ const createKpiSchema = z.object({
   isTeamKpi: z.boolean().default(false),
   teamCreditMethod: z.enum(["FULL_EACH", "EQUAL_SPLIT", "WEIGHTED_SPLIT", "PRIMARY_ONLY"]).default("FULL_EACH"),
   allowPartialCompletion: z.boolean().default(true),
-  allowMultipleAchievementsPerAllocation: z.boolean().default(false),
+  allowMultipleAchievementsPerAllocation: z.boolean().default(true),
   contributionRoles: z.array(contributionRoleEntrySchema).optional(),
 });
 
@@ -148,6 +154,8 @@ const updateKpiSchema = z.object({
   // R2 fields
   keyUnitId: z.string().trim().min(1).nullable().optional(),
   finalUnitId: z.string().trim().min(1).nullable().optional(),
+  keyReviewerUserId: z.string().trim().min(1).nullable().optional(),
+  finalReviewerUserId: z.string().trim().min(1).nullable().optional(),
   sopDescription: z.string().trim().max(5000).nullable().optional(),
   evidenceRequired: z.boolean().optional(),
   evidenceTypes: z.array(z.enum([
@@ -179,12 +187,41 @@ function isAdminOrOwner(role: Role): boolean {
   );
 }
 
+async function canManageKpis(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role,
+) {
+  return hasTenantCapability({
+    tenantId,
+    userId: actorUserId,
+    baseRole: actorRole,
+    capability: "MANAGE_KPI",
+  });
+}
+
 function canModifyKpiInPeriodState(state: string): boolean {
   return state === "DRAFT" || state === "OPEN" || state === "UNDER_REVIEW";
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapKpiView(k: any): KpiDefinitionView {
+async function mapKpiView(k: any): Promise<KpiDefinitionView> {
+  const [keyReviewer, finalReviewer] = await Promise.all([
+    resolveWorkflowReviewerForUnit({
+      tenantId: k.kraDefinition.tenantId,
+      unitId: k.keyUnitId ?? null,
+      requestedUserId: k.keyReviewerUserId ?? null,
+    }),
+    resolveWorkflowReviewerForUnit({
+      tenantId: k.kraDefinition.tenantId,
+      unitId: k.finalUnitId ?? null,
+      requestedUserId: k.finalReviewerUserId ?? null,
+    }),
+  ]);
+  const workflowWarnings = [keyReviewer.warning, finalReviewer.warning].filter(
+    (warning): warning is string => !!warning,
+  );
+
   return {
     id: k.id,
     kraDefinitionId: k.kraDefinitionId,
@@ -214,6 +251,15 @@ function mapKpiView(k: any): KpiDefinitionView {
     keyUnitName: k.keyUnit?.name ?? null,
     finalUnitId: k.finalUnitId,
     finalUnitName: k.finalUnit?.name ?? null,
+    keyReviewerUserId: k.keyReviewerUserId ?? null,
+    keyReviewerUserName: keyReviewer.requestedUserName ?? null,
+    keyReviewerValid: keyReviewer.isRequestedUserValid || !k.keyReviewerUserId,
+    keyReviewerWarning: keyReviewer.warning,
+    finalReviewerUserId: k.finalReviewerUserId ?? null,
+    finalReviewerUserName: finalReviewer.requestedUserName ?? null,
+    finalReviewerValid: finalReviewer.isRequestedUserValid || !k.finalReviewerUserId,
+    finalReviewerWarning: finalReviewer.warning,
+    workflowWarnings,
     targetUnitCount: k._count.targetUnits,
     evidenceRequired: k.evidenceRequired,
     evidenceTypes: k.evidenceTypes,
@@ -286,15 +332,7 @@ function validateMultiAchievementModeCompatibility(input: {
   stageCount: number;
   allowMultipleAchievementsPerAllocation: boolean;
 }): string | null {
-  if (!input.allowMultipleAchievementsPerAllocation) {
-    return null;
-  }
-  if (input.measurementType !== "NUMERIC") {
-    return "Parallel achievement requests can only be enabled for numeric KPIs.";
-  }
-  if (input.stageCount > 0) {
-    return "Parallel achievement requests cannot be enabled for staged KPIs in this release.";
-  }
+  void input;
   return null;
 }
 
@@ -347,7 +385,7 @@ export async function listKpis(
     orderBy: [{ sortOrder: "asc" }, { title: "asc" }],
   });
 
-  return kpis.map((k) => mapKpiView(k));
+  return Promise.all(kpis.map((k) => mapKpiView(k)));
 }
 
 // ── Get KPI ──────────────────────────────────────────────────────────────────
@@ -379,7 +417,7 @@ export async function createKpi(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageKpis(tenantId, actorUserId, actorRole))) {
     return { status: "error", message: "Insufficient permissions to create KPIs." };
   }
 
@@ -477,6 +515,16 @@ export async function createKpi(
     const finalUnit = await prisma.orgUnit.findFirst({ where: { id: data.finalUnitId, tenantId } });
     if (!finalUnit) return { status: "error", message: "Final department not found." };
   }
+  const workflowReviewerError = await validateWorkflowReviewerSelection({
+    tenantId,
+    keyUnitId: data.keyUnitId ?? null,
+    finalUnitId: data.finalUnitId ?? null,
+    keyReviewerUserId: data.keyReviewerUserId ?? null,
+    finalReviewerUserId: data.finalReviewerUserId ?? null,
+  });
+  if (workflowReviewerError) {
+    return { status: "error", message: workflowReviewerError };
+  }
 
   const rolesError = validateContributionRolesJson(data.contributionRoles ?? null);
   if (rolesError) {
@@ -506,6 +554,8 @@ export async function createKpi(
         sortOrder: data.sortOrder,
         keyUnitId: data.keyUnitId,
         finalUnitId: data.finalUnitId,
+        keyReviewerUserId: data.keyReviewerUserId,
+        finalReviewerUserId: data.finalReviewerUserId,
         sopDescription: data.sopDescription,
         evidenceRequired: data.evidenceRequired,
         evidenceTypes: data.evidenceTypes,
@@ -563,7 +613,7 @@ export async function updateKpi(
   actorUserId: string,
   actorRole: Role
 ): Promise<KraKpiActionResult> {
-  if (!isAdminOrOwner(actorRole)) {
+  if (!(await canManageKpis(tenantId, actorUserId, actorRole))) {
     return { status: "error", code: "PERMISSION_DENIED", message: "Insufficient permissions." };
   }
 
@@ -643,6 +693,24 @@ export async function updateKpi(
   if (data.finalUnitId) {
     const finalUnit = await prisma.orgUnit.findFirst({ where: { id: data.finalUnitId, tenantId } });
     if (!finalUnit) return { status: "error", message: "Final department not found." };
+  }
+  const workflowReviewerError = await validateWorkflowReviewerSelection({
+    tenantId,
+    keyUnitId:
+      data.keyUnitId !== undefined ? data.keyUnitId : (kpi.keyUnitId ?? null),
+    finalUnitId:
+      data.finalUnitId !== undefined ? data.finalUnitId : (kpi.finalUnitId ?? null),
+    keyReviewerUserId:
+      data.keyReviewerUserId !== undefined
+        ? data.keyReviewerUserId
+        : (kpi.keyReviewerUserId ?? null),
+    finalReviewerUserId:
+      data.finalReviewerUserId !== undefined
+        ? data.finalReviewerUserId
+        : (kpi.finalReviewerUserId ?? null),
+  });
+  if (workflowReviewerError) {
+    return { status: "error", message: workflowReviewerError };
   }
 
   const nextMeasurementType = data.measurementType ?? kpi.measurementType;
@@ -734,6 +802,12 @@ export async function updateKpi(
     if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder;
     if (data.keyUnitId !== undefined) updateData.keyUnitId = data.keyUnitId;
     if (data.finalUnitId !== undefined) updateData.finalUnitId = data.finalUnitId;
+    if (data.keyReviewerUserId !== undefined) {
+      updateData.keyReviewerUserId = data.keyReviewerUserId;
+    }
+    if (data.finalReviewerUserId !== undefined) {
+      updateData.finalReviewerUserId = data.finalReviewerUserId;
+    }
     if (data.sopDescription !== undefined) updateData.sopDescription = data.sopDescription;
     if (data.evidenceRequired !== undefined) updateData.evidenceRequired = data.evidenceRequired;
     if (data.evidenceTypes !== undefined) updateData.evidenceTypes = data.evidenceTypes;
