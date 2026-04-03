@@ -219,6 +219,120 @@ enum CriterionDataType {
   HYBRID
 }
 
+enum CriterionYearAggregation {
+  AVERAGE
+  SUM
+  LATEST
+  MAX
+  WEIGHTED_RECENT
+}
+
+enum AssessmentWorkspaceStatus {
+  DRAFT
+  IN_PROGRESS
+  UNDER_REVIEW
+  FROZEN
+  SUBMITTED
+  COMPLETED
+  ARCHIVED
+}
+
+enum CriterionEntryStatus {
+  BLANK
+  IN_PROGRESS
+  COMPLETE
+  UNDER_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+}
+
+enum WorkspaceCollaboratorRole {
+  COORDINATOR
+  RESPONSIBLE
+  REVIEWER
+  APPROVER
+  VIEWER
+}
+
+enum WorkspaceSectionAssignmentRole {
+  SECTION_LEAD
+  RESPONSIBLE
+  REVIEWER
+  APPROVER
+  VIEWER
+}
+
+enum WorkspaceSectionReviewStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  OWNER_SUBMITTED
+  CHANGES_REQUESTED
+  REVIEW_CONFIRMED
+  APPROVED
+}
+
+enum WorkspaceSectionReviewerDecisionStatus {
+  PENDING
+  CONFIRMED
+}
+
+enum WorkspaceDiscussionScope {
+  WORKSPACE
+  SECTION
+  ENTRY
+}
+
+enum WorkspaceGuestInviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum WorkspaceGuestRole {
+  RESPONSIBLE
+  REVIEWER
+  VIEWER
+}
+
+enum CriterionYearDataSource {
+  MANUAL
+  KPI_LINKED
+  EXTERNAL
+  PROJECTED
+  IMPORTED
+  CLONED
+}
+
+enum SourceMetricValueType {
+  NUMBER
+  TEXT
+  JSON
+}
+
+enum ProjectionSourceKind {
+  WORKSPACE_ENTRY
+  SOURCE_METRIC
+  ENTRY_TABLE
+}
+
+enum ProjectionStorageMode {
+  COPY
+  LIVE_REFERENCE
+}
+
+enum ProjectionRunType {
+  PREVIEW
+  APPLY
+  REFRESH
+  DETACH
+}
+
+enum ProjectionRunStatus {
+  SUCCESS
+  ERROR
+}
+
 enum AssessmentPeriodState {
   DRAFT
   OPEN // targets can be set
@@ -531,7 +645,10 @@ model Tenant {
   journalImportBatches           JournalImportBatch[]
   serviceEntitlements            TenantServiceEntitlement[]
   accreditationBodies            AccreditationBody[]
+  assessmentWorkspaces           AssessmentWorkspace[]
   kpiAccreditationCriterionLinks KpiAccreditationCriterionLink[]
+  sourceMetricDefinitions        SourceMetricDefinition[]
+  blockProjectionRecipes         BlockProjectionRecipe[]
 
   @@index([lifecycleState, entitlementState])
 }
@@ -602,6 +719,18 @@ model User {
   memberLines                        ReportingLine[]              @relation("OrgMemberLines")
   targetAllocations                  TargetAllocation[]           @relation("TargetUser")
   notifications                      Notification[]
+  workspaceCollaborations            WorkspaceCollaborator[]
+  workspaceSectionAssignments        WorkspaceSectionAssignment[]
+  workspaceSectionReviewsApproved    WorkspaceSectionReview[]      @relation("WorkspaceSectionReviewApprovedBy")
+  workspaceSectionReviewsSubmitted   WorkspaceSectionReview[]      @relation("WorkspaceSectionReviewSubmittedBy")
+  workspaceSectionReviewEvents       WorkspaceSectionReviewEvent[]
+  workspaceSectionReviewerDecisions  WorkspaceSectionReviewerDecision[]
+  workspaceDiscussionThreads         WorkspaceDiscussionThread[]   @relation("WorkspaceDiscussionThreadAuthor")
+  workspaceDiscussionMessages        WorkspaceDiscussionMessage[]  @relation("WorkspaceDiscussionMessageAuthor")
+  workspaceDiscussionResolutions     WorkspaceDiscussionThread[]   @relation("WorkspaceDiscussionThreadResolvedBy")
+  workspaceGuestInvites              WorkspaceGuestInvite[]
+  workspaceFreezeLogsFrozen          WorkspaceFreezeLog[]          @relation("WorkspaceFreezeLogFrozenBy")
+  workspaceFreezeLogsUnfrozen        WorkspaceFreezeLog[]          @relation("WorkspaceFreezeLogUnfrozenBy")
   keyReviewKpis                      KpiDefinition[]              @relation("KpiKeyReviewer")
   finalReviewKpis                    KpiDefinition[]              @relation("KpiFinalReviewer")
   createdAt                          DateTime                     @default(now())
@@ -928,6 +1057,7 @@ model AccreditationBodyVersion {
   conversionFormula String?
   effectiveFrom     DateTime?
   effectiveTo       DateTime?
+  isLocked          Boolean                      @default(false)
   isActive          Boolean                      @default(true)
   createdAt         DateTime                     @default(now())
   updatedAt         DateTime                     @updatedAt
@@ -936,6 +1066,7 @@ model AccreditationBodyVersion {
   profiles          AccreditationProfile[]
   gradeBands        AccreditationGradeBand[]
   thresholdRules    AccreditationThresholdRule[]
+  workspaces        AssessmentWorkspace[]
 
   @@unique([bodyId, versionCode])
   @@index([bodyId, isActive])
@@ -952,35 +1083,43 @@ model AccreditationProfile {
   updatedAt       DateTime                     @updatedAt
   version         AccreditationBodyVersion     @relation(fields: [versionId], references: [id], onDelete: Cascade)
   weightOverrides AccreditationProfileWeight[]
+  workspaces      AssessmentWorkspace[]
 
   @@unique([versionId, profileCode])
 }
 
 model AccreditationCriterion {
-  id               String                          @id @default(cuid())
-  versionId        String
-  parentId         String?
-  criterionCode    String
-  title            String
-  description      String?
-  dataType         CriterionDataType               @default(QUANTITATIVE)
-  maxScore         Float?
-  sortOrder        Int                             @default(0)
-  depth            Int                             @default(0)
-  unitOfMeasure    String?
-  validationRules  Json?
-  expectedEvidence Json?
-  isLeaf           Boolean                         @default(false)
-  isActive         Boolean                         @default(true)
-  createdAt        DateTime                        @default(now())
-  updatedAt        DateTime                        @updatedAt
-  version          AccreditationBodyVersion        @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  parent           AccreditationCriterion?         @relation("AccreditationCriterionTree", fields: [parentId], references: [id], onDelete: SetNull)
-  children         AccreditationCriterion[]        @relation("AccreditationCriterionTree")
-  scoringSlabs     AccreditationScoringSlab[]
-  profileWeights   AccreditationProfileWeight[]
-  thresholdRules   AccreditationThresholdRule[]
-  kpiLinks         KpiAccreditationCriterionLink[]
+  id                    String                          @id @default(cuid())
+  versionId             String
+  parentId              String?
+  criterionCode         String
+  title                 String
+  description           String?
+  dataType              CriterionDataType               @default(QUANTITATIVE)
+  yearAggregation       CriterionYearAggregation        @default(AVERAGE)
+  yearAggregationConfig Json?
+  maxScore              Float?
+  sortOrder             Int                             @default(0)
+  depth                 Int                             @default(0)
+  unitOfMeasure         String?
+  validationRules       Json?
+  expectedEvidence      Json?
+  isLeaf                Boolean                         @default(false)
+  isActive              Boolean                         @default(true)
+  createdAt             DateTime                        @default(now())
+  updatedAt             DateTime                        @updatedAt
+  version               AccreditationBodyVersion        @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  parent                AccreditationCriterion?         @relation("AccreditationCriterionTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children              AccreditationCriterion[]        @relation("AccreditationCriterionTree")
+  scoringSlabs          AccreditationScoringSlab[]
+  profileWeights        AccreditationProfileWeight[]
+  thresholdRules        AccreditationThresholdRule[]
+  kpiLinks              KpiAccreditationCriterionLink[]
+  entries               CriterionEntry[]
+  sectionAssignments    WorkspaceSectionAssignment[]
+  sectionReviews        WorkspaceSectionReview[]
+  discussionThreads     WorkspaceDiscussionThread[]
+  guestInvites          WorkspaceGuestInvite[]
 
   @@unique([versionId, criterionCode])
   @@index([versionId, parentId, sortOrder])
@@ -1037,6 +1176,582 @@ model AccreditationThresholdRule {
   criterion     AccreditationCriterion?  @relation(fields: [criterionId], references: [id], onDelete: Cascade)
 
   @@index([versionId])
+}
+
+model AssessmentWorkspace {
+  id                    String                    @id @default(cuid())
+  tenantId              String
+  versionId             String
+  profileId             String
+  title                 String
+  description           String?
+  periodStart           DateTime
+  periodEnd             DateTime
+  targetGrade           String?
+  status                AssessmentWorkspaceStatus @default(DRAFT)
+  overallRawScore       Float?
+  overallConvertedScore Float?
+  resolvedGrade         String?
+  resolvedOutcome       String?
+  isScoreStale          Boolean                   @default(true)
+  lastSuccessfulScoreAt DateTime?
+  lastFrozenSnapshotId  String?
+  frozenAt              DateTime?
+  frozenByUserId        String?
+  createdByUserId       String
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  tenant                Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  version               AccreditationBodyVersion  @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  profile               AccreditationProfile      @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  entries               CriterionEntry[]
+  milestones            WorkspaceMilestone[]
+  collaborators         WorkspaceCollaborator[]
+  sectionAssignments    WorkspaceSectionAssignment[]
+  sectionReviews        WorkspaceSectionReview[]
+  discussionThreads     WorkspaceDiscussionThread[]
+  guestInvites          WorkspaceGuestInvite[]
+  guestParticipants     WorkspaceGuestParticipant[]
+  freezeLogs            WorkspaceFreezeLog[]
+  evidence              CriterionEvidence[]
+  snapshots             ScoreSnapshot[]
+  projectionRecipes     BlockProjectionRecipe[]      @relation("ProjectionTargetWorkspace")
+  sourceProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionSourceWorkspace")
+
+  @@index([tenantId, status])
+  @@index([tenantId, versionId])
+  @@index([tenantId, profileId])
+}
+
+model WorkspaceMilestone {
+  id                String              @id @default(cuid())
+  workspaceId       String
+  title             String
+  description       String?
+  dueDate           DateTime
+  gatesFreeze       Boolean             @default(false)
+  isCompleted       Boolean             @default(false)
+  completedAt       DateTime?
+  completedByUserId String?
+  sortOrder         Int                 @default(0)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  workspace         AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, sortOrder])
+  @@index([workspaceId, dueDate])
+}
+
+model CriterionEntry {
+  id                   String                 @id @default(cuid())
+  workspaceId          String
+  criterionId          String
+  status               CriterionEntryStatus   @default(BLANK)
+  computedScore        Float?
+  manualOverride       Float?
+  manualOverrideForced Boolean                @default(false)
+  finalScore           Float?
+  remarks              String?
+  lastUpdatedByUserId  String?
+  lastUpdatedAt        DateTime?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  workspace            AssessmentWorkspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  criterion            AccreditationCriterion @relation(fields: [criterionId], references: [id], onDelete: Restrict)
+  yearData             CriterionYearData[]
+  evidenceLinks        EvidenceEntryLink[]
+  changeLog            CriterionEntryChange[]
+  discussionThreads    WorkspaceDiscussionThread[]
+  tableInstances       CriterionEntryTableInstance[]
+  targetProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionTargetEntry")
+  sourceProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionSourceEntry")
+  projectionTargets    BlockProjectionTarget[]
+
+  @@unique([workspaceId, criterionId])
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+}
+
+model CriterionYearData {
+  id              String                  @id @default(cuid())
+  entryId         String
+  year            Int
+  actualValue     Float?
+  textValue       String?
+  dataSource      CriterionYearDataSource @default(MANUAL)
+  sourceRef       String?
+  remarks         String?
+  updatedByUserId String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  entry           CriterionEntry          @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@unique([entryId, year])
+  @@index([entryId])
+}
+
+model CriterionEntryTableInstance {
+  id                   String                 @id @default(cuid())
+  entryId              String
+  year                 Int?
+  scopeKey             String
+  fieldKey             String
+  fieldLabel           String?
+  rowCount             Int                    @default(0)
+  createdByUserId      String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  entry                CriterionEntry         @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  rows                 CriterionEntryTableRow[]
+  sourceProjectionRecipes BlockProjectionRecipe[] @relation("ProjectionSourceTable")
+
+  @@unique([entryId, scopeKey, fieldKey])
+  @@index([entryId, year])
+}
+
+model CriterionEntryTableRow {
+  id                   String                   @id @default(cuid())
+  instanceId           String
+  rowIndex             Int
+  rowKey               String?
+  dimensions           Json?
+  dimensionFingerprint String                   @default("__NONE__")
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  instance             CriterionEntryTableInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  cells                CriterionEntryTableCell[]
+
+  @@unique([instanceId, rowIndex])
+  @@index([instanceId, dimensionFingerprint])
+}
+
+model CriterionEntryTableCell {
+  id           String                 @id @default(cuid())
+  rowId        String
+  columnKey    String
+  numberValue  Float?
+  textValue    String?
+  booleanValue Boolean?
+  dateValue    DateTime?
+  jsonValue    Json?
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+  row          CriterionEntryTableRow @relation(fields: [rowId], references: [id], onDelete: Cascade)
+
+  @@unique([rowId, columnKey])
+}
+
+model CriterionEvidence {
+  id                  String              @id @default(cuid())
+  workspaceId         String
+  title               String
+  docType             String?
+  description         String?
+  tags                String[]
+  latestVersionNumber Int                 @default(0)
+  isFinalMarked       Boolean             @default(false)
+  createdByUserId     String
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  workspace           AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  versions            EvidenceVersion[]
+  entryLinks          EvidenceEntryLink[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, docType])
+}
+
+model EvidenceVersion {
+  id               String            @id @default(cuid())
+  evidenceId       String
+  versionNumber    Int
+  fileName         String
+  fileUrl          String
+  fileSize         Int?
+  fileType         String?
+  remark           String?
+  isFinal          Boolean           @default(false)
+  uploadedByUserId String
+  uploadedAt       DateTime          @default(now())
+  evidence         CriterionEvidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@unique([evidenceId, versionNumber])
+  @@index([evidenceId, uploadedAt])
+}
+
+model EvidenceEntryLink {
+  id             String            @id @default(cuid())
+  evidenceId     String
+  entryId        String
+  linkedByUserId String
+  linkedAt       DateTime          @default(now())
+  evidence       CriterionEvidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  entry          CriterionEntry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@unique([evidenceId, entryId])
+  @@index([entryId])
+}
+
+model WorkspaceCollaborator {
+  id               String                    @id @default(cuid())
+  workspaceId      String
+  userId           String
+  role             WorkspaceCollaboratorRole
+  assignedSections String[]
+  lastVisitedAt    DateTime?
+  addedByUserId    String
+  addedAt          DateTime                  @default(now())
+  workspace        AssessmentWorkspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user             User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+}
+
+model CriterionEntryChange {
+  id              String         @id @default(cuid())
+  entryId         String
+  year            Int?
+  fieldChanged    String
+  oldValue        String?
+  newValue        String?
+  changeMeta      Json?
+  reason          String?
+  changedByUserId String
+  changedAt       DateTime       @default(now())
+  entry           CriterionEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@index([entryId, changedAt])
+}
+
+model ScoreSnapshot {
+  id                    String              @id @default(cuid())
+  workspaceId           String
+  snapshotName          String?
+  overallRawScore       Float
+  overallConvertedScore Float?
+  resolvedGrade         String?
+  resolvedOutcome       String?
+  criterionScores       Json
+  thresholdResult       Json?
+  dataSourceSnapshot    Json?
+  takenByUserId         String
+  takenAt               DateTime            @default(now())
+  workspace             AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  freezeLogs            WorkspaceFreezeLog[]
+
+  @@index([workspaceId, takenAt])
+}
+
+model WorkspaceSectionAssignment {
+  id                 String                         @id @default(cuid())
+  workspaceId        String
+  sectionCriterionId String
+  userId             String?
+  guestParticipantId String?
+  role               WorkspaceSectionAssignmentRole
+  deadline           DateTime?
+  assignedByUserId   String
+  createdAt          DateTime                       @default(now())
+  updatedAt          DateTime                       @updatedAt
+  workspace          AssessmentWorkspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sectionCriterion   AccreditationCriterion         @relation(fields: [sectionCriterionId], references: [id], onDelete: Cascade)
+  user               User?                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guestParticipant   WorkspaceGuestParticipant?     @relation(fields: [guestParticipantId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, sectionCriterionId, userId, role])
+  @@unique([workspaceId, sectionCriterionId, guestParticipantId, role])
+  @@index([workspaceId, sectionCriterionId, role])
+  @@index([workspaceId, userId])
+  @@index([workspaceId, guestParticipantId])
+}
+
+model WorkspaceSectionReview {
+  id                String                             @id @default(cuid())
+  workspaceId       String
+  sectionCriterionId String
+  status            WorkspaceSectionReviewStatus      @default(NOT_STARTED)
+  submittedByUserId String?
+  submittedAt       DateTime?
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  lastChangedByUserId String?
+  lastChangedAt     DateTime?
+  createdAt         DateTime                           @default(now())
+  updatedAt         DateTime                           @updatedAt
+  workspace         AssessmentWorkspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sectionCriterion  AccreditationCriterion             @relation(fields: [sectionCriterionId], references: [id], onDelete: Cascade)
+  submittedByUser   User?                              @relation("WorkspaceSectionReviewSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  approvedByUser    User?                              @relation("WorkspaceSectionReviewApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  reviewerDecisions WorkspaceSectionReviewerDecision[]
+  events            WorkspaceSectionReviewEvent[]
+
+  @@unique([workspaceId, sectionCriterionId])
+  @@index([workspaceId, status])
+}
+
+model WorkspaceSectionReviewerDecision {
+  id            String                                @id @default(cuid())
+  reviewId      String
+  reviewerUserId String
+  status        WorkspaceSectionReviewerDecisionStatus @default(PENDING)
+  confirmedAt   DateTime?
+  createdAt     DateTime                              @default(now())
+  updatedAt     DateTime                              @updatedAt
+  review        WorkspaceSectionReview                @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  reviewer      User                                  @relation(fields: [reviewerUserId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, reviewerUserId])
+  @@index([reviewId, status])
+}
+
+model WorkspaceSectionReviewEvent {
+  id              String                       @id @default(cuid())
+  reviewId        String
+  fromStatus      WorkspaceSectionReviewStatus?
+  toStatus        WorkspaceSectionReviewStatus
+  actorUserId     String
+  comment         String?
+  metadata        Json?
+  createdAt       DateTime                     @default(now())
+  review          WorkspaceSectionReview       @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  actorUser       User                         @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  @@index([reviewId, createdAt])
+}
+
+model WorkspaceDiscussionThread {
+  id                  String                   @id @default(cuid())
+  workspaceId         String
+  scope               WorkspaceDiscussionScope
+  sectionCriterionId  String?
+  entryId             String?
+  createdByUserId     String?
+  guestParticipantId  String?
+  title               String
+  isResolved          Boolean                  @default(false)
+  resolvedAt          DateTime?
+  resolvedByUserId    String?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  workspace           AssessmentWorkspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sectionCriterion    AccreditationCriterion?  @relation(fields: [sectionCriterionId], references: [id], onDelete: Cascade)
+  entry               CriterionEntry?          @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  createdByUser       User?                    @relation("WorkspaceDiscussionThreadAuthor", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  guestParticipant    WorkspaceGuestParticipant? @relation(fields: [guestParticipantId], references: [id], onDelete: SetNull)
+  resolvedByUser      User?                    @relation("WorkspaceDiscussionThreadResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+  messages            WorkspaceDiscussionMessage[]
+
+  @@index([workspaceId, scope, updatedAt])
+  @@index([workspaceId, sectionCriterionId])
+  @@index([workspaceId, entryId])
+}
+
+model WorkspaceDiscussionMessage {
+  id                 String                   @id @default(cuid())
+  threadId           String
+  authorUserId       String?
+  guestParticipantId String?
+  parentMessageId    String?
+  body               String
+  mentionedUserIds   String[]
+  isPostApproval     Boolean                  @default(false)
+  createdAt          DateTime                 @default(now())
+  thread             WorkspaceDiscussionThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  authorUser         User?                    @relation("WorkspaceDiscussionMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  guestParticipant   WorkspaceGuestParticipant? @relation(fields: [guestParticipantId], references: [id], onDelete: SetNull)
+  parentMessage      WorkspaceDiscussionMessage? @relation("WorkspaceDiscussionReplies", fields: [parentMessageId], references: [id], onDelete: Cascade)
+  replies            WorkspaceDiscussionMessage[] @relation("WorkspaceDiscussionReplies")
+
+  @@index([threadId, createdAt])
+}
+
+model WorkspaceGuestInvite {
+  id                 String                    @id @default(cuid())
+  workspaceId        String
+  sectionCriterionId String?
+  email              String
+  firstName          String?
+  lastName           String?
+  role               WorkspaceGuestRole
+  status             WorkspaceGuestInviteStatus @default(PENDING)
+  tokenHash          String                    @unique
+  expiresAt          DateTime
+  invitedByUserId    String
+  acceptedAt         DateTime?
+  revokedAt          DateTime?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  workspace          AssessmentWorkspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sectionCriterion   AccreditationCriterion?   @relation(fields: [sectionCriterionId], references: [id], onDelete: SetNull)
+  invitedByUser      User                      @relation(fields: [invitedByUserId], references: [id], onDelete: Cascade)
+  participant        WorkspaceGuestParticipant?
+
+  @@index([workspaceId, status, expiresAt])
+  @@unique([workspaceId, email, status])
+}
+
+model WorkspaceGuestParticipant {
+  id                  String                       @id @default(cuid())
+  workspaceId         String
+  inviteId            String?                      @unique
+  email               String
+  firstName           String?
+  lastName            String?
+  role                WorkspaceGuestRole
+  accessRevokedAt     DateTime?
+  createdAt           DateTime                     @default(now())
+  updatedAt           DateTime                     @updatedAt
+  workspace           AssessmentWorkspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invite              WorkspaceGuestInvite?        @relation(fields: [inviteId], references: [id], onDelete: SetNull)
+  sectionAssignments  WorkspaceSectionAssignment[]
+  discussionThreads   WorkspaceDiscussionThread[]
+  discussionMessages  WorkspaceDiscussionMessage[]
+
+  @@unique([workspaceId, email])
+  @@index([workspaceId, role])
+}
+
+model SourceMetricDefinition {
+  id                String                  @id @default(cuid())
+  tenantId          String
+  code              String
+  name              String
+  description       String?
+  valueType         SourceMetricValueType   @default(NUMBER)
+  unitOfMeasure     String?
+  allowedDimensions Json?
+  isActive          Boolean                 @default(true)
+  createdByUserId   String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  tenant            Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  observations      SourceMetricObservation[]
+  projectionRecipes BlockProjectionRecipe[] @relation("ProjectionRecipeSourceMetric")
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive])
+}
+
+model SourceMetricObservation {
+  id                   String               @id @default(cuid())
+  metricId             String
+  observedYear         Int?
+  scopeKey             String               @default("STATIC")
+  dimensions           Json?
+  dimensionFingerprint String               @default("__NONE__")
+  numberValue          Float?
+  textValue            String?
+  jsonValue            Json?
+  sourceType           String               @default("MANUAL")
+  sourceRef            String?
+  sourceRevisionHash   String?
+  recordedByUserId     String?
+  recordedAt           DateTime?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  metric               SourceMetricDefinition @relation(fields: [metricId], references: [id], onDelete: Cascade)
+
+  @@unique([metricId, scopeKey, dimensionFingerprint])
+  @@index([metricId, observedYear])
+  @@index([metricId, dimensionFingerprint])
+}
+
+model BlockProjectionRecipe {
+  id                     String                   @id @default(cuid())
+  tenantId               String
+  targetWorkspaceId      String
+  targetEntryId          String
+  sourceKind             ProjectionSourceKind
+  sourceWorkspaceId      String?
+  sourceEntryId          String?
+  sourceMetricId         String?
+  sourceTableInstanceId  String?
+  sourcePath             String?
+  filters                Json?
+  transform              Json?
+  storageMode            ProjectionStorageMode    @default(COPY)
+  targetPath             String                   @default("actualValue")
+  isActive               Boolean                  @default(true)
+  lastSourceRevisionHash String?
+  createdByUserId        String
+  updatedByUserId        String?
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+  tenant                 Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  targetWorkspace        AssessmentWorkspace      @relation("ProjectionTargetWorkspace", fields: [targetWorkspaceId], references: [id], onDelete: Cascade)
+  targetEntry            CriterionEntry           @relation("ProjectionTargetEntry", fields: [targetEntryId], references: [id], onDelete: Cascade)
+  sourceWorkspace        AssessmentWorkspace?     @relation("ProjectionSourceWorkspace", fields: [sourceWorkspaceId], references: [id], onDelete: SetNull)
+  sourceEntry            CriterionEntry?          @relation("ProjectionSourceEntry", fields: [sourceEntryId], references: [id], onDelete: SetNull)
+  sourceMetric           SourceMetricDefinition?  @relation("ProjectionRecipeSourceMetric", fields: [sourceMetricId], references: [id], onDelete: SetNull)
+  sourceTableInstance    CriterionEntryTableInstance? @relation("ProjectionSourceTable", fields: [sourceTableInstanceId], references: [id], onDelete: SetNull)
+  runs                   BlockProjectionRun[]
+  targets                BlockProjectionTarget[]
+
+  @@index([tenantId, targetWorkspaceId, isActive])
+  @@index([tenantId, targetEntryId, isActive])
+  @@index([sourceWorkspaceId])
+  @@index([sourceEntryId])
+  @@index([sourceMetricId])
+}
+
+model BlockProjectionRun {
+  id                 String               @id @default(cuid())
+  recipeId           String
+  runType            ProjectionRunType
+  status             ProjectionRunStatus
+  previewSummary     Json?
+  appliedCount       Int                  @default(0)
+  errorMessage       String?
+  sourceRevisionHash String?
+  createdByUserId    String
+  createdAt          DateTime             @default(now())
+  recipe             BlockProjectionRecipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId, createdAt])
+}
+
+model BlockProjectionTarget {
+  id                    String                @id @default(cuid())
+  recipeId              String
+  targetEntryId         String
+  targetYear            Int?
+  targetScopeKey        String
+  targetPath            String
+  sourceYear            Int?
+  sourceScopeKey        String?
+  sourceRevisionHash    String?
+  materializedNumberValue Float?
+  materializedTextValue String?
+  importedByUserId      String
+  importedAt            DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  recipe                BlockProjectionRecipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  targetEntry           CriterionEntry        @relation(fields: [targetEntryId], references: [id], onDelete: Cascade)
+
+  @@unique([recipeId, targetEntryId, targetScopeKey, targetPath])
+  @@index([targetEntryId, importedAt])
+}
+
+model WorkspaceFreezeLog {
+  id                      String              @id @default(cuid())
+  workspaceId             String
+  snapshotId              String?
+  frozenAt                DateTime
+  frozenByUserId          String
+  warningAcknowledgments  Json?
+  changesSummary          Json?
+  unfrozenAt              DateTime?
+  unfrozenByUserId        String?
+  unfreezeReason          String?
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  workspace               AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  snapshot                ScoreSnapshot?      @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  frozenByUser            User                @relation("WorkspaceFreezeLogFrozenBy", fields: [frozenByUserId], references: [id], onDelete: Cascade)
+  unfrozenByUser          User?               @relation("WorkspaceFreezeLogUnfrozenBy", fields: [unfrozenByUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, frozenAt])
 }
 
 model KpiAccreditationCriterionLink {

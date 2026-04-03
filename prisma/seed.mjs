@@ -1,6 +1,13 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient, UserLifecycleState } from "@prisma/client";
+import {
+  AccreditationScope,
+  CriterionDataType,
+  PrismaClient,
+  TenantServiceCode,
+  TenantServiceEntitlementStatus,
+  UserLifecycleState,
+} from "@prisma/client";
 import { hash } from "bcryptjs";
 import pg from "pg";
 
@@ -3533,6 +3540,322 @@ async function ensureR43InterfaceSeed({
   };
 }
 
+const ACCREDITATION_FRAMEWORK_SEEDS = [
+  {
+    code: "NAAC",
+    name: "National Assessment and Accreditation Council",
+    country: "IN",
+    description: "Starter NAAC framework seed for demo and regression environments.",
+    versionCode: "2024",
+    versionName: "NAAC 2024",
+    scoreBase: 1000,
+    profiles: [
+      {
+        code: "UNIVERSITY",
+        name: "University",
+        isDefault: true,
+      },
+    ],
+    criteria: [
+      { code: "CR1", title: "Curricular Aspects", isLeaf: false, sortOrder: 1 },
+      { code: "CR1.1", parentCode: "CR1", title: "Curricular Planning and Implementation", isLeaf: true, maxScore: 20, sortOrder: 1 },
+      { code: "CR1.2", parentCode: "CR1", title: "Academic Flexibility", isLeaf: true, maxScore: 15, sortOrder: 2 },
+      { code: "CR2", title: "Teaching-Learning and Evaluation", isLeaf: false, sortOrder: 2 },
+      { code: "CR2.1", parentCode: "CR2", title: "Student Enrolment and Profile", isLeaf: true, maxScore: 30, sortOrder: 1 },
+      { code: "CR2.2", parentCode: "CR2", title: "Student Satisfaction and Outcomes", isLeaf: true, maxScore: 25, sortOrder: 2 },
+    ],
+    weights: {
+      UNIVERSITY: [
+        { criterionCode: "CR1.1", maxScore: 20, weightPercent: 22 },
+        { criterionCode: "CR1.2", maxScore: 15, weightPercent: 18 },
+        { criterionCode: "CR2.1", maxScore: 30, weightPercent: 32 },
+        { criterionCode: "CR2.2", maxScore: 25, weightPercent: 28 },
+      ],
+    },
+    gradeBands: [
+      { gradeLabel: "A++", scoreMin: 3.51, scoreMax: 4, outcome: "Top grade", sortOrder: 1 },
+      { gradeLabel: "A+", scoreMin: 3.26, scoreMax: 3.5, outcome: "Excellent", sortOrder: 2 },
+      { gradeLabel: "A", scoreMin: 3.01, scoreMax: 3.25, outcome: "Very good", sortOrder: 3 },
+      { gradeLabel: "B++", scoreMin: 2.76, scoreMax: 3, outcome: "Good", sortOrder: 4 },
+    ],
+    thresholdRules: [
+      {
+        thresholdType: "MIN_OVERALL_SCORE",
+        minValue: 2.0,
+        outcome: "Eligible for accreditation consideration",
+        description: "Starter institutional threshold.",
+      },
+    ],
+  },
+  {
+    code: "NIRF",
+    name: "National Institutional Ranking Framework",
+    country: "IN",
+    description: "Starter NIRF framework seed for demo and regression environments.",
+    versionCode: "2024",
+    versionName: "NIRF 2024",
+    scoreBase: 100,
+    profiles: [
+      {
+        code: "ENGINEERING",
+        name: "Engineering",
+        isDefault: true,
+      },
+    ],
+    criteria: [
+      { code: "TLR", title: "Teaching, Learning and Resources", isLeaf: false, sortOrder: 1 },
+      { code: "TLR-1", parentCode: "TLR", title: "Faculty Student Ratio", isLeaf: true, maxScore: 20, sortOrder: 1 },
+      { code: "TLR-2", parentCode: "TLR", title: "Faculty Qualification and Experience", isLeaf: true, maxScore: 20, sortOrder: 2 },
+      { code: "RPC", title: "Research and Professional Practice", isLeaf: false, sortOrder: 2 },
+      { code: "RPC-1", parentCode: "RPC", title: "Publications and Citations", isLeaf: true, maxScore: 30, sortOrder: 1 },
+      { code: "RPC-2", parentCode: "RPC", title: "Patents and Projects", isLeaf: true, maxScore: 15, sortOrder: 2 },
+      { code: "GO", title: "Graduation Outcomes", isLeaf: false, sortOrder: 3 },
+      { code: "GO-1", parentCode: "GO", title: "Placement and Higher Studies", isLeaf: true, maxScore: 15, sortOrder: 1 },
+    ],
+    weights: {
+      ENGINEERING: [
+        { criterionCode: "TLR-1", maxScore: 20, weightPercent: 20 },
+        { criterionCode: "TLR-2", maxScore: 20, weightPercent: 20 },
+        { criterionCode: "RPC-1", maxScore: 30, weightPercent: 30 },
+        { criterionCode: "RPC-2", maxScore: 15, weightPercent: 15 },
+        { criterionCode: "GO-1", maxScore: 15, weightPercent: 15 },
+      ],
+    },
+    gradeBands: [
+      { gradeLabel: "RANK_1_50", scoreMin: 70, scoreMax: 100, outcome: "Rank band 1-50", sortOrder: 1 },
+      { gradeLabel: "RANK_51_100", scoreMin: 55, scoreMax: 69.99, outcome: "Rank band 51-100", sortOrder: 2 },
+    ],
+    thresholdRules: [
+      {
+        thresholdType: "MIN_RESEARCH_SCORE",
+        minValue: 15,
+        outcome: "Research section must meet baseline",
+        description: "Starter NIRF research threshold.",
+      },
+    ],
+  },
+];
+
+async function ensureAccreditationSeeds({ superadmin, tenant }) {
+  await prisma.tenantServiceEntitlement.upsert({
+    where: {
+      tenantId_serviceCode: {
+        tenantId: tenant.id,
+        serviceCode: TenantServiceCode.ACCREDITATION,
+      },
+    },
+    update: {
+      status: TenantServiceEntitlementStatus.ENABLED,
+      enabledAt: new Date(),
+      enabledByUserId: superadmin.id,
+      disabledAt: null,
+      disabledByUserId: null,
+      notes: "Enabled by seed for demo tenant access.",
+    },
+    create: {
+      tenantId: tenant.id,
+      serviceCode: TenantServiceCode.ACCREDITATION,
+      status: TenantServiceEntitlementStatus.ENABLED,
+      enabledAt: new Date(),
+      enabledByUserId: superadmin.id,
+      notes: "Enabled by seed for demo tenant access.",
+    },
+  });
+
+  for (const framework of ACCREDITATION_FRAMEWORK_SEEDS) {
+    const body = await prisma.accreditationBody.upsert({
+      where: {
+        tenantId_code: {
+          tenantId: null,
+          code: framework.code,
+        },
+      },
+      update: {
+        scope: AccreditationScope.GLOBAL,
+        tenantId: null,
+        name: framework.name,
+        country: framework.country,
+        description: framework.description,
+        isActive: true,
+        createdByUserId: superadmin.id,
+      },
+      create: {
+        scope: AccreditationScope.GLOBAL,
+        tenantId: null,
+        code: framework.code,
+        name: framework.name,
+        country: framework.country,
+        description: framework.description,
+        isActive: true,
+        createdByUserId: superadmin.id,
+      },
+    });
+
+    const version = await prisma.accreditationBodyVersion.upsert({
+      where: {
+        bodyId_versionCode: {
+          bodyId: body.id,
+          versionCode: framework.versionCode,
+        },
+      },
+      update: {
+        versionName: framework.versionName,
+        scoreBase: framework.scoreBase,
+        isActive: true,
+      },
+      create: {
+        bodyId: body.id,
+        versionCode: framework.versionCode,
+        versionName: framework.versionName,
+        scoreBase: framework.scoreBase,
+        isActive: true,
+      },
+    });
+
+    const profileMap = new Map();
+    for (const profileSeed of framework.profiles) {
+      const profile = await prisma.accreditationProfile.upsert({
+        where: {
+          versionId_profileCode: {
+            versionId: version.id,
+            profileCode: profileSeed.code,
+          },
+        },
+        update: {
+          profileName: profileSeed.name,
+          isDefault: profileSeed.isDefault,
+        },
+        create: {
+          versionId: version.id,
+          profileCode: profileSeed.code,
+          profileName: profileSeed.name,
+          isDefault: profileSeed.isDefault,
+        },
+      });
+      profileMap.set(profileSeed.code, profile);
+    }
+
+    const criterionMap = new Map();
+    for (const criterionSeed of framework.criteria.filter((criterion) => !criterion.parentCode)) {
+      const criterion = await prisma.accreditationCriterion.upsert({
+        where: {
+          versionId_criterionCode: {
+            versionId: version.id,
+            criterionCode: criterionSeed.code,
+          },
+        },
+        update: {
+          parentId: null,
+          title: criterionSeed.title,
+          dataType: CriterionDataType.QUANTITATIVE,
+          maxScore: criterionSeed.maxScore ?? null,
+          sortOrder: criterionSeed.sortOrder,
+          depth: 0,
+          isLeaf: criterionSeed.isLeaf,
+          isActive: true,
+        },
+        create: {
+          versionId: version.id,
+          parentId: null,
+          criterionCode: criterionSeed.code,
+          title: criterionSeed.title,
+          dataType: CriterionDataType.QUANTITATIVE,
+          maxScore: criterionSeed.maxScore ?? null,
+          sortOrder: criterionSeed.sortOrder,
+          depth: 0,
+          isLeaf: criterionSeed.isLeaf,
+          isActive: true,
+        },
+      });
+      criterionMap.set(criterionSeed.code, criterion);
+    }
+
+    for (const criterionSeed of framework.criteria.filter((criterion) => criterion.parentCode)) {
+      const parent = criterionMap.get(criterionSeed.parentCode);
+      const depth = parent ? parent.depth + 1 : 0;
+      const criterion = await prisma.accreditationCriterion.upsert({
+        where: {
+          versionId_criterionCode: {
+            versionId: version.id,
+            criterionCode: criterionSeed.code,
+          },
+        },
+        update: {
+          parentId: parent?.id ?? null,
+          title: criterionSeed.title,
+          dataType: CriterionDataType.QUANTITATIVE,
+          maxScore: criterionSeed.maxScore ?? null,
+          sortOrder: criterionSeed.sortOrder,
+          depth,
+          isLeaf: criterionSeed.isLeaf,
+          isActive: true,
+        },
+        create: {
+          versionId: version.id,
+          parentId: parent?.id ?? null,
+          criterionCode: criterionSeed.code,
+          title: criterionSeed.title,
+          dataType: CriterionDataType.QUANTITATIVE,
+          maxScore: criterionSeed.maxScore ?? null,
+          sortOrder: criterionSeed.sortOrder,
+          depth,
+          isLeaf: criterionSeed.isLeaf,
+          isActive: true,
+        },
+      });
+      criterionMap.set(criterionSeed.code, criterion);
+    }
+
+    for (const [profileCode, weights] of Object.entries(framework.weights)) {
+      const profile = profileMap.get(profileCode);
+      if (!profile) continue;
+
+      await prisma.accreditationProfileWeight.deleteMany({
+        where: { profileId: profile.id },
+      });
+
+      if (weights.length > 0) {
+        await prisma.accreditationProfileWeight.createMany({
+          data: weights.map((weight) => ({
+            profileId: profile.id,
+            criterionId: criterionMap.get(weight.criterionCode).id,
+            maxScore: weight.maxScore,
+            weightPercent: weight.weightPercent,
+          })),
+        });
+      }
+    }
+
+    await prisma.accreditationGradeBand.deleteMany({ where: { versionId: version.id } });
+    await prisma.accreditationThresholdRule.deleteMany({ where: { versionId: version.id } });
+
+    if (framework.gradeBands.length > 0) {
+      await prisma.accreditationGradeBand.createMany({
+        data: framework.gradeBands.map((band) => ({
+          versionId: version.id,
+          gradeLabel: band.gradeLabel,
+          scoreMin: band.scoreMin,
+          scoreMax: band.scoreMax,
+          outcome: band.outcome,
+          sortOrder: band.sortOrder,
+        })),
+      });
+    }
+
+    if (framework.thresholdRules.length > 0) {
+      await prisma.accreditationThresholdRule.createMany({
+        data: framework.thresholdRules.map((rule) => ({
+          versionId: version.id,
+          thresholdType: rule.thresholdType,
+          minValue: rule.minValue,
+          outcome: rule.outcome,
+          description: rule.description,
+        })),
+      });
+    }
+  }
+}
+
 async function main() {
   const superadminEmail =
     (process.env.SUPERADMIN_EMAIL ?? "superadmin@local.test").trim().toLowerCase();
@@ -3611,6 +3934,11 @@ async function main() {
     create: {
       tenantId: tenant.id,
     },
+  });
+
+  await ensureAccreditationSeeds({
+    superadmin,
+    tenant,
   });
 
   await ensureMembership({

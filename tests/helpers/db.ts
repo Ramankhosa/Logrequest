@@ -1,4 +1,10 @@
-import type { MembershipStatus, Role, UserLifecycleState } from "@prisma/client";
+import type {
+  MembershipStatus,
+  Role,
+  TenantServiceCode,
+  UserLifecycleState,
+} from "@prisma/client";
+import { TenantServiceEntitlementStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export type DbTracker = {
@@ -106,6 +112,35 @@ export async function createTenantActor(
   return { tenant, actor, membership };
 }
 
+export async function enableTenantService(input: {
+  tenantId: string;
+  serviceCode: TenantServiceCode;
+  actorUserId: string;
+}) {
+  return prisma.tenantServiceEntitlement.upsert({
+    where: {
+      tenantId_serviceCode: {
+        tenantId: input.tenantId,
+        serviceCode: input.serviceCode,
+      },
+    },
+    update: {
+      status: TenantServiceEntitlementStatus.ENABLED,
+      enabledAt: new Date(),
+      enabledByUserId: input.actorUserId,
+      disabledAt: null,
+      disabledByUserId: null,
+    },
+    create: {
+      tenantId: input.tenantId,
+      serviceCode: input.serviceCode,
+      status: TenantServiceEntitlementStatus.ENABLED,
+      enabledAt: new Date(),
+      enabledByUserId: input.actorUserId,
+    },
+  });
+}
+
 export async function cleanupTrackedData(tracker: DbTracker) {
   const tenantIds = [...tracker.tenantIds];
   const userIdCandidates = new Set<string>(tracker.userIds);
@@ -126,6 +161,120 @@ export async function cleanupTrackedData(tracker: DbTracker) {
     }
 
     await prisma.auditLog.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.notification.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.assessmentWorkspace.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.kpiAccreditationCriterionLink.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.accreditationProfileWeight.deleteMany({
+      where: {
+        profile: {
+          version: {
+            body: {
+              tenantId: {
+                in: tenantIds,
+              },
+            },
+          },
+        },
+      },
+    });
+    await prisma.accreditationScoringSlab.deleteMany({
+      where: {
+        criterion: {
+          version: {
+            body: {
+              tenantId: {
+                in: tenantIds,
+              },
+            },
+          },
+        },
+      },
+    });
+    await prisma.accreditationThresholdRule.deleteMany({
+      where: {
+        version: {
+          body: {
+            tenantId: {
+              in: tenantIds,
+            },
+          },
+        },
+      },
+    });
+    await prisma.accreditationGradeBand.deleteMany({
+      where: {
+        version: {
+          body: {
+            tenantId: {
+              in: tenantIds,
+            },
+          },
+        },
+      },
+    });
+    await prisma.accreditationCriterion.deleteMany({
+      where: {
+        version: {
+          body: {
+            tenantId: {
+              in: tenantIds,
+            },
+          },
+        },
+      },
+    });
+    await prisma.accreditationProfile.deleteMany({
+      where: {
+        version: {
+          body: {
+            tenantId: {
+              in: tenantIds,
+            },
+          },
+        },
+      },
+    });
+    await prisma.accreditationBodyVersion.deleteMany({
+      where: {
+        body: {
+          tenantId: {
+            in: tenantIds,
+          },
+        },
+      },
+    });
+    await prisma.accreditationBody.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.tenantServiceEntitlement.deleteMany({
       where: {
         tenantId: {
           in: tenantIds,

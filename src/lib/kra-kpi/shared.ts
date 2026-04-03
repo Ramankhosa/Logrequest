@@ -344,6 +344,7 @@ export type KpiDefinitionView = {
   finalReviewerWarning: string | null;
   workflowWarnings: string[];
   targetUnitCount: number;
+  accreditationLinkCount: number;
   evidenceRequired: boolean;
   evidenceTypes: string[];
   evidenceInstructions: string | null;

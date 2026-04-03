@@ -33,6 +33,7 @@ const formSchema = z
     subscriptionEndDate: z.string().trim().min(1, "End date is required."),
     lifecycleState: z.string().trim().min(1, "Lifecycle state is required."),
     entitlementState: z.string().trim().min(1, "Entitlement state is required."),
+    accreditationEnabled: z.boolean(),
     ownerName: z.string().trim().min(2, "Owner name is required."),
     ownerEmail: z.string().trim().email("Enter a valid owner email."),
     allowGracePeriodAccess: z.boolean(),
@@ -51,6 +52,7 @@ type SubmittedSummary = {
   subscriptionPlan: string;
   lifecycleState: string;
   entitlementState: string;
+  accreditationEnabled: boolean;
   notifyOwnerImmediately: boolean;
 };
 
@@ -86,6 +88,7 @@ const steps: Array<{
     title: "Activation",
     fields: [
       "allowGracePeriodAccess",
+      "accreditationEnabled",
       "notifyOwnerImmediately",
       "requireExactSocialMatch",
     ],
@@ -119,6 +122,7 @@ export function TenantWizard() {
       subscriptionEndDate: "",
       lifecycleState: "",
       entitlementState: "",
+      accreditationEnabled: false,
       ownerName: "",
       ownerEmail: "",
       allowGracePeriodAccess: true,
@@ -136,6 +140,10 @@ export function TenantWizard() {
   const notifyOwnerImmediately = useWatch({
     control: form.control,
     name: "notifyOwnerImmediately",
+  });
+  const accreditationEnabled = useWatch({
+    control: form.control,
+    name: "accreditationEnabled",
   });
   const requireExactSocialMatch = useWatch({
     control: form.control,
@@ -198,6 +206,7 @@ export function TenantWizard() {
             subscriptionEndDate: values.subscriptionEndDate,
             lifecycleState: values.lifecycleState,
             entitlementState: values.entitlementState,
+            accreditationEnabled: values.accreditationEnabled,
             ownerName: values.ownerName,
             ownerEmail: values.ownerEmail,
             allowGracePeriodAccess: values.allowGracePeriodAccess,
@@ -226,6 +235,7 @@ export function TenantWizard() {
           subscriptionPlan: values.subscriptionPlan,
           lifecycleState: values.lifecycleState,
           entitlementState: values.entitlementState,
+          accreditationEnabled: values.accreditationEnabled,
           notifyOwnerImmediately: values.notifyOwnerImmediately,
         });
       }
@@ -418,6 +428,12 @@ export function TenantWizard() {
               input={<input {...form.register("allowGracePeriodAccess")} type="checkbox" />}
             />
             <ToggleCard
+              label="Enable accreditation add-on"
+              description="Provision the optional accreditation module for this tenant during creation."
+              checked={accreditationEnabled}
+              input={<input {...form.register("accreditationEnabled")} type="checkbox" />}
+            />
+            <ToggleCard
               label="Notify owner immediately"
               description="Send an activation email with a secure link to set a password."
               checked={notifyOwnerImmediately}
@@ -514,6 +530,10 @@ export function TenantWizard() {
                 value={reviewToggle(formValues.allowGracePeriodAccess)}
               />
               <SummaryLine
+                label="Accreditation service"
+                value={reviewToggle(formValues.accreditationEnabled)}
+              />
+              <SummaryLine
                 label="Notify owner immediately"
                 value={reviewToggle(formValues.notifyOwnerImmediately)}
               />
@@ -598,6 +618,10 @@ export function TenantWizard() {
                   ? "Owner must activate their account, then sign-in is allowed."
                   : "Owner must activate their account, but sign-in remains blocked until tenant access is enabled."
               }
+            />
+            <SummaryLine
+              label="Accreditation service"
+              value={submittedSummary.accreditationEnabled ? "Enabled" : "Disabled"}
             />
           </div>
           <div className="mt-4 flex flex-wrap gap-2">

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
   Plus,
@@ -42,6 +43,7 @@ type KpiView = {
   sortOrder: number;
   guidanceNotes: string | null;
   allocationCount: number;
+  accreditationLinkCount: number;
   // R2 fields
   keyUnitId?: string | null;
   keyUnitName?: string | null;
@@ -79,6 +81,7 @@ export function KpiDefinitionList({
   const [addingNew, setAddingNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
+  const [enabledServices, setEnabledServices] = useState<string[]>([]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -110,6 +113,36 @@ export function KpiDefinitionList({
   useEffect(() => {
     void fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadServices() {
+      try {
+        const response = await fetch("/api/tenant/services", { cache: "no-store" });
+        if (!response.ok) {
+          if (!cancelled) {
+            setEnabledServices([]);
+          }
+          return;
+        }
+        const data = (await response.json()) as { enabledServices?: string[] };
+        if (!cancelled) {
+          setEnabledServices(Array.isArray(data.enabledServices) ? data.enabledServices : []);
+        }
+      } catch {
+        if (!cancelled) {
+          setEnabledServices([]);
+        }
+      }
+    }
+
+    void loadServices();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const showFeedback = (type: "success" | "error", message: string) => {
     setFeedback({ type, message });
@@ -171,6 +204,7 @@ export function KpiDefinitionList({
   const draftKpiCount = kpis.filter((k) => k.state === "DRAFT").length;
   const parentKraState = kpis[0]?.kraState ?? "DRAFT";
   const noUnitsAvailable = units.length === 0;
+  const accreditationEnabled = enabledServices.includes("ACCREDITATION");
 
   if (loading) {
     return (
@@ -355,6 +389,19 @@ export function KpiDefinitionList({
                       <span>{kpi.targetUnitCount} target dept(s)</span>
                     )}
                   </div>
+                  {accreditationEnabled ? (
+                    <div className="mt-2 flex items-center gap-3 text-[11px]">
+                      <span className="rounded-full bg-amber-50 px-2 py-1 font-semibold text-amber-700">
+                        Accreditation links: {kpi.accreditationLinkCount ?? 0}
+                      </span>
+                      <Link
+                        href={`/tenant-admin/accreditation?kpiId=${kpi.id}`}
+                        className="font-semibold text-slate-600 transition hover:text-slate-900"
+                      >
+                        Manage Accreditation Links
+                      </Link>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   {kpi.state === "DRAFT" && (

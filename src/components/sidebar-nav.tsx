@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import {
+  Award,
   BarChart3,
   LayoutDashboard,
   Users,
@@ -35,14 +37,68 @@ const iconMap: Record<string, LucideIcon> = {
   "contact": Contact,
   "target": Target,
   "tag": Tag,
+  "award": Award,
 };
 
 export function SidebarNav({ groups }: { groups: NavigationGroup[] }) {
   const pathname = usePathname();
+  const [enabledServices, setEnabledServices] = useState<string[]>([]);
+  const hasServiceScopedItems = useMemo(
+    () => groups.some((group) => group.items.some((item) => item.serviceCode)),
+    [groups],
+  );
+
+  useEffect(() => {
+    if (!hasServiceScopedItems) {
+      setEnabledServices([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadServices() {
+      try {
+        const response = await fetch("/api/tenant/services", { cache: "no-store" });
+        if (!response.ok) {
+          if (!cancelled) {
+            setEnabledServices([]);
+          }
+          return;
+        }
+        const data = (await response.json()) as { enabledServices?: string[] };
+        if (!cancelled) {
+          setEnabledServices(Array.isArray(data.enabledServices) ? data.enabledServices : []);
+        }
+      } catch {
+        if (!cancelled) {
+          setEnabledServices([]);
+        }
+      }
+    }
+
+    void loadServices();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasServiceScopedItems]);
+
+  const visibleGroups = useMemo(
+    () =>
+      groups
+        .map((group) => ({
+          ...group,
+          items: group.items.filter(
+            (item) => !item.serviceCode || enabledServices.includes(item.serviceCode),
+          ),
+        }))
+        .filter((group) => group.items.length > 0),
+    [enabledServices, groups],
+  );
 
   return (
     <div className="space-y-5">
-      {groups.map((group) => (
+      {visibleGroups.map((group) => (
         <div key={group.label}>
           <div className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
             {group.label}

@@ -12,6 +12,7 @@ import {
   hasTenantCapability,
   type TenantCapability,
 } from "@/lib/tenant-permissions/service";
+import { hasTenantServiceEnabled } from "@/lib/tenant-services/service";
 import {
   getAccessibleMemberships,
   roleLandingPath,
@@ -126,6 +127,36 @@ export async function requireTenantAnyCapability(capabilities: TenantCapability[
   });
 
   if (allowed) {
+    return context;
+  }
+
+  redirect(roleLandingPath(context));
+}
+
+export async function requireTenantService(serviceCode: "ACCREDITATION") {
+  const context = await requireSessionContext();
+
+  if (!context.user.id || !context.tenant?.id) {
+    redirect(roleLandingPath(context));
+  }
+
+  const enabled = await hasTenantServiceEnabled(context.tenant.id, serviceCode);
+
+  if (enabled) {
+    return context;
+  }
+
+  redirect(roleLandingPath(context));
+}
+
+export async function requireTenantCapabilityAndService(
+  capability: TenantCapability,
+  serviceCode: "ACCREDITATION",
+) {
+  const context = await requireTenantCapability(capability);
+  const enabled = await hasTenantServiceEnabled(context.tenant!.id, serviceCode);
+
+  if (enabled) {
     return context;
   }
 

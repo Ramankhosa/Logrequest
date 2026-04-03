@@ -13,6 +13,7 @@ export type TenantCapability =
   | "MANAGE_TARGETS"
   | "MANAGE_WORKFLOW"
   | "MANAGE_REWARDS"
+  | "MANAGE_ACCREDITATION"
   | "MANAGE_ACCESS"
   | "MANAGE_PERSONNEL";
 
@@ -72,6 +73,7 @@ const ALL_CAPABILITIES: TenantCapability[] = [
   "MANAGE_TARGETS",
   "MANAGE_WORKFLOW",
   "MANAGE_REWARDS",
+  "MANAGE_ACCREDITATION",
   "MANAGE_ACCESS",
   "MANAGE_PERSONNEL",
 ];
@@ -106,6 +108,12 @@ const ROLE_DEFINITIONS: TenantPermissionRoleDefinition[] = [
     label: "Reward Manager",
     description: "Manage reward console, reconciliation, and reward state transitions.",
     capabilities: ["MANAGE_REWARDS"],
+  },
+  {
+    code: TenantPermissionRole.ACCREDITATION_MANAGER,
+    label: "Accreditation Manager",
+    description: "Manage accreditation frameworks, criteria mappings, and tenant accreditation setup.",
+    capabilities: ["MANAGE_ACCREDITATION"],
   },
   {
     code: TenantPermissionRole.ACCESS_ADMIN,

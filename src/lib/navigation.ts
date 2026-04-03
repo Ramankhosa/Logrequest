@@ -2,6 +2,7 @@ export type NavigationItem = {
   href: string;
   label: string;
   icon: string;
+  serviceCode?: "ACCREDITATION";
 };
 
 export type NavigationGroup = {
@@ -37,6 +38,18 @@ export const tenantNavigationGroups: NavigationGroup[] = [
       { href: "/tenant-admin/personnel/transfers", label: "Transfers", icon: "arrow-right-left" },
       { href: "/tenant-admin/access-control", label: "Access Control", icon: "shield-check" },
       { href: "/tenant-admin/kra-kpi", label: "KRA / KPI", icon: "target" },
+      {
+        href: "/tenant-admin/accreditation",
+        label: "Accreditation",
+        icon: "award",
+        serviceCode: "ACCREDITATION",
+      },
+      {
+        href: "/workspace/accreditation",
+        label: "My Accreditation",
+        icon: "award",
+        serviceCode: "ACCREDITATION",
+      },
       { href: "/tenant-admin/kra-kpi/workflow", label: "Workflow", icon: "git-branch" },
       { href: "/tenant-admin/kra-kpi/journals", label: "Journal Catalog", icon: "tag" },
       { href: "/kpi-dashboard", label: "KPI Dashboard", icon: "bar-chart-3" },
@@ -58,6 +71,12 @@ export const userNavigationGroups: NavigationGroup[] = [
     items: [
       { href: "/workspace", label: "Dashboard", icon: "layout-dashboard" },
       { href: "/my-kpis", label: "My KPIs", icon: "clipboard-check" },
+      {
+        href: "/workspace/accreditation",
+        label: "My Accreditation",
+        icon: "award",
+        serviceCode: "ACCREDITATION",
+      },
       { href: "/kpi-dashboard", label: "KPI Dashboard", icon: "bar-chart-3" },
     ],
   },
@@ -85,9 +104,11 @@ export const superadminNavigationGroups: NavigationGroup[] = [
     defaultOpen: true,
     items: [
       { href: "/superadmin", label: "Dashboard", icon: "layout-dashboard" },
+      { href: "/superadmin/tenants", label: "Tenants", icon: "building-2" },
       { href: "/superadmin/tenants/new", label: "New Tenant", icon: "building-2" },
       { href: "/superadmin/kra-categories", label: "KRA Categories", icon: "tag" },
       { href: "/superadmin/journals", label: "Journal Catalog", icon: "tag" },
+      { href: "/superadmin/accreditation", label: "Accreditation", icon: "award" },
       { href: "/insights", label: "Insights", icon: "bar-chart-2" },
     ],
   },

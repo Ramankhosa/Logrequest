@@ -85,6 +85,28 @@ describe("tenant permission role assignments", () => {
         expect.arrayContaining(["MANAGE_KPI", "MANAGE_WORKFLOW"]),
       );
 
+      const accreditationGrant = await replaceTenantPermissionAssignments({
+        tenantId: tenant.id,
+        actorUserId: actor.id,
+        actorRole: "TENANT_OWNER",
+        targetUserId: editorUser.id,
+        roleCodes: [
+          TenantPermissionRole.KPI_EDITOR,
+          TenantPermissionRole.WORKFLOW_MANAGER,
+          TenantPermissionRole.ACCREDITATION_MANAGER,
+        ],
+      });
+      expect(accreditationGrant).toMatchObject({ status: "success" });
+
+      expect(
+        await hasTenantCapability({
+          tenantId: tenant.id,
+          userId: editorUser.id,
+          baseRole: "TENANT_USER",
+          capability: "MANAGE_ACCREDITATION",
+        }),
+      ).toBe(true);
+
       const selfGrantBlocked = await replaceTenantPermissionAssignments({
         tenantId: tenant.id,
         actorUserId: accessAdminUser.id,

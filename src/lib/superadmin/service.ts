@@ -2,7 +2,9 @@ import {
   InvitationStatus,
   MembershipStatus,
   Role,
+  TenantServiceEntitlementStatus,
   TenantEntitlementState,
+  TenantServiceCode,
   TenantLifecycleState,
   UserLifecycleState,
 } from "@prisma/client";
@@ -30,6 +32,7 @@ const tenantCreationSchema = z
     subscriptionEndDate: z.string().trim().min(1),
     lifecycleState: z.nativeEnum(TenantLifecycleState),
     entitlementState: z.nativeEnum(TenantEntitlementState),
+    accreditationEnabled: z.boolean().default(false),
     ownerName: z.string().trim().min(2),
     ownerEmail: z.string().trim().email(),
     allowGracePeriodAccess: z.boolean(),
@@ -191,6 +194,19 @@ export async function createTenantForSuperadmin(input: {
         },
       });
 
+      if (values.accreditationEnabled) {
+        await tx.tenantServiceEntitlement.create({
+          data: {
+            tenantId: tenant.id,
+            serviceCode: TenantServiceCode.ACCREDITATION,
+            status: TenantServiceEntitlementStatus.ENABLED,
+            enabledAt: new Date(),
+            enabledByUserId: input.actorUserId,
+            notes: "Enabled during tenant creation.",
+          },
+        });
+      }
+
       const membership = await tx.membership.create({
         data: {
           tenantId: tenant.id,
@@ -228,6 +244,7 @@ export async function createTenantForSuperadmin(input: {
             lifecycleState: tenant.lifecycleState,
             entitlementState: tenant.entitlementState,
             ownerEmail: normalizedEmail,
+            accreditationEnabled: values.accreditationEnabled,
           },
           metadata: {
             ownerProvisioning: "invite_based",
