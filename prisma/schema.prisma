@@ -361,6 +361,70 @@ enum ProjectionRunStatus {
   ERROR
 }
 
+enum DataSourceKind {
+  MANUAL
+  CSV_IMPORT
+  INTERNAL_ADAPTER
+  DOCUMENT
+  NARRATIVE
+}
+
+enum DataSourceShape {
+  SCALAR
+  DATASET
+  NARRATIVE
+  DOCUMENT_REF
+}
+
+enum DataBankMetricShape {
+  SCALAR
+  DATASET
+  COMPUTED
+  NARRATIVE
+  DOCUMENT_REF
+}
+
+enum DataBankValueMaturity {
+  UNKNOWN
+  ESTIMATED
+  REPORTED
+  VERIFIED
+  EVIDENCE_BACKED
+}
+
+enum DataBankCoverageStatus {
+  NONE
+  PARTIAL
+  COMPLETE
+  NOT_APPLICABLE
+}
+
+enum DataBankSnapshotEntryMode {
+  MANUAL_ENTRY
+  BULK_IMPORT
+  ADAPTER_REFRESH
+  DERIVED_COPY
+}
+
+enum MetricSourceResolutionMode {
+  DIRECT
+  PICK_FIELD
+  COUNT_ROWS
+  SUM_COLUMN
+  AVG_COLUMN
+  MAX_COLUMN
+  MIN_COLUMN
+  FIRST_NON_NULL
+  CUSTOM_FORMULA
+}
+
+enum RefreshSuggestionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  AUTO_APPLIED
+}
+
 enum AssessmentPeriodState {
   DRAFT
   OPEN // targets can be set
@@ -675,6 +739,9 @@ model Tenant {
   accreditationBodies            AccreditationBody[]
   assessmentWorkspaces           AssessmentWorkspace[]
   kpiAccreditationBlockLinks KpiAccreditationBlockLink[]
+  dataBankDomains                DataBankDomain[]
+  dataBankSourceDefinitions      DataBankSourceDefinition[]
+  metricSourceLinks              MetricSourceLink[]
   sourceMetricDefinitions        SourceMetricDefinition[]
   blockProjectionRecipes         BlockProjectionRecipe[]
 
@@ -1678,25 +1745,138 @@ model WorkspaceGuestParticipant {
   @@index([workspaceId, role])
 }
 
+model DataBankDomain {
+  id              String   @id @default(cuid())
+  tenantId        String
+  code            String
+  name            String
+  description     String?
+  sortOrder       Int      @default(0)
+  isSystemDefined Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sources         DataBankSourceDefinition[]
+  metrics         SourceMetricDefinition[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive, sortOrder])
+}
+
+model DataBankSourceDefinition {
+  id                      String                   @id @default(cuid())
+  tenantId                String
+  domainId                String?
+  code                    String
+  name                    String
+  description             String?
+  kind                    DataSourceKind
+  shape                   DataSourceShape
+  datasetSchema           Json?
+  adapterKey              String?
+  adapterConfig           Json?
+  supportsYearWise        Boolean                  @default(true)
+  supportsScopeBreakdown  Boolean                  @default(false)
+  isSystemDefined         Boolean                  @default(false)
+  isActive                Boolean                  @default(true)
+  sortOrder               Int                      @default(0)
+  createdByUserId         String?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  tenant                  Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  domain                  DataBankDomain?          @relation(fields: [domainId], references: [id], onDelete: SetNull)
+  snapshots               DataBankSourceSnapshot[]
+  metricLinks             MetricSourceLink[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive, sortOrder])
+  @@index([tenantId, domainId, isActive])
+}
+
+model DataBankSourceSnapshot {
+  id                   String                 @id @default(cuid())
+  sourceId             String
+  observedYear         Int?
+  scopeKey             String                 @default("INSTITUTION")
+  dimensions           Json?
+  dimensionFingerprint String                 @default("__NONE__")
+  numberValue          Float?
+  textValue            String?                @db.Text
+  jsonValue            Json?
+  maturity             DataBankValueMaturity  @default(UNKNOWN)
+  coverageStatus       DataBankCoverageStatus @default(NONE)
+  coveragePercent      Float?
+  confidenceNote       String?
+  sourceRevisionHash   String?
+  sourceRef            String?
+  entryMode            DataBankSnapshotEntryMode?
+  enteredByUserId      String?
+  enteredAt            DateTime?
+  verifiedByUserId     String?
+  verifiedAt           DateTime?
+  evidenceMeta         Json?
+  lastRefreshedAt      DateTime?
+  isStale              Boolean                @default(false)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  source               DataBankSourceDefinition @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  datasetRows          DataBankSourceDatasetRow[]
+
+  @@unique([sourceId, scopeKey, dimensionFingerprint])
+  @@index([sourceId, observedYear])
+  @@index([sourceId, isStale])
+}
+
+model DataBankSourceDatasetRow {
+  id         String   @id @default(cuid())
+  snapshotId String
+  rowIndex   Int
+  rowKey     String?
+  rowData    Json
+  sourceRef  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  snapshot   DataBankSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([snapshotId, rowIndex])
+  @@index([snapshotId, rowKey])
+}
+
 model SourceMetricDefinition {
   id                String                  @id @default(cuid())
   tenantId          String
+  domainId          String?
   code              String
   name              String
   description       String?
   valueType         SourceMetricValueType   @default(NUMBER)
+  shape             DataBankMetricShape     @default(SCALAR)
   unitOfMeasure     String?
+  helpText          String?
+  precision         Int?
   allowedDimensions Json?
+  datasetSchema     Json?
+  computeConfig     Json?
+  supportsYearWise  Boolean                 @default(true)
+  supportsScopeBreakdown Boolean            @default(false)
+  usedByBodyCodes   String[]                @default([])
+  isSystemDefined   Boolean                 @default(false)
+  isRequiredHint    Boolean                 @default(false)
   isActive          Boolean                 @default(true)
+  sortOrder         Int                     @default(0)
   createdByUserId   String?
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   tenant            Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  domain            DataBankDomain?         @relation(fields: [domainId], references: [id], onDelete: SetNull)
   observations      SourceMetricObservation[]
   projectionRecipes BlockProjectionRecipe[] @relation("ProjectionRecipeSourceMetric")
+  sourceLinks       MetricSourceLink[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
+  @@index([tenantId, domainId, isActive, sortOrder])
 }
 
 model SourceMetricObservation {
@@ -1712,15 +1892,74 @@ model SourceMetricObservation {
   sourceType           String               @default("MANUAL")
   sourceRef            String?
   sourceRevisionHash   String?
+  maturity             DataBankValueMaturity @default(UNKNOWN)
+  coverageStatus       DataBankCoverageStatus @default(NONE)
+  coveragePercent      Float?
+  confidenceNote       String?
   recordedByUserId     String?
   recordedAt           DateTime?
+  verifiedByUserId     String?
+  verifiedAt           DateTime?
+  evidenceMeta         Json?
+  lastRefreshedAt      DateTime?
+  isStale              Boolean              @default(false)
+  refreshBlockedReason String?
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   metric               SourceMetricDefinition @relation(fields: [metricId], references: [id], onDelete: Cascade)
+  refreshSuggestions   MetricRefreshSuggestion[]
 
   @@unique([metricId, scopeKey, dimensionFingerprint])
   @@index([metricId, observedYear])
   @@index([metricId, dimensionFingerprint])
+}
+
+model MetricSourceLink {
+  id                       String                     @id @default(cuid())
+  tenantId                 String
+  metricId                 String
+  sourceId                 String
+  precedence               Int                        @default(100)
+  resolutionMode           MetricSourceResolutionMode
+  transformConfig          Json?
+  isPrimary                Boolean                    @default(false)
+  autoApplyWhenUnknown     Boolean                    @default(true)
+  createSuggestionOnConflict Boolean                  @default(true)
+  isActive                 Boolean                    @default(true)
+  createdAt                DateTime                   @default(now())
+  updatedAt                DateTime                   @updatedAt
+  tenant                   Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  metric                   SourceMetricDefinition     @relation(fields: [metricId], references: [id], onDelete: Cascade)
+  source                   DataBankSourceDefinition   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  refreshSuggestions       MetricRefreshSuggestion[]
+
+  @@unique([metricId, sourceId])
+  @@index([tenantId, metricId, isActive, precedence])
+  @@index([tenantId, sourceId, isActive, precedence])
+}
+
+model MetricRefreshSuggestion {
+  id                         String                  @id @default(cuid())
+  metricObservationId        String
+  metricSourceLinkId         String?
+  status                     RefreshSuggestionStatus @default(PENDING)
+  candidateNumberValue       Float?
+  candidateTextValue         String?
+  candidateJsonValue         Json?
+  candidateMaturity          DataBankValueMaturity   @default(REPORTED)
+  candidateCoverageStatus    DataBankCoverageStatus?
+  candidateCoveragePercent   Float?
+  sourceRevisionHash         String?
+  sourceRef                  String?
+  note                       String?
+  detectedAt                 DateTime                @default(now())
+  resolvedAt                 DateTime?
+  resolvedByUserId           String?
+  metricObservation          SourceMetricObservation @relation(fields: [metricObservationId], references: [id], onDelete: Cascade)
+  metricSourceLink           MetricSourceLink?       @relation(fields: [metricSourceLinkId], references: [id], onDelete: SetNull)
+
+  @@index([metricObservationId, status])
+  @@index([metricSourceLinkId, status])
 }
 
 model BlockProjectionRecipe {

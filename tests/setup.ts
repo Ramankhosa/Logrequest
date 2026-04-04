@@ -9,14 +9,26 @@ type GlobalWithMigrationFlag = typeof globalThis & {
 const globalWithMigrationFlag = globalThis as GlobalWithMigrationFlag;
 
 if (!globalWithMigrationFlag.__r22MigrationsApplied) {
-  execFileSync(
-    process.execPath,
-    ["node_modules/prisma/build/index.js", "migrate", "deploy"],
-    {
-    cwd: process.cwd(),
-    stdio: "pipe",
-    env: process.env,
-    },
-  );
+  try {
+    execFileSync(
+      process.execPath,
+      ["node_modules/prisma/build/index.js", "migrate", "deploy"],
+      {
+        cwd: process.cwd(),
+        stdio: "pipe",
+        env: process.env,
+      },
+    );
+  } catch {
+    execFileSync(
+      process.execPath,
+      ["node_modules/prisma/build/index.js", "db", "push"],
+      {
+        cwd: process.cwd(),
+        stdio: "pipe",
+        env: process.env,
+      },
+    );
+  }
   globalWithMigrationFlag.__r22MigrationsApplied = true;
 }

@@ -1,0 +1,634 @@
+import {
+  CriterionDataType,
+  DataBankCoverageStatus,
+  DataBankMetricShape,
+  DataBankValueMaturity,
+  ProjectionStorageMode,
+  SourceMetricValueType,
+  TenantServiceCode,
+} from "@prisma/client";
+import { describe, expect, test } from "vitest";
+import { prisma } from "@/lib/prisma";
+import {
+  createTenantAccreditationBody,
+  createTenantBodyVersion,
+  createTenantVersionBlock,
+  createTenantVersionProfile,
+} from "@/lib/accreditation/service";
+import {
+  createAssessmentWorkspace,
+  applyBlockEntryProjection,
+} from "@/lib/accreditation/workspace-service";
+import {
+  createDataBankDomain,
+  createInstitutionalDataSource,
+  createInstitutionalMetric,
+  getInstitutionalDataGaps,
+  listMetricRefreshSuggestions,
+  resolveMetricRefreshSuggestion,
+  seedInstitutionalDataCatalog,
+  upsertInstitutionalDataSourceSnapshot,
+  upsertMetricSourceLinks,
+} from "@/lib/accreditation/institutional-data-service";
+import {
+  cleanupTrackedData,
+  createTenantActor,
+  enableTenantService,
+  newDbTracker,
+  type DbTracker,
+} from "../helpers/db";
+
+async function withIsolatedDb(run: (tracker: DbTracker) => Promise<void>) {
+  const tracker = newDbTracker();
+  try {
+    await run(tracker);
+  } finally {
+    await cleanupTrackedData(tracker);
+  }
+}
+
+async function createEnabledTenantAccreditationContext(tracker: DbTracker) {
+  const { tenant, actor } = await createTenantActor(tracker, "TENANT_OWNER");
+
+  await enableTenantService({
+    tenantId: tenant.id,
+    serviceCode: TenantServiceCode.ACCREDITATION,
+    actorUserId: actor.id,
+  });
+
+  const bodyResult = await createTenantAccreditationBody(
+    tenant.id,
+    {
+      code: `IDB_${Date.now()}`,
+      name: "Institutional Data Accreditation",
+    },
+    actor.id,
+    "TENANT_OWNER",
+  );
+  expect(bodyResult).toMatchObject({ status: "success" });
+  if (bodyResult.status !== "success") {
+    throw new Error(bodyResult.message);
+  }
+
+  const versionResult = await createTenantBodyVersion(
+    tenant.id,
+    bodyResult.body.id,
+    {
+      versionCode: `IDB_2026_${Date.now()}`,
+      versionName: "Institutional Data Version",
+      scoreBase: 100,
+    },
+    actor.id,
+    "TENANT_OWNER",
+  );
+  expect(versionResult).toMatchObject({ status: "success" });
+  if (versionResult.status !== "success") {
+    throw new Error(versionResult.message);
+  }
+
+  const profileResult = await createTenantVersionProfile(
+    tenant.id,
+    versionResult.version.id,
+    {
+      profileCode: "UNIVERSITY",
+      profileName: "University",
+      isDefault: true,
+    },
+    actor.id,
+    "TENANT_OWNER",
+  );
+  expect(profileResult).toMatchObject({ status: "success" });
+  if (profileResult.status !== "success") {
+    throw new Error(profileResult.message);
+  }
+
+  return {
+    tenant,
+    actor,
+    version: versionResult.version,
+    profile: profileResult.profile,
+  };
+}
+
+async function createWorkspaceFixture(tracker: DbTracker, blockCode: string) {
+  const context = await createEnabledTenantAccreditationContext(tracker);
+
+  const blockResult = await createTenantVersionBlock(
+    context.tenant.id,
+    context.version.id,
+    {
+      blockCode,
+      title: "Institutional Data Metric",
+      dataType: CriterionDataType.QUANTITATIVE,
+      maxScore: 20,
+      isLeaf: true,
+      sortOrder: 0,
+    },
+    context.actor.id,
+    "TENANT_OWNER",
+  );
+  expect(blockResult).toMatchObject({ status: "success" });
+  if (blockResult.status !== "success") {
+    throw new Error(blockResult.message);
+  }
+
+  const workspaceResult = await createAssessmentWorkspace(
+    context.tenant.id,
+    {
+      versionId: context.version.id,
+      profileId: context.profile.id,
+      title: "Institutional Data Workspace",
+      periodStart: new Date("2024-01-01T00:00:00.000Z"),
+      periodEnd: new Date("2024-12-31T00:00:00.000Z"),
+    },
+    context.actor.id,
+    "TENANT_OWNER",
+  );
+  expect(workspaceResult).toMatchObject({ status: "success" });
+  if (workspaceResult.status !== "success") {
+    throw new Error(workspaceResult.message);
+  }
+
+  const workspace = workspaceResult.workspace as { id: string };
+
+  const entry = await prisma.blockEntry.findFirstOrThrow({
+    where: {
+      workspaceId: workspace.id,
+      blockId: blockResult.block.id,
+    },
+  });
+
+  return { ...context, workspace, entry };
+}
+
+describe("institutional data service", () => {
+  test("seeds the catalog idempotently with recommended links", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const first = await seedInstitutionalDataCatalog(tenant.id, { includeRecommendedSources: true }, actor.id, "TENANT_OWNER");
+      const second = await seedInstitutionalDataCatalog(tenant.id, { includeRecommendedSources: true }, actor.id, "TENANT_OWNER");
+
+      expect(first).toMatchObject({ status: "success" });
+      expect(second).toMatchObject({ status: "success" });
+
+      const domainCount = await prisma.dataBankDomain.count({ where: { tenantId: tenant.id } });
+      const metricCount = await prisma.sourceMetricDefinition.count({ where: { tenantId: tenant.id, isSystemDefined: true } });
+      const linkCount = await prisma.metricSourceLink.count({ where: { tenantId: tenant.id } });
+
+      expect(domainCount).toBe(6);
+      expect(metricCount).toBeGreaterThanOrEqual(9);
+      expect(linkCount).toBeGreaterThanOrEqual(4);
+    });
+  });
+
+  test("resolves dataset-backed source links into base metrics and computed metrics", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const seedResult = await seedInstitutionalDataCatalog(tenant.id, { includeRecommendedSources: true }, actor.id, "TENANT_OWNER");
+      expect(seedResult).toMatchObject({ status: "success" });
+
+      const source = await prisma.dataBankSourceDefinition.findFirstOrThrow({
+        where: { tenantId: tenant.id, code: "HR_FACULTY_ROSTER" },
+      });
+
+      const savedSnapshot = await upsertInstitutionalDataSourceSnapshot(
+        source.id,
+        tenant.id,
+        {
+          observedYear: 2024,
+          datasetRows: [
+            { rowData: { facultyId: "F1", qualification: "PhD" } },
+            { rowData: { facultyId: "F2", qualification: "PhD" } },
+            { rowData: { facultyId: "F3", qualification: "MTech" } },
+          ],
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+
+      expect(savedSnapshot).toMatchObject({
+        status: "success",
+        syncResult: {
+          appliedCount: 2,
+          recomputedCount: 3,
+        },
+      });
+
+      const observations = await prisma.sourceMetricObservation.findMany({
+        where: {
+          metric: {
+            tenantId: tenant.id,
+            code: {
+              in: ["FACULTY_TOTAL", "FACULTY_PHD", "FACULTY_PHD_RATIO"],
+            },
+          },
+        },
+        include: {
+          metric: true,
+        },
+      });
+
+      const total = observations.find((item) => item.metric.code === "FACULTY_TOTAL");
+      const phd = observations.find((item) => item.metric.code === "FACULTY_PHD");
+      const ratio = observations.find((item) => item.metric.code === "FACULTY_PHD_RATIO");
+
+      expect(total?.numberValue).toBe(3);
+      expect(phd?.numberValue).toBe(2);
+      expect(ratio?.numberValue).toBeCloseTo(2 / 3, 5);
+      expect(ratio?.sourceType).toBe("COMPUTED");
+    });
+  });
+
+  test("creates a refresh suggestion instead of overwriting a protected manual metric", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const domain = await createDataBankDomain(
+        tenant.id,
+        { code: "HUMAN_RESOURCES", name: "Human Resources" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(domain).toMatchObject({ status: "success" });
+      if (domain.status !== "success") {
+        throw new Error(domain.message);
+      }
+
+      const source = await createInstitutionalDataSource(
+        tenant.id,
+        { domainId: domain.domain.id, code: "HR_MANUAL_ROSTER", name: "HR Manual Roster", kind: "CSV_IMPORT", shape: "DATASET" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(source).toMatchObject({ status: "success" });
+      if (source.status !== "success") {
+        throw new Error(source.message);
+      }
+
+      const metric = await createInstitutionalMetric(
+        tenant.id,
+        { domainId: domain.domain.id, code: "FACULTY_TOTAL", name: "Faculty Total", valueType: "NUMBER" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(metric).toMatchObject({ status: "success" });
+      if (metric.status !== "success") {
+        throw new Error(metric.message);
+      }
+
+      await upsertMetricSourceLinks(
+        metric.metric.id,
+        tenant.id,
+        {
+          links: [
+            {
+              sourceId: source.source.id,
+              resolutionMode: "COUNT_ROWS",
+              transformConfig: { mode: "COUNT_ROWS" },
+            },
+          ],
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+
+      await prisma.sourceMetricObservation.create({
+        data: {
+          metricId: metric.metric.id,
+          observedYear: 2024,
+          scopeKey: "YEAR:2024",
+          dimensionFingerprint: "__NONE__",
+          numberValue: 10,
+          sourceType: "MANUAL",
+          maturity: DataBankValueMaturity.VERIFIED,
+          coverageStatus: DataBankCoverageStatus.COMPLETE,
+          verifiedByUserId: actor.id,
+          verifiedAt: new Date(),
+          recordedByUserId: actor.id,
+          recordedAt: new Date(),
+        },
+      });
+
+      const syncResult = await upsertInstitutionalDataSourceSnapshot(
+        source.source.id,
+        tenant.id,
+        {
+          observedYear: 2024,
+          datasetRows: [
+            { rowData: { facultyId: "F1" } },
+            { rowData: { facultyId: "F2" } },
+            { rowData: { facultyId: "F3" } },
+            { rowData: { facultyId: "F4" } },
+            { rowData: { facultyId: "F5" } },
+            { rowData: { facultyId: "F6" } },
+            { rowData: { facultyId: "F7" } },
+            { rowData: { facultyId: "F8" } },
+          ],
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+
+      expect(syncResult).toMatchObject({
+        status: "success",
+        syncResult: {
+          suggestionCount: 1,
+        },
+      });
+
+      const observation = await prisma.sourceMetricObservation.findFirstOrThrow({
+        where: { metricId: metric.metric.id },
+      });
+      expect(observation.numberValue).toBe(10);
+      expect(observation.isStale).toBe(true);
+      expect(observation.refreshBlockedReason).toBe("PENDING_SUGGESTION");
+
+      const suggestions = await listMetricRefreshSuggestions(tenant.id, actor.id, "TENANT_OWNER", { status: "PENDING" });
+      expect(suggestions).toMatchObject({ status: "success" });
+      if (suggestions.status !== "success") {
+        throw new Error(suggestions.message);
+      }
+      expect(suggestions.suggestions).toHaveLength(1);
+      expect(suggestions.suggestions[0]?.candidateNumberValue).toBe(8);
+    });
+  });
+
+  test("accepts a refresh suggestion and updates the protected metric value", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const seedResult = await seedInstitutionalDataCatalog(tenant.id, { includeRecommendedSources: true }, actor.id, "TENANT_OWNER");
+      expect(seedResult).toMatchObject({ status: "success" });
+
+      const metric = await prisma.sourceMetricDefinition.findFirstOrThrow({
+        where: { tenantId: tenant.id, code: "FACULTY_TOTAL" },
+      });
+      const source = await prisma.dataBankSourceDefinition.findFirstOrThrow({
+        where: { tenantId: tenant.id, code: "HR_FACULTY_ROSTER" },
+      });
+
+      await prisma.sourceMetricObservation.create({
+        data: {
+          metricId: metric.id,
+          observedYear: 2024,
+          scopeKey: "YEAR:2024",
+          dimensionFingerprint: "__NONE__",
+          numberValue: 12,
+          sourceType: "MANUAL",
+          maturity: DataBankValueMaturity.VERIFIED,
+          coverageStatus: DataBankCoverageStatus.COMPLETE,
+          verifiedByUserId: actor.id,
+          verifiedAt: new Date(),
+          recordedByUserId: actor.id,
+          recordedAt: new Date(),
+        },
+      });
+
+      await upsertInstitutionalDataSourceSnapshot(
+        source.id,
+        tenant.id,
+        {
+          observedYear: 2024,
+          datasetRows: Array.from({ length: 9 }, (_, index) => ({
+            rowData: { facultyId: `F${index + 1}` },
+          })),
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+
+      const suggestions = await listMetricRefreshSuggestions(tenant.id, actor.id, "TENANT_OWNER", { status: "PENDING" });
+      expect(suggestions).toMatchObject({ status: "success" });
+      if (suggestions.status !== "success") {
+        throw new Error(suggestions.message);
+      }
+
+      const suggestionId = suggestions.suggestions[0]?.id;
+      expect(suggestionId).toBeTruthy();
+      if (!suggestionId) {
+        throw new Error("Expected a pending suggestion.");
+      }
+
+      const accepted = await resolveMetricRefreshSuggestion(
+        suggestionId,
+        tenant.id,
+        { action: "ACCEPT" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(accepted).toMatchObject({ status: "success" });
+
+      const observation = await prisma.sourceMetricObservation.findFirstOrThrow({
+        where: { metricId: metric.id, scopeKey: "YEAR:2024" },
+      });
+      expect(observation.numberValue).toBe(9);
+      expect(observation.sourceType).toBe("DATA_BANK");
+      expect(observation.isStale).toBe(false);
+    });
+  });
+
+  test("rejects unknown dependencies and computed cycles", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const domain = await createDataBankDomain(
+        tenant.id,
+        { code: "RESEARCH", name: "Research" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(domain).toMatchObject({ status: "success" });
+      if (domain.status !== "success") {
+        throw new Error(domain.message);
+      }
+
+      const unknownDependency = await createInstitutionalMetric(
+        tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "PUBLICATIONS_PER_FACULTY",
+          name: "Publications Per Faculty",
+          valueType: "NUMBER",
+          shape: "COMPUTED",
+          computeConfig: { formula: "deps.PUBLICATIONS_TOTAL.value / deps.FACULTY_TOTAL.value" },
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(unknownDependency).toMatchObject({
+        status: "error",
+        message: expect.stringContaining("Unknown metric dependency"),
+      });
+
+      await prisma.sourceMetricDefinition.create({
+        data: {
+          tenantId: tenant.id,
+          domainId: domain.domain.id,
+          code: "BETA_METRIC",
+          name: "Beta Metric",
+          valueType: SourceMetricValueType.NUMBER,
+          shape: DataBankMetricShape.COMPUTED,
+          computeConfig: { formula: "deps.ALPHA_METRIC.value" },
+          createdByUserId: actor.id,
+        },
+      });
+
+      const cycle = await createInstitutionalMetric(
+        tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "ALPHA_METRIC",
+          name: "Alpha Metric",
+          valueType: "NUMBER",
+          shape: "COMPUTED",
+          computeConfig: { formula: "deps.BETA_METRIC.value" },
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(cycle).toMatchObject({
+        status: "error",
+        message: expect.stringContaining("cycle"),
+      });
+    });
+  });
+
+  test("gap reporting distinguishes missing, partial, ready, stale, and not-applicable metrics", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const seedResult = await seedInstitutionalDataCatalog(tenant.id, { includeRecommendedSources: true }, actor.id, "TENANT_OWNER");
+      expect(seedResult).toMatchObject({ status: "success" });
+
+      const facultyMetric = await prisma.sourceMetricDefinition.findFirstOrThrow({
+        where: { tenantId: tenant.id, code: "FACULTY_TOTAL" },
+      });
+      const publicationsMetric = await prisma.sourceMetricDefinition.findFirstOrThrow({
+        where: { tenantId: tenant.id, code: "PUBLICATIONS_TOTAL" },
+      });
+      const budgetMetric = await prisma.sourceMetricDefinition.findFirstOrThrow({
+        where: { tenantId: tenant.id, code: "ANNUAL_BUDGET_TOTAL" },
+      });
+
+      await prisma.sourceMetricObservation.create({
+        data: {
+          metricId: facultyMetric.id,
+          observedYear: 2024,
+          scopeKey: "YEAR:2024",
+          dimensionFingerprint: "__NONE__",
+          numberValue: 120,
+          sourceType: "MANUAL",
+          maturity: DataBankValueMaturity.REPORTED,
+          coverageStatus: DataBankCoverageStatus.PARTIAL,
+          coveragePercent: 75,
+          recordedByUserId: actor.id,
+          recordedAt: new Date(),
+        },
+      });
+
+      await prisma.sourceMetricObservation.create({
+        data: {
+          metricId: publicationsMetric.id,
+          observedYear: 2024,
+          scopeKey: "YEAR:2024",
+          dimensionFingerprint: "__NONE__",
+          numberValue: 0,
+          sourceType: "MANUAL",
+          maturity: DataBankValueMaturity.REPORTED,
+          coverageStatus: DataBankCoverageStatus.COMPLETE,
+          isStale: true,
+          recordedByUserId: actor.id,
+          recordedAt: new Date(),
+        },
+      });
+
+      await prisma.sourceMetricObservation.create({
+        data: {
+          metricId: budgetMetric.id,
+          observedYear: 2024,
+          scopeKey: "YEAR:2024",
+          dimensionFingerprint: "__NONE__",
+          numberValue: null,
+          sourceType: "MANUAL",
+          maturity: DataBankValueMaturity.UNKNOWN,
+          coverageStatus: DataBankCoverageStatus.NOT_APPLICABLE,
+          recordedByUserId: actor.id,
+          recordedAt: new Date(),
+        },
+      });
+
+      const gaps = await getInstitutionalDataGaps(tenant.id, actor.id, "TENANT_OWNER", { bodyCode: "NAAC" });
+      expect(gaps).toMatchObject({ status: "success" });
+      if (gaps.status !== "success") {
+        throw new Error(gaps.message);
+      }
+
+      expect(gaps.gaps.partialMetrics).toBeGreaterThanOrEqual(1);
+      expect(gaps.gaps.staleMetrics).toBeGreaterThanOrEqual(1);
+      expect(gaps.gaps.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "ANNUAL_BUDGET_TOTAL", gapStatus: "NOT_APPLICABLE" }),
+          expect.objectContaining({ code: "FACULTY_TOTAL", gapStatus: "PARTIAL" }),
+          expect.objectContaining({ code: "PUBLICATIONS_TOTAL", gapStatus: "STALE" }),
+        ]),
+      );
+    });
+  });
+
+  test("resolved institutional metrics can be projected into accreditation blocks through existing source-metric projections", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkspaceFixture(tracker, "3.2.2");
+      const seedResult = await seedInstitutionalDataCatalog(fixture.tenant.id, { includeRecommendedSources: true }, fixture.actor.id, "TENANT_OWNER");
+      expect(seedResult).toMatchObject({ status: "success" });
+
+      const source = await prisma.dataBankSourceDefinition.findFirstOrThrow({
+        where: { tenantId: fixture.tenant.id, code: "HR_FACULTY_ROSTER" },
+      });
+      const metric = await prisma.sourceMetricDefinition.findFirstOrThrow({
+        where: { tenantId: fixture.tenant.id, code: "FACULTY_TOTAL" },
+      });
+
+      const syncResult = await upsertInstitutionalDataSourceSnapshot(
+        source.id,
+        fixture.tenant.id,
+        {
+          observedYear: 2024,
+          datasetRows: Array.from({ length: 4 }, (_, index) => ({
+            rowData: { facultyId: `F${index + 1}` },
+          })),
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(syncResult).toMatchObject({ status: "success" });
+
+      const applied = await applyBlockEntryProjection(
+        fixture.entry.id,
+        fixture.tenant.id,
+        {
+          sourceMetricId: metric.id,
+          filters: { years: [2024] },
+          targetPath: "actualValue",
+          storageMode: ProjectionStorageMode.COPY,
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+
+      expect(applied).toMatchObject({ status: "success", appliedCount: 1 });
+
+      const response = await prisma.blockEntryResponse.findUniqueOrThrow({
+        where: {
+          entryId_scopeKey: {
+            entryId: fixture.entry.id,
+            scopeKey: "YEAR:2024",
+          },
+        },
+      });
+      expect(response.responseData).toMatchObject({ value: 4 });
+      expect(response.dataSource).toBe("PROJECTED");
+    });
+  });
+});
