@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { updateCriterionEntryStatus } from "@/lib/accreditation/workspace-service";
+import { updateBlockEntryStatus } from "@/lib/accreditation/workspace-service";
 import {
   getTenantAccreditationApiSession,
   parseJsonBody,
@@ -21,7 +21,7 @@ export async function PATCH(
   }
 
   const { id } = await params;
-  const result = await updateCriterionEntryStatus(
+  const result = await updateBlockEntryStatus(
     id,
     session.tenantId,
     parsed.body,

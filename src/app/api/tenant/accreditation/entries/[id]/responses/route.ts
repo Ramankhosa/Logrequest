@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { setBlockEntryManualOverride } from "@/lib/accreditation/workspace-service";
+import { setBlockEntryResponse } from "@/lib/accreditation/workspace-service";
 import {
   getTenantAccreditationApiSession,
   parseJsonBody,
   tenantApiAccessDeniedResponse,
 } from "../../../workspace-route-helpers";
 
-export async function PATCH(
+export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -21,7 +21,7 @@ export async function PATCH(
   }
 
   const { id } = await params;
-  const result = await setBlockEntryManualOverride(
+  const result = await setBlockEntryResponse(
     id,
     session.tenantId,
     parsed.body,

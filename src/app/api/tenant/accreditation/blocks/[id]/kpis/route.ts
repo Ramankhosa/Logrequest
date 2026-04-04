@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { listKpisForCriterion } from "@/lib/accreditation/service";
+import { listKpisForBlock } from "@/lib/accreditation/service";
 
 export async function GET(
   _request: Request,
@@ -13,6 +13,6 @@ export async function GET(
   }
 
   const { id } = await params;
-  const result = await listKpisForCriterion(session.user.tenantId, id);
+  const result = await listKpisForBlock(session.user.tenantId, id);
   return NextResponse.json(result, { status: result.status === "success" ? 200 : 403 });
 }

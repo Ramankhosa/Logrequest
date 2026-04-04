@@ -16,7 +16,7 @@ type WorkspaceRow = {
 };
 
 type WorkspaceSection = {
-  sectionCriterionId: string;
+  sectionBlockId: string;
   sectionCode: string;
   title: string;
   leafEntryCount: number;
@@ -50,7 +50,7 @@ type WorkspaceThread = {
   id: string;
   title: string;
   scope: string;
-  sectionCriterionId: string | null;
+  sectionBlockId: string | null;
   entryId: string | null;
   isResolved: boolean;
   messages: Array<{
@@ -81,8 +81,8 @@ type WorkspaceDetail = {
   } | null;
   sections: WorkspaceSection[];
   dataGaps: Array<{
-    criterionCode: string;
-    criterionTitle: string;
+    blockCode: string;
+    blockTitle: string;
     missingYears: number[];
   }>;
   activity: {
@@ -132,7 +132,7 @@ export function WorkspaceCollaborationHub() {
     title: "",
     body: "",
     scope: "WORKSPACE",
-    sectionCriterionId: "",
+    sectionBlockId: "",
     mentionedUserIds: [] as string[],
   });
   const [assignmentDrafts, setAssignmentDrafts] = useState<
@@ -220,8 +220,8 @@ export function WorkspaceCollaborationHub() {
     setAssignmentDrafts((current) => {
       const next = { ...current };
       for (const section of detail.sections) {
-        if (!next[section.sectionCriterionId]) {
-          next[section.sectionCriterionId] = {
+        if (!next[section.sectionBlockId]) {
+          next[section.sectionBlockId] = {
             userId: "",
             role: "RESPONSIBLE",
             deadline: "",
@@ -276,7 +276,7 @@ export function WorkspaceCollaborationHub() {
 
   async function handleSectionAction(
     path: string,
-    sectionCriterionId: string,
+    sectionBlockId: string,
     requireComment = false,
   ) {
     const comment = requireComment
@@ -284,14 +284,14 @@ export function WorkspaceCollaborationHub() {
       : null;
     if (requireComment && !comment) return;
     await runWorkspaceAction(`sections/reviews/${path}`, {
-      sectionCriterionId,
+      sectionBlockId,
       comment,
     });
   }
 
-  async function handleAssignSection(sectionCriterionId: string) {
+  async function handleAssignSection(sectionBlockId: string) {
     if (!selectedWorkspaceId) return;
-    const draft = assignmentDrafts[sectionCriterionId];
+    const draft = assignmentDrafts[sectionBlockId];
     if (!draft?.userId) {
       setMessage({ type: "error", text: "Select a collaborator before saving an assignment." });
       return;
@@ -306,7 +306,7 @@ export function WorkspaceCollaborationHub() {
         body: JSON.stringify({
           assignments: [
             {
-              sectionCriterionId,
+              sectionBlockId,
               userId: draft.userId,
               role: draft.role,
               deadline: draft.deadline || null,
@@ -339,8 +339,8 @@ export function WorkspaceCollaborationHub() {
           title: threadDraft.title,
           body: threadDraft.body,
           scope: threadDraft.scope,
-          sectionCriterionId:
-            threadDraft.scope === "SECTION" ? threadDraft.sectionCriterionId || null : null,
+          sectionBlockId:
+            threadDraft.scope === "SECTION" ? threadDraft.sectionBlockId || null : null,
           mentionedUserIds: threadDraft.mentionedUserIds,
         }),
       });
@@ -348,7 +348,7 @@ export function WorkspaceCollaborationHub() {
         title: "",
         body: "",
         scope: "WORKSPACE",
-        sectionCriterionId: "",
+        sectionBlockId: "",
         mentionedUserIds: [],
       });
       await loadThreads(selectedWorkspaceId);
@@ -528,7 +528,7 @@ export function WorkspaceCollaborationHub() {
                     </h3>
                     <div className="mt-4 space-y-4">
                       {detail.sections.map((section) => (
-                        <div key={section.sectionCriterionId} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div key={section.sectionBlockId} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
                               <p className="text-sm font-semibold text-slate-900">
@@ -548,7 +548,7 @@ export function WorkspaceCollaborationHub() {
                               section.currentUserRoles.includes("RESPONSIBLE") ? (
                                 <button
                                   type="button"
-                                  onClick={() => void handleSectionAction("submit", section.sectionCriterionId)}
+                                  onClick={() => void handleSectionAction("submit", section.sectionBlockId)}
                                   className="rounded-xl border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700"
                                 >
                                   Submit
@@ -557,7 +557,7 @@ export function WorkspaceCollaborationHub() {
                               {section.currentUserRoles.includes("REVIEWER") ? (
                                 <button
                                   type="button"
-                                  onClick={() => void handleSectionAction("confirm", section.sectionCriterionId)}
+                                  onClick={() => void handleSectionAction("confirm", section.sectionBlockId)}
                                   className="rounded-xl border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700"
                                 >
                                   Confirm Review
@@ -570,7 +570,7 @@ export function WorkspaceCollaborationHub() {
                                   onClick={() =>
                                     void handleSectionAction(
                                       "changes-requested",
-                                      section.sectionCriterionId,
+                                      section.sectionBlockId,
                                       true,
                                     )
                                   }
@@ -582,7 +582,7 @@ export function WorkspaceCollaborationHub() {
                               {section.currentUserRoles.includes("APPROVER") ? (
                                 <button
                                   type="button"
-                                  onClick={() => void handleSectionAction("approve", section.sectionCriterionId)}
+                                  onClick={() => void handleSectionAction("approve", section.sectionBlockId)}
                                   className="rounded-xl bg-slate-900 px-3 py-1 text-xs font-medium text-white"
                                 >
                                   Approve
@@ -600,12 +600,12 @@ export function WorkspaceCollaborationHub() {
                             <div className="mt-4 grid gap-3 rounded-2xl border border-dashed border-slate-300 bg-white p-3 md:grid-cols-4">
                               <select
                                 className={inputClassName}
-                                value={assignmentDrafts[section.sectionCriterionId]?.userId ?? ""}
+                                value={assignmentDrafts[section.sectionBlockId]?.userId ?? ""}
                                 onChange={(event) =>
                                   setAssignmentDrafts((current) => ({
                                     ...current,
-                                    [section.sectionCriterionId]: {
-                                      ...(current[section.sectionCriterionId] ?? {
+                                    [section.sectionBlockId]: {
+                                      ...(current[section.sectionBlockId] ?? {
                                         role: "RESPONSIBLE",
                                         deadline: "",
                                       }),
@@ -623,12 +623,12 @@ export function WorkspaceCollaborationHub() {
                               </select>
                               <select
                                 className={inputClassName}
-                                value={assignmentDrafts[section.sectionCriterionId]?.role ?? "RESPONSIBLE"}
+                                value={assignmentDrafts[section.sectionBlockId]?.role ?? "RESPONSIBLE"}
                                 onChange={(event) =>
                                   setAssignmentDrafts((current) => ({
                                     ...current,
-                                    [section.sectionCriterionId]: {
-                                      ...(current[section.sectionCriterionId] ?? {
+                                    [section.sectionBlockId]: {
+                                      ...(current[section.sectionBlockId] ?? {
                                         userId: "",
                                         deadline: "",
                                       }),
@@ -646,12 +646,12 @@ export function WorkspaceCollaborationHub() {
                               <input
                                 className={inputClassName}
                                 type="date"
-                                value={assignmentDrafts[section.sectionCriterionId]?.deadline ?? ""}
+                                value={assignmentDrafts[section.sectionBlockId]?.deadline ?? ""}
                                 onChange={(event) =>
                                   setAssignmentDrafts((current) => ({
                                     ...current,
-                                    [section.sectionCriterionId]: {
-                                      ...(current[section.sectionCriterionId] ?? {
+                                    [section.sectionBlockId]: {
+                                      ...(current[section.sectionBlockId] ?? {
                                         userId: "",
                                         role: "RESPONSIBLE",
                                       }),
@@ -662,7 +662,7 @@ export function WorkspaceCollaborationHub() {
                               />
                               <button
                                 type="button"
-                                onClick={() => void handleAssignSection(section.sectionCriterionId)}
+                                onClick={() => void handleAssignSection(section.sectionBlockId)}
                                 disabled={saving}
                                 className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white disabled:bg-slate-300"
                               >
@@ -713,17 +713,17 @@ export function WorkspaceCollaborationHub() {
                       {threadDraft.scope === "SECTION" ? (
                         <select
                           className={inputClassName}
-                          value={threadDraft.sectionCriterionId}
+                          value={threadDraft.sectionBlockId}
                           onChange={(event) =>
                             setThreadDraft((current) => ({
                               ...current,
-                              sectionCriterionId: event.target.value,
+                              sectionBlockId: event.target.value,
                             }))
                           }
                         >
                           <option value="">Select section</option>
                           {sectionOptions.map((section) => (
-                            <option key={section.sectionCriterionId} value={section.sectionCriterionId}>
+                            <option key={section.sectionBlockId} value={section.sectionBlockId}>
                               {section.sectionCode} - {section.title}
                             </option>
                           ))}
@@ -832,9 +832,9 @@ export function WorkspaceCollaborationHub() {
                         <p className="text-sm text-slate-500">No missing year/value gaps.</p>
                       ) : (
                         detail.dataGaps.map((gap) => (
-                          <div key={gap.criterionCode} className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                          <div key={gap.blockCode} className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
                             <p className="font-medium">
-                              {gap.criterionCode} - {gap.criterionTitle}
+                              {gap.blockCode} - {gap.blockTitle}
                             </p>
                             <p className="mt-1 text-xs text-slate-500">
                               Missing: {gap.missingYears.join(", ")}

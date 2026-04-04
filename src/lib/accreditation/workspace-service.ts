@@ -1,13 +1,14 @@
 import {
+  AccreditationTemplateLifecycleStatus,
   AssessmentWorkspaceStatus,
   ProjectionRunStatus,
   ProjectionRunType,
   ProjectionSourceKind,
   ProjectionStorageMode,
   CriterionDataType,
-  CriterionEntryStatus,
+  BlockEntryStatus,
   CriterionYearAggregation,
-  CriterionYearDataSource,
+  BlockEntryValueSource,
   Prisma,
   Role,
   SourceMetricValueType,
@@ -68,7 +69,7 @@ type WorkspacePermissionContext = {
 type WorkspaceScoringCriterion = {
   id: string;
   parentId: string | null;
-  criterionCode: string;
+  blockCode: string;
   title: string;
   dataType: CriterionDataType;
   yearAggregation: CriterionYearAggregation;
@@ -86,8 +87,8 @@ type WorkspaceScoringCriterion = {
 };
 
 type WorkspaceScoreRow = {
-  criterionId: string;
-  criterionCode: string;
+  blockId: string;
+  blockCode: string;
   title: string;
   depth: number;
   isLeaf: boolean;
@@ -96,7 +97,7 @@ type WorkspaceScoreRow = {
   computedScore: number | null;
   finalScore: number | null;
   percentage: number | null;
-  status: CriterionEntryStatus | null;
+  status: BlockEntryStatus | null;
 };
 
 type WorkspaceScoreComputation = {
@@ -108,18 +109,18 @@ type WorkspaceScoreComputation = {
     passed: boolean;
     violations: Array<{
       thresholdType: string;
-      criterionId: string | null;
-      criterionCode: string | null;
+      blockId: string | null;
+      blockCode: string | null;
       actualValue: number | null;
       minValue: number;
       outcome: string;
       description: string | null;
     }>;
   };
-  criterionScores: Record<string, WorkspaceScoreRow>;
+  blockScores: Record<string, WorkspaceScoreRow>;
   leafEntryUpdates: Array<{
     entryId: string;
-    criterionId: string;
+    blockId: string;
     computedScore: number | null;
     finalScore: number | null;
   }>;
@@ -127,19 +128,20 @@ type WorkspaceScoreComputation = {
 };
 
 type WorkspaceEntryFilter = {
-  status?: CriterionEntryStatus;
+  status?: BlockEntryStatus;
 };
 
 type WorkspaceSectionLeafEntry = {
   entryId: string;
-  criterionId: string;
-  criterionCode: string;
-  criterionTitle: string;
-  status: CriterionEntryStatus;
+  blockId: string;
+  blockCode: string;
+  blockTitle: string;
+  status: BlockEntryStatus;
 };
 
 type WorkspaceSectionDefinition = {
-  sectionCriterionId: string;
+  sectionBlockId: string;
+  blockCode: string;
   sectionCode: string;
   title: string;
   leafEntries: WorkspaceSectionLeafEntry[];
@@ -189,7 +191,7 @@ const milestoneUpdateSchema = z.object({
   isCompleted: z.boolean().optional(),
 });
 
-const yearDataInputSchema = z.object({
+const responsesInputSchema = z.object({
   year: z.number().int(),
   numericValue: z.number().nullable().optional(),
   textValue: z.string().trim().max(12000).nullable().optional(),
@@ -199,7 +201,7 @@ const yearDataInputSchema = z.object({
 });
 
 const entryStatusInputSchema = z.object({
-  status: z.nativeEnum(CriterionEntryStatus),
+  status: z.nativeEnum(BlockEntryStatus),
   reason: z.string().trim().max(500).nullable().optional(),
 });
 
@@ -262,7 +264,7 @@ const bulkSectionAssignmentInputSchema = z.object({
   assignments: z
     .array(
       z.object({
-        sectionCriterionId: z.string().trim().min(1),
+        sectionBlockId: z.string().trim().min(1),
         userId: z.string().trim().min(1),
         role: sectionAssignmentRoleSchema,
         deadline: z.coerce.date().nullable().optional(),
@@ -272,7 +274,7 @@ const bulkSectionAssignmentInputSchema = z.object({
 });
 
 const reassignSectionInputSchema = z.object({
-  sectionCriterionId: z.string().trim().min(1),
+  sectionBlockId: z.string().trim().min(1),
   fromUserId: z.string().trim().min(1),
   toUserId: z.string().trim().min(1),
   role: sectionAssignmentRoleSchema,
@@ -280,13 +282,13 @@ const reassignSectionInputSchema = z.object({
 });
 
 const sectionReviewActionSchema = z.object({
-  sectionCriterionId: z.string().trim().min(1),
+  sectionBlockId: z.string().trim().min(1),
   comment: z.string().trim().max(2000).nullable().optional(),
 });
 
 const discussionThreadInputSchema = z.object({
   scope: z.nativeEnum(WorkspaceDiscussionScope),
-  sectionCriterionId: z.string().trim().min(1).nullable().optional(),
+  sectionBlockId: z.string().trim().min(1).nullable().optional(),
   entryId: z.string().trim().min(1).nullable().optional(),
   title: z.string().trim().min(2).max(200),
   body: z.string().trim().min(1).max(4000),
@@ -301,12 +303,12 @@ const discussionMessageInputSchema = z.object({
 
 const reusePreviewInputSchema = z.object({
   sourceWorkspaceId: z.string().trim().min(1),
-  sectionCriterionIds: z.array(z.string().trim().min(1)).optional(),
+  sectionBlockIds: z.array(z.string().trim().min(1)).optional(),
 });
 
 const reuseApplyInputSchema = z.object({
   sourceWorkspaceId: z.string().trim().min(1),
-  sectionCriterionIds: z.array(z.string().trim().min(1)).optional(),
+  sectionBlockIds: z.array(z.string().trim().min(1)).optional(),
 });
 
 const deleteEvidenceVersionInputSchema = z.object({
@@ -317,7 +319,7 @@ const guestInviteInputSchema = z.object({
   email: z.string().trim().email(),
   firstName: z.string().trim().max(120).nullable().optional(),
   lastName: z.string().trim().max(120).nullable().optional(),
-  sectionCriterionId: z.string().trim().min(1).nullable().optional(),
+  sectionBlockId: z.string().trim().min(1).nullable().optional(),
   role: z.nativeEnum(WorkspaceGuestRole),
   expiresInDays: z.number().int().min(1).max(60).optional(),
 });
@@ -340,7 +342,7 @@ const sourceMetricObservationInputSchema = z.object({
     .array(
       z.object({
         observedYear: z.number().int().nullable().optional(),
-        dimensions: z.record(z.union([z.string(), z.number(), z.boolean()])).default({}),
+        dimensions: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
         numberValue: z.number().nullable().optional(),
         textValue: z.string().trim().max(12000).nullable().optional(),
         jsonValue: z.any().optional(),
@@ -353,7 +355,7 @@ const sourceMetricObservationInputSchema = z.object({
 
 const projectionFilterSchema = z.object({
   years: z.array(z.number().int()).max(10).optional(),
-  dimensions: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  dimensions: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
 const projectionTransformSchema = z.object({
@@ -418,12 +420,18 @@ function buildScopeKey(year: number | null | undefined) {
   return year === null || year === undefined ? "STATIC" : `YEAR:${year}`;
 }
 
-function criterionCodeMatchesSections(criterionCode: string, sections: string[]) {
-  if (sections.length === 0) {
+function sectionSelectionMatches(
+  sectionId: string,
+  sectionCode: string,
+  sectionSelections: string[],
+) {
+  if (sectionSelections.length === 0) {
     return true;
   }
 
-  return sections.some((section) => criterionCode === section || criterionCode.startsWith(`${section}.`));
+  return sectionSelections.some(
+    (selection) => selection === sectionId || selection === sectionCode,
+  );
 }
 
 function asJsonObject(value: Prisma.JsonValue | null | undefined) {
@@ -507,12 +515,12 @@ function normalizeReason(value: string | null | undefined) {
   return normalizeNullableString(value);
 }
 
-function requiresReasonForReviewedEntryChange(status: CriterionEntryStatus) {
-  const statuses: CriterionEntryStatus[] = [
-    CriterionEntryStatus.COMPLETE,
-    CriterionEntryStatus.UNDER_REVIEW,
-    CriterionEntryStatus.CHANGES_REQUESTED,
-    CriterionEntryStatus.APPROVED,
+function requiresReasonForReviewedEntryChange(status: BlockEntryStatus) {
+  const statuses: BlockEntryStatus[] = [
+    BlockEntryStatus.COMPLETE,
+    BlockEntryStatus.UNDER_REVIEW,
+    BlockEntryStatus.CHANGES_REQUESTED,
+    BlockEntryStatus.APPROVED,
   ];
   return statuses.includes(status);
 }
@@ -594,10 +602,10 @@ function defaultWeightedRecentWeights() {
 }
 
 function resolveAggregationWeights(
-  criterion: Pick<WorkspaceScoringCriterion, "yearAggregationConfig">,
+  block: Pick<WorkspaceScoringCriterion, "yearAggregationConfig">,
   count: number,
 ) {
-  const configObject = asJsonObject(criterion.yearAggregationConfig);
+  const configObject = asJsonObject(block.yearAggregationConfig);
   const configuredWeights = parseNumericArray(configObject?.weights as Prisma.JsonValue | undefined);
   const baseWeights = configuredWeights ?? defaultWeightedRecentWeights();
   const weights = [...baseWeights];
@@ -612,7 +620,7 @@ function resolveAggregationWeights(
 }
 
 function aggregateNumericYearData(
-  criterion: Pick<WorkspaceScoringCriterion, "yearAggregation" | "yearAggregationConfig">,
+  block: Pick<WorkspaceScoringCriterion, "yearAggregation" | "yearAggregationConfig">,
   rows: Array<{ year: number; actualValue: number | null }>,
 ) {
   const values = rows
@@ -624,7 +632,7 @@ function aggregateNumericYearData(
     return null;
   }
 
-  switch (criterion.yearAggregation) {
+  switch (block.yearAggregation) {
     case CriterionYearAggregation.SUM:
       return values.reduce((sum, row) => sum + row.value, 0);
     case CriterionYearAggregation.LATEST:
@@ -633,7 +641,7 @@ function aggregateNumericYearData(
       return Math.max(...values.map((row) => row.value));
     case CriterionYearAggregation.WEIGHTED_RECENT: {
       const newestFirst = [...values].sort((left, right) => right.year - left.year);
-      const weights = resolveAggregationWeights(criterion, newestFirst.length);
+      const weights = resolveAggregationWeights(block, newestFirst.length);
       return newestFirst.reduce((sum, row, index) => sum + row.value * (weights[index] ?? 0), 0);
     }
     case CriterionYearAggregation.AVERAGE:
@@ -767,10 +775,38 @@ function canPerformWorkspaceRole(
   return context.isWorkspaceAdmin || (!!context.collaborator && roles.includes(context.collaborator.role));
 }
 
-function canPerformOnCriterionCode(
+async function resolveRootSectionBlockTx(
+  tx: DbClient,
+  blockId: string,
+): Promise<{ id: string; blockCode: string } | null> {
+  let currentId: string | null = blockId;
+  while (currentId) {
+    const current: { id: string; parentId: string | null; blockCode: string } | null =
+      await tx.criterionBlock.findUnique({
+      where: { id: currentId },
+      select: {
+        id: true,
+        parentId: true,
+        blockCode: true,
+      },
+    });
+    if (!current) {
+      return null;
+    }
+    if (!current.parentId) {
+      return { id: current.id, blockCode: current.blockCode };
+    }
+    currentId = current.parentId;
+  }
+
+  return null;
+}
+
+async function canPerformOnBlock(
+  tx: DbClient,
   context: WorkspacePermissionContext,
   roles: WorkspaceCollaboratorRole[],
-  criterionCode: string,
+  blockId: string,
 ) {
   if (context.isWorkspaceAdmin) {
     return true;
@@ -780,41 +816,54 @@ function canPerformOnCriterionCode(
     return false;
   }
 
-  return criterionCodeMatchesSections(criterionCode, context.collaborator.assignedSections);
+  if (context.collaborator.assignedSections.length === 0) {
+    return true;
+  }
+
+  const rootSection = await resolveRootSectionBlockTx(tx, blockId);
+  if (!rootSection) {
+    return false;
+  }
+
+  return sectionSelectionMatches(
+    rootSection.id,
+    rootSection.blockCode,
+    context.collaborator.assignedSections,
+  );
 }
 
 function buildRootCriterionByIdMap(
   criteria: Array<{
     id: string;
     parentId: string | null;
-    criterionCode: string;
+    blockCode: string;
     title: string;
     depth: number;
     isLeaf: boolean;
   }>,
 ) {
-  const byId = new Map(criteria.map((criterion) => [criterion.id, criterion]));
+  const byId = new Map(criteria.map((block) => [block.id, block]));
   const rootById = new Map<string, (typeof criteria)[number]>();
 
-  const resolveRoot = (criterionId: string) => {
-    const cached = rootById.get(criterionId);
+  const resolveRoot = (blockId: string) => {
+    const cached = rootById.get(blockId);
     if (cached) {
       return cached;
     }
 
-    let current = byId.get(criterionId) ?? null;
+    let current = byId.get(blockId) ?? null;
     while (current?.parentId) {
       current = byId.get(current.parentId) ?? null;
     }
 
     if (current) {
-      rootById.set(criterionId, current);
+      rootById.set(blockId, current);
     }
     return current;
   };
 
-  for (const criterion of criteria) {
-    resolveRoot(criterion.id);
+  for (const block of criteria) {
+    resolveRoot(block.id);
   }
 
   return { byId, rootById };
@@ -843,7 +892,7 @@ async function buildWorkspaceSectionDefinitionsTx(
   }
 
   const [criteria, entries] = await Promise.all([
-    tx.accreditationCriterion.findMany({
+    tx.criterionBlock.findMany({
       where: {
         versionId: workspace.versionId,
         isActive: true,
@@ -851,47 +900,48 @@ async function buildWorkspaceSectionDefinitionsTx(
       select: {
         id: true,
         parentId: true,
-        criterionCode: true,
+        blockCode: true,
         title: true,
         depth: true,
         isLeaf: true,
       },
-      orderBy: [{ depth: "asc" }, { sortOrder: "asc" }, { criterionCode: "asc" }],
+      orderBy: [{ depth: "asc" }, { sortOrder: "asc" }, { blockCode: "asc" }],
     }),
-    tx.criterionEntry.findMany({
+    tx.blockEntry.findMany({
       where: { workspaceId },
       include: {
-        criterion: {
+        block: {
           select: {
             id: true,
-            criterionCode: true,
+            blockCode: true,
             title: true,
           },
         },
       },
       orderBy: {
-        criterion: {
-          criterionCode: "asc",
+        block: {
+          blockCode: "asc",
         },
       },
     }),
   ]);
 
   const { rootById } = buildRootCriterionByIdMap(criteria);
-  const rootCriteria = criteria.filter((criterion) => criterion.depth === 0);
+  const rootCriteria = criteria.filter((block) => block.depth === 0);
   const sectionsById = new Map<string, WorkspaceSectionDefinition>();
 
   for (const root of rootCriteria) {
     sectionsById.set(root.id, {
-      sectionCriterionId: root.id,
-      sectionCode: root.criterionCode,
+      sectionBlockId: root.id,
+      blockCode: root.blockCode,
+      sectionCode: root.blockCode,
       title: root.title,
       leafEntries: [],
     });
   }
 
   for (const entry of entries) {
-    const root = rootById.get(entry.criterionId);
+    const root = rootById.get(entry.blockId);
     if (!root) {
       continue;
     }
@@ -903,9 +953,9 @@ async function buildWorkspaceSectionDefinitionsTx(
 
     section.leafEntries.push({
       entryId: entry.id,
-      criterionId: entry.criterionId,
-      criterionCode: entry.criterion.criterionCode,
-      criterionTitle: entry.criterion.title,
+      blockId: entry.blockId,
+      blockCode: entry.block.blockCode,
+      blockTitle: entry.block.title,
       status: entry.status,
     });
   }
@@ -962,7 +1012,7 @@ async function ensureWorkspaceSectionCollaborationBackfillTx(
     await tx.workspaceSectionReview.createMany({
       data: sectionContext.rootCriteria.map((section) => ({
         workspaceId,
-        sectionCriterionId: section.id,
+        sectionBlockId: section.id,
       })),
       skipDuplicates: true,
     });
@@ -993,7 +1043,11 @@ async function ensureWorkspaceSectionCollaborationBackfillTx(
       }
 
       const matchingSections = sectionContext.sections.filter((section) =>
-        criterionCodeMatchesSections(section.sectionCode, collaborator.assignedSections),
+        sectionSelectionMatches(
+          section.sectionBlockId,
+          section.sectionCode,
+          collaborator.assignedSections,
+        ),
       );
       if (matchingSections.length === 0) {
         continue;
@@ -1002,7 +1056,7 @@ async function ensureWorkspaceSectionCollaborationBackfillTx(
       await tx.workspaceSectionAssignment.createMany({
         data: matchingSections.map((section) => ({
           workspaceId,
-          sectionCriterionId: section.sectionCriterionId,
+          sectionBlockId: section.sectionBlockId,
           userId: collaborator.userId,
           role: assignmentRole,
           assignedByUserId: collaborator.userId,
@@ -1015,9 +1069,9 @@ async function ensureWorkspaceSectionCollaborationBackfillTx(
   for (const section of sectionContext.sections) {
     const review = await tx.workspaceSectionReview.findUnique({
       where: {
-        workspaceId_sectionCriterionId: {
+        workspaceId_sectionBlockId: {
           workspaceId,
-          sectionCriterionId: section.sectionCriterionId,
+          sectionBlockId: section.sectionBlockId,
         },
       },
       select: {
@@ -1028,7 +1082,7 @@ async function ensureWorkspaceSectionCollaborationBackfillTx(
       continue;
     }
 
-    await syncWorkspaceSectionReviewerDecisionsTx(tx, review.id, workspaceId, section.sectionCriterionId);
+    await syncWorkspaceSectionReviewerDecisionsTx(tx, review.id, workspaceId, section.sectionBlockId);
   }
 
   return sectionContext;
@@ -1038,12 +1092,12 @@ async function syncWorkspaceSectionReviewerDecisionsTx(
   tx: DbClient,
   reviewId: string,
   workspaceId: string,
-  sectionCriterionId: string,
+  sectionBlockId: string,
 ) {
   const reviewerAssignments = await tx.workspaceSectionAssignment.findMany({
     where: {
       workspaceId,
-      sectionCriterionId,
+      sectionBlockId,
       userId: { not: null },
       role: WorkspaceSectionAssignmentRole.REVIEWER,
     },
@@ -1117,12 +1171,9 @@ async function syncCollaboratorAssignedSectionsFromAssignmentsTx(
       workspaceId,
       userId,
     },
-    include: {
-      sectionCriterion: {
-        select: {
-          criterionCode: true,
-        },
-      },
+    select: {
+      sectionBlockId: true,
+      role: true,
     },
   });
 
@@ -1139,7 +1190,7 @@ async function syncCollaboratorAssignedSectionsFromAssignmentsTx(
           .filter((assignment) =>
             collaboratorRoleSupportsSectionAssignment(collaborator.role, assignment.role),
           )
-          .map((assignment) => assignment.sectionCriterion.criterionCode),
+          .map((assignment) => assignment.sectionBlockId),
       ),
     },
   });
@@ -1156,27 +1207,27 @@ async function getInternalSectionAssignmentsForUserTx(
       userId,
     },
     select: {
-      sectionCriterionId: true,
+      sectionBlockId: true,
       role: true,
     },
   });
 }
 
 function hasInternalSectionAssignment(
-  assignments: Array<{ sectionCriterionId: string; role: WorkspaceSectionAssignmentRole }>,
-  sectionCriterionId: string,
+  assignments: Array<{ sectionBlockId: string; role: WorkspaceSectionAssignmentRole }>,
+  sectionBlockId: string,
   roles: WorkspaceSectionAssignmentRole[],
 ) {
   return assignments.some(
     (assignment) =>
-      assignment.sectionCriterionId === sectionCriterionId && roles.includes(assignment.role),
+      assignment.sectionBlockId === sectionBlockId && roles.includes(assignment.role),
   );
 }
 
 function canPerformSectionAssignmentAction(
   context: WorkspacePermissionContext,
-  assignments: Array<{ sectionCriterionId: string; role: WorkspaceSectionAssignmentRole }>,
-  sectionCriterionId: string,
+  assignments: Array<{ sectionBlockId: string; role: WorkspaceSectionAssignmentRole }>,
+  sectionBlockId: string,
   roles: WorkspaceSectionAssignmentRole[],
 ) {
   if (context.isWorkspaceAdmin) {
@@ -1189,7 +1240,7 @@ function canPerformSectionAssignmentAction(
 
   return assignments.some(
     (assignment) =>
-      assignment.sectionCriterionId === sectionCriterionId &&
+      assignment.sectionBlockId === sectionBlockId &&
       roles.includes(assignment.role) &&
       collaboratorRoleSupportsSectionAssignment(context.collaborator!.role, assignment.role),
   );
@@ -1224,7 +1275,8 @@ async function notifyChangesRequested(input: {
   workspaceId: string;
   tenantId: string;
   entryId: string;
-  criterionCode: string;
+  sectionBlockId: string | null;
+  blockCode: string;
   title: string;
   actorUserId: string;
 }) {
@@ -1241,7 +1293,13 @@ async function notifyChangesRequested(input: {
 
   const recipientUserIds = collaborators
     .filter((collaborator) =>
-      criterionCodeMatchesSections(input.criterionCode, collaborator.assignedSections),
+      input.sectionBlockId
+        ? sectionSelectionMatches(
+            input.sectionBlockId,
+            input.blockCode,
+            collaborator.assignedSections,
+          )
+        : collaborator.assignedSections.length === 0,
     )
     .map((collaborator) => collaborator.userId)
     .filter((userId) => userId !== input.actorUserId);
@@ -1255,8 +1313,8 @@ async function notifyChangesRequested(input: {
     [...new Set(recipientUserIds)],
     "accreditation.entry.changes-requested",
     `accreditation.entry.changes-requested:${input.entryId}:${Date.now()}`,
-    `Changes requested for ${input.criterionCode}`,
-    `A reviewer requested updates on ${input.criterionCode} ${input.title}.`,
+    `Changes requested for ${input.blockCode}`,
+    `A reviewer requested updates on ${input.blockCode} ${input.title}.`,
     "CriterionEntry",
     input.entryId,
     "/workspace/accreditation",
@@ -1266,7 +1324,7 @@ async function notifyChangesRequested(input: {
 async function notifySectionReviewInvalidated(input: {
   tenantId: string;
   workspaceId: string;
-  sectionCriterionId: string;
+  sectionBlockId: string;
   sectionCode: string;
   triggerMessage: string;
   actorUserId: string;
@@ -1274,7 +1332,7 @@ async function notifySectionReviewInvalidated(input: {
   const assignments = await prisma.workspaceSectionAssignment.findMany({
     where: {
       workspaceId: input.workspaceId,
-      sectionCriterionId: input.sectionCriterionId,
+      sectionBlockId: input.sectionBlockId,
       userId: { not: null },
     },
     select: {
@@ -1295,11 +1353,11 @@ async function notifySectionReviewInvalidated(input: {
     input.tenantId,
     recipientUserIds,
     "accreditation.section.review-invalidated",
-    `accreditation.section.review-invalidated:${input.sectionCriterionId}:${Date.now()}`,
+    `accreditation.section.review-invalidated:${input.sectionBlockId}:${Date.now()}`,
     `Section ${input.sectionCode} reopened`,
     input.triggerMessage,
     "WorkspaceSectionReview",
-    input.sectionCriterionId,
+    input.sectionBlockId,
     "/workspace/accreditation",
   );
 }
@@ -1329,13 +1387,13 @@ async function invalidateSectionReviewForCriterionTx(
   input: {
     workspaceId: string;
     versionId: string;
-    criterionId: string;
+    blockId: string;
     actorUserId: string;
     triggerMessage: string;
     metadata?: Prisma.JsonValue | null;
   },
 ) {
-  const criteria = await tx.accreditationCriterion.findMany({
+  const criteria = await tx.criterionBlock.findMany({
     where: {
       versionId: input.versionId,
       isActive: true,
@@ -1343,23 +1401,23 @@ async function invalidateSectionReviewForCriterionTx(
     select: {
       id: true,
       parentId: true,
-      criterionCode: true,
+      blockCode: true,
       title: true,
       depth: true,
       isLeaf: true,
     },
   });
   const { rootById } = buildRootCriterionByIdMap(criteria);
-  const root = rootById.get(input.criterionId);
+  const root = rootById.get(input.blockId);
   if (!root) {
     return null;
   }
 
   const review = await tx.workspaceSectionReview.findUnique({
     where: {
-      workspaceId_sectionCriterionId: {
+      workspaceId_sectionBlockId: {
         workspaceId: input.workspaceId,
-        sectionCriterionId: root.id,
+        sectionBlockId: root.id,
       },
     },
     select: {
@@ -1369,8 +1427,8 @@ async function invalidateSectionReviewForCriterionTx(
   });
   if (!review) {
     return {
-      sectionCriterionId: root.id,
-      sectionCode: root.criterionCode,
+      sectionBlockId: root.id,
+      sectionCode: root.blockCode,
       invalidated: false,
     };
   }
@@ -1380,8 +1438,8 @@ async function invalidateSectionReviewForCriterionTx(
     review.status === WorkspaceSectionReviewStatus.IN_PROGRESS
   ) {
     return {
-      sectionCriterionId: root.id,
-      sectionCode: root.criterionCode,
+      sectionBlockId: root.id,
+      sectionCode: root.blockCode,
       invalidated: false,
     };
   }
@@ -1421,8 +1479,8 @@ async function invalidateSectionReviewForCriterionTx(
   });
 
   return {
-    sectionCriterionId: root.id,
-    sectionCode: root.criterionCode,
+    sectionBlockId: root.id,
+    sectionCode: root.blockCode,
     invalidated: true,
   };
 }
@@ -1440,7 +1498,7 @@ async function recordCriterionEntryChange(
     changedByUserId: string;
   },
 ) {
-  await tx.criterionEntryChange.create({
+  await tx.blockEntryChange.create({
     data: {
       entryId: input.entryId,
       year: input.year ?? null,
@@ -1481,7 +1539,7 @@ async function buildWorkspaceScoringContext(tx: DbClient, workspaceId: string) {
       },
       entries: {
         include: {
-          yearData: {
+          responses: {
             orderBy: { year: "asc" },
           },
         },
@@ -1493,7 +1551,7 @@ async function buildWorkspaceScoringContext(tx: DbClient, workspaceId: string) {
     return null;
   }
 
-  const criteria = await tx.accreditationCriterion.findMany({
+  const criteria = await tx.criterionBlock.findMany({
     where: {
       versionId: workspace.versionId,
       isActive: true,
@@ -1503,7 +1561,7 @@ async function buildWorkspaceScoringContext(tx: DbClient, workspaceId: string) {
         orderBy: [{ sortOrder: "asc" }, { rangeMin: "asc" }],
       },
     },
-    orderBy: [{ depth: "asc" }, { sortOrder: "asc" }, { criterionCode: "asc" }],
+    orderBy: [{ depth: "asc" }, { sortOrder: "asc" }, { blockCode: "asc" }],
   });
 
   return {
@@ -1516,21 +1574,21 @@ function computeWorkspaceScoresFromContext(
   context: NonNullable<Awaited<ReturnType<typeof buildWorkspaceScoringContext>>>,
 ): WorkspaceScoreComputation {
   const criterionById = new Map<string, WorkspaceScoringCriterion>(
-    context.criteria.map((criterion) => [
-      criterion.id,
+    context.criteria.map((block) => [
+      block.id,
       {
-        id: criterion.id,
-        parentId: criterion.parentId,
-        criterionCode: criterion.criterionCode,
-        title: criterion.title,
-        dataType: criterion.dataType,
-        yearAggregation: criterion.yearAggregation,
-        yearAggregationConfig: criterion.yearAggregationConfig,
-        maxScore: criterion.maxScore,
-        depth: criterion.depth,
-        isLeaf: criterion.isLeaf,
-        expectedEvidence: criterion.expectedEvidence,
-        scoringSlabs: criterion.scoringSlabs.map((slab) => ({
+        id: block.id,
+        parentId: block.parentId,
+        blockCode: block.blockCode,
+        title: block.title,
+        dataType: block.dataType,
+        yearAggregation: block.yearAggregation,
+        yearAggregationConfig: block.yearAggregationConfig,
+        maxScore: block.maxScore,
+        depth: block.depth,
+        isLeaf: block.isLeaf,
+        expectedEvidence: block.expectedEvidence,
+        scoringSlabs: block.scoringSlabs.map((slab) => ({
           rangeMin: slab.rangeMin,
           rangeMax: slab.rangeMax,
           pointsAwarded: slab.pointsAwarded,
@@ -1540,75 +1598,75 @@ function computeWorkspaceScoresFromContext(
     ]),
   );
   const childrenByParent = new Map<string | null, string[]>();
-  for (const criterion of context.criteria) {
-    const existing = childrenByParent.get(criterion.parentId) ?? [];
-    existing.push(criterion.id);
-    childrenByParent.set(criterion.parentId, existing);
+  for (const block of context.criteria) {
+    const existing = childrenByParent.get(block.parentId) ?? [];
+    existing.push(block.id);
+    childrenByParent.set(block.parentId, existing);
   }
 
   const profileWeightMap = new Map(
-    context.workspace.profile.weightOverrides.map((weight) => [weight.criterionId, weight.maxScore]),
+    context.workspace.profile.weightOverrides.map((weight) => [weight.blockId, weight.maxScore]),
   );
-  const entryByCriterionId = new Map(context.workspace.entries.map((entry) => [entry.criterionId, entry]));
+  const entryByBlockId = new Map(context.workspace.entries.map((entry) => [entry.blockId, entry]));
   const maxCache = new Map<string, number | null>();
 
-  const resolveEffectiveMaxScore = (criterionId: string): number | null => {
-    const cached = maxCache.get(criterionId);
+  const resolveEffectiveMaxScore = (blockId: string): number | null => {
+    const cached = maxCache.get(blockId);
     if (cached !== undefined) {
       return cached;
     }
 
-    const criterion = criterionById.get(criterionId);
-    if (!criterion) {
-      maxCache.set(criterionId, null);
+    const block = criterionById.get(blockId);
+    if (!block) {
+      maxCache.set(blockId, null);
       return null;
     }
 
-    const weightedMax = profileWeightMap.get(criterionId);
+    const weightedMax = profileWeightMap.get(blockId);
     if (weightedMax !== undefined) {
-      maxCache.set(criterionId, weightedMax);
+      maxCache.set(blockId, weightedMax);
       return weightedMax;
     }
 
-    if (criterion.maxScore !== null) {
-      maxCache.set(criterionId, criterion.maxScore);
-      return criterion.maxScore;
+    if (block.maxScore !== null) {
+      maxCache.set(blockId, block.maxScore);
+      return block.maxScore;
     }
 
-    const childIds = childrenByParent.get(criterionId) ?? [];
+    const childIds = childrenByParent.get(blockId) ?? [];
     if (childIds.length === 0) {
-      maxCache.set(criterionId, null);
+      maxCache.set(blockId, null);
       return null;
     }
 
     const total = childIds.reduce((sum, childId) => sum + (resolveEffectiveMaxScore(childId) ?? 0), 0);
     const resolved = total > 0 ? total : null;
-    maxCache.set(criterionId, resolved);
+    maxCache.set(blockId, resolved);
     return resolved;
   };
 
-  const criterionScores = new Map<string, WorkspaceScoreRow>();
+  const blockScores = new Map<string, WorkspaceScoreRow>();
   const leafEntryUpdates: WorkspaceScoreComputation["leafEntryUpdates"] = [];
   const dataSourceCounts = new Map<string, number>();
 
   for (const entry of context.workspace.entries) {
-    for (const yearData of entry.yearData) {
+    for (const responses of entry.responses) {
       dataSourceCounts.set(
-        yearData.dataSource,
-        (dataSourceCounts.get(yearData.dataSource) ?? 0) + 1,
+        responses.dataSource,
+        (dataSourceCounts.get(responses.dataSource) ?? 0) + 1,
       );
     }
   }
 
-  for (const criterion of context.criteria.filter((item) => item.isLeaf)) {
-    const entry = entryByCriterionId.get(criterion.id);
-    const effectiveMax = resolveEffectiveMaxScore(criterion.id);
+  for (const block of context.criteria.filter((item) => item.isLeaf)) {
+    const entry = entryByBlockId.get(block.id);
+    const effectiveMax = resolveEffectiveMaxScore(block.id);
     const aggregatedValue =
-      criterion.dataType === CriterionDataType.QUALITATIVE || !entry
+      block.dataType === CriterionDataType.QUALITATIVE || !entry
         ? null
         : aggregateNumericYearData(
-            criterion,
-            entry.yearData.map((row) => ({
+            block,
+            entry.responses.map((row) => ({
               year: row.year,
               actualValue: row.actualValue,
             })),
@@ -1616,11 +1674,11 @@ function computeWorkspaceScoresFromContext(
 
     let computedScore: number | null = null;
     if (entry) {
-      if (criterion.dataType === CriterionDataType.QUALITATIVE) {
+      if (block.dataType === CriterionDataType.QUALITATIVE) {
         computedScore = null;
       } else if (aggregatedValue !== null) {
-        if (criterion.scoringSlabs.length > 0) {
-          const matchingSlab = criterion.scoringSlabs.find((slab) =>
+        if (block.scoringSlabs.length > 0) {
+          const matchingSlab = block.scoringSlabs.find((slab) =>
             matchesScoringSlab(aggregatedValue, slab),
           );
           computedScore = matchingSlab ? matchingSlab.pointsAwarded : null;
@@ -1640,10 +1698,10 @@ function computeWorkspaceScoresFromContext(
     );
 
     const row: WorkspaceScoreRow = {
-      criterionId: criterion.id,
-      criterionCode: criterion.criterionCode,
-      title: criterion.title,
-      depth: criterion.depth,
+      blockId: block.id,
+      blockCode: block.blockCode,
+      title: block.title,
+      depth: block.depth,
       isLeaf: true,
       maxScore: effectiveMax,
       aggregatedValue: roundScore(aggregatedValue),
@@ -1655,12 +1713,12 @@ function computeWorkspaceScoresFromContext(
           : null,
       status: entry?.status ?? null,
     };
-    criterionScores.set(criterion.id, row);
+    blockScores.set(block.id, row);
 
     if (entry) {
       leafEntryUpdates.push({
         entryId: entry.id,
-        criterionId: criterion.id,
+        blockId: block.id,
         computedScore: normalizedComputedScore,
         finalScore,
       });
@@ -1668,20 +1726,20 @@ function computeWorkspaceScoresFromContext(
   }
 
   const criteriaByDescendingDepth = [...context.criteria].sort((left, right) => right.depth - left.depth);
-  for (const criterion of criteriaByDescendingDepth.filter((item) => !item.isLeaf)) {
-    const childIds = childrenByParent.get(criterion.id) ?? [];
+  for (const block of criteriaByDescendingDepth.filter((item) => !item.isLeaf)) {
+    const childIds = childrenByParent.get(block.id) ?? [];
     const childScores = childIds
-      .map((childId) => criterionScores.get(childId)?.finalScore ?? null)
+      .map((childId) => blockScores.get(childId)?.finalScore ?? null)
       .filter((value): value is number => value !== null);
     const summedScore = childScores.length > 0 ? childScores.reduce((sum, value) => sum + value, 0) : null;
-    const effectiveMax = resolveEffectiveMaxScore(criterion.id);
+    const effectiveMax = resolveEffectiveMaxScore(block.id);
     const finalScore = roundScore(summedScore === null ? null : clampScore(summedScore, effectiveMax));
 
-    criterionScores.set(criterion.id, {
-      criterionId: criterion.id,
-      criterionCode: criterion.criterionCode,
-      title: criterion.title,
-      depth: criterion.depth,
+    blockScores.set(block.id, {
+      blockId: block.id,
+      blockCode: block.blockCode,
+      title: block.title,
+      depth: block.depth,
       isLeaf: false,
       maxScore: effectiveMax,
       aggregatedValue: null,
@@ -1695,11 +1753,11 @@ function computeWorkspaceScoresFromContext(
     });
   }
 
-  const rootCriterionIds = context.criteria
-    .filter((criterion) => criterion.parentId === null)
-    .map((criterion) => criterion.id);
+  const rootBlockIds = context.criteria
+    .filter((block) => block.parentId === null)
+    .map((block) => block.id);
   const overallRawScore = roundScore(
-    rootCriterionIds.reduce((sum, criterionId) => sum + (criterionScores.get(criterionId)?.finalScore ?? 0), 0),
+    rootBlockIds.reduce((sum, blockId) => sum + (blockScores.get(blockId)?.finalScore ?? 0), 0),
   );
   const overallConvertedScore =
     overallRawScore !== null
@@ -1720,19 +1778,19 @@ function computeWorkspaceScoresFromContext(
 
   const thresholdViolations = context.workspace.version.thresholdRules
     .map((rule) => {
-      const criterionScore = rule.criterionId
-        ? criterionScores.get(rule.criterionId)?.finalScore ?? null
+      const criterionScore = rule.blockId
+        ? blockScores.get(rule.blockId)?.finalScore ?? null
         : overallConvertedScore ?? overallRawScore;
-      const criterionCode = rule.criterionId
-        ? criterionScores.get(rule.criterionId)?.criterionCode ?? null
+      const blockCode = rule.blockId
+        ? blockScores.get(rule.blockId)?.blockCode ?? null
         : null;
       if (criterionScore === null || criterionScore >= rule.minValue) {
         return null;
       }
       return {
         thresholdType: rule.thresholdType,
-        criterionId: rule.criterionId,
-        criterionCode,
+        blockId: rule.blockId,
+        blockCode,
         actualValue: roundScore(criterionScore),
         minValue: rule.minValue,
         outcome: rule.outcome,
@@ -1742,7 +1800,7 @@ function computeWorkspaceScoresFromContext(
     .filter((item): item is NonNullable<typeof item> => item !== null);
 
   const criterionScoreRecord = Object.fromEntries(
-    [...criterionScores.entries()].map(([criterionId, row]) => [criterionId, row]),
+    [...blockScores.entries()].map(([blockId, row]) => [blockId, row]),
   );
 
   return {
@@ -1755,7 +1813,7 @@ function computeWorkspaceScoresFromContext(
       passed: thresholdViolations.length === 0,
       violations: thresholdViolations,
     },
-    criterionScores: criterionScoreRecord,
+    blockScores: criterionScoreRecord,
     leafEntryUpdates,
     dataSourceCounts: Object.fromEntries(dataSourceCounts.entries()),
   };
@@ -1768,7 +1826,7 @@ async function applyWorkspaceScores(
   markFresh: boolean,
 ) {
   for (const update of scoring.leafEntryUpdates) {
-    await tx.criterionEntry.update({
+    await tx.blockEntry.update({
       where: { id: update.entryId },
       data: {
         computedScore: update.computedScore,
@@ -1824,7 +1882,7 @@ async function initializeWorkspaceEntriesTx(
   workspaceId: string,
   versionId: string,
 ) {
-  const criteria = await tx.accreditationCriterion.findMany({
+  const criteria = await tx.criterionBlock.findMany({
     where: {
       versionId,
       isLeaf: true,
@@ -1835,20 +1893,20 @@ async function initializeWorkspaceEntriesTx(
     },
   });
 
-  const existingEntries = await tx.criterionEntry.findMany({
+  const existingEntries = await tx.blockEntry.findMany({
     where: { workspaceId },
-    select: { criterionId: true },
+    select: { blockId: true },
   });
-  const existingCriterionIds = new Set(existingEntries.map((entry) => entry.criterionId));
+  const existingCriterionIds = new Set(existingEntries.map((entry) => entry.blockId));
   const missingCriterionIds = criteria
-    .map((criterion) => criterion.id)
-    .filter((criterionId) => !existingCriterionIds.has(criterionId));
+    .map((block) => block.id)
+    .filter((blockId) => !existingCriterionIds.has(blockId));
 
   if (missingCriterionIds.length > 0) {
-    await tx.criterionEntry.createMany({
-      data: missingCriterionIds.map((criterionId) => ({
+    await tx.blockEntry.createMany({
+      data: missingCriterionIds.map((blockId) => ({
         workspaceId,
-        criterionId,
+        blockId,
       })),
       skipDuplicates: true,
     });
@@ -1873,9 +1931,9 @@ async function checkWorkspaceReadinessInternal(
       },
       entries: {
         include: {
-          criterion: {
+          block: {
             select: {
-              criterionCode: true,
+              blockCode: true,
               title: true,
               expectedEvidence: true,
             },
@@ -1911,14 +1969,14 @@ async function checkWorkspaceReadinessInternal(
   }
 
   for (const entry of workspace.entries) {
-    if (entry.status !== CriterionEntryStatus.APPROVED) {
+    if (entry.status !== BlockEntryStatus.APPROVED) {
       blockers.push({
         code: "ENTRY_NOT_APPROVED",
-        message: `${entry.criterion.criterionCode} is ${entry.status.replace(/_/g, " ").toLowerCase()}.`,
+        message: `${entry.block.blockCode} is ${entry.status.replace(/_/g, " ").toLowerCase()}.`,
       });
     }
 
-    const requiredDocTypes = collectExpectedEvidenceDocTypes(entry.criterion.expectedEvidence);
+    const requiredDocTypes = collectExpectedEvidenceDocTypes(entry.block.expectedEvidence);
     if (requiredDocTypes.length > 0) {
       const linkedDocTypes = new Set(
         entry.evidenceLinks
@@ -1929,7 +1987,7 @@ async function checkWorkspaceReadinessInternal(
         if (!linkedDocTypes.has(docType)) {
           blockers.push({
             code: "MISSING_REQUIRED_EVIDENCE",
-            message: `${entry.criterion.criterionCode} is missing required evidence type ${docType}.`,
+            message: `${entry.block.blockCode} is missing required evidence type ${docType}.`,
           });
         }
       }
@@ -1939,7 +1997,7 @@ async function checkWorkspaceReadinessInternal(
       if (!link.evidence.versions.some((version) => version.isFinal)) {
         warnings.push({
           code: "EVIDENCE_NOT_FINAL",
-          message: `${entry.criterion.criterionCode} links evidence "${link.evidence.title}" with no final version marked.`,
+          message: `${entry.block.blockCode} links evidence "${link.evidence.title}" with no final version marked.`,
         });
       }
 
@@ -1964,18 +2022,18 @@ async function checkWorkspaceReadinessInternal(
       const reviews = await tx.workspaceSectionReview.findMany({
         where: { workspaceId },
         select: {
-          sectionCriterionId: true,
+          sectionBlockId: true,
           status: true,
         },
       });
       const reviewBySectionId = new Map(
-        reviews.map((review) => [review.sectionCriterionId, review.status]),
+        reviews.map((review) => [review.sectionBlockId, review.status]),
       );
       for (const section of sectionContext.sections) {
         if (!sectionReviewIsActionable(section)) {
           continue;
         }
-        if (reviewBySectionId.get(section.sectionCriterionId) !== WorkspaceSectionReviewStatus.APPROVED) {
+        if (reviewBySectionId.get(section.sectionBlockId) !== WorkspaceSectionReviewStatus.APPROVED) {
           blockers.push({
             code: "SECTION_NOT_APPROVED",
             message: `Section ${section.sectionCode} is not approved.`,
@@ -2053,20 +2111,20 @@ function validateWorkspaceStatusTransition(
 }
 
 function validateEntryStatusTransition(
-  currentStatus: CriterionEntryStatus,
-  nextStatus: CriterionEntryStatus,
+  currentStatus: BlockEntryStatus,
+  nextStatus: BlockEntryStatus,
 ) {
   if (currentStatus === nextStatus) {
     return null;
   }
 
-  const allowed = new Map<CriterionEntryStatus, CriterionEntryStatus[]>([
-    [CriterionEntryStatus.BLANK, [CriterionEntryStatus.IN_PROGRESS]],
-    [CriterionEntryStatus.IN_PROGRESS, [CriterionEntryStatus.COMPLETE]],
-    [CriterionEntryStatus.COMPLETE, [CriterionEntryStatus.UNDER_REVIEW]],
-    [CriterionEntryStatus.UNDER_REVIEW, [CriterionEntryStatus.CHANGES_REQUESTED, CriterionEntryStatus.APPROVED]],
-    [CriterionEntryStatus.CHANGES_REQUESTED, [CriterionEntryStatus.IN_PROGRESS, CriterionEntryStatus.COMPLETE]],
-    [CriterionEntryStatus.APPROVED, [CriterionEntryStatus.IN_PROGRESS]],
+  const allowed = new Map<BlockEntryStatus, BlockEntryStatus[]>([
+    [BlockEntryStatus.BLANK, [BlockEntryStatus.IN_PROGRESS]],
+    [BlockEntryStatus.IN_PROGRESS, [BlockEntryStatus.COMPLETE]],
+    [BlockEntryStatus.COMPLETE, [BlockEntryStatus.UNDER_REVIEW]],
+    [BlockEntryStatus.UNDER_REVIEW, [BlockEntryStatus.CHANGES_REQUESTED, BlockEntryStatus.APPROVED]],
+    [BlockEntryStatus.CHANGES_REQUESTED, [BlockEntryStatus.IN_PROGRESS, BlockEntryStatus.COMPLETE]],
+    [BlockEntryStatus.APPROVED, [BlockEntryStatus.IN_PROGRESS]],
   ]);
 
   return allowed.get(currentStatus)?.includes(nextStatus)
@@ -2075,7 +2133,7 @@ function validateEntryStatusTransition(
 }
 
 function validateYearDataByCriterion(input: {
-  criterion: {
+  block: {
     dataType: CriterionDataType;
     validationRules: Prisma.JsonValue | null;
     title: string;
@@ -2083,27 +2141,27 @@ function validateYearDataByCriterion(input: {
   numericValue: number | null;
   textValue: string | null;
 }) {
-  const { criterion, numericValue, textValue } = input;
+  const { block, numericValue, textValue } = input;
 
-  if (criterion.dataType === CriterionDataType.QUANTITATIVE) {
+  if (block.dataType === CriterionDataType.QUANTITATIVE) {
     if (numericValue === null) {
-      return `${criterion.title} requires a numeric value.`;
+      return `${block.title} requires a numeric value.`;
     }
   }
 
-  if (criterion.dataType === CriterionDataType.QUALITATIVE) {
+  if (block.dataType === CriterionDataType.QUALITATIVE) {
     if (!textValue) {
-      return `${criterion.title} requires narrative text.`;
+      return `${block.title} requires narrative text.`;
     }
   }
 
-  if (criterion.dataType === CriterionDataType.HYBRID) {
+  if (block.dataType === CriterionDataType.HYBRID) {
     if (numericValue === null && !textValue) {
-      return `${criterion.title} requires a numeric value, text narrative, or both.`;
+      return `${block.title} requires a numeric value, text narrative, or both.`;
     }
   }
 
-  const validationRules = asJsonObject(criterion.validationRules);
+  const validationRules = asJsonObject(block.validationRules);
   const minValue =
     typeof validationRules?.min === "number"
       ? validationRules.min
@@ -2120,15 +2178,15 @@ function validateYearDataByCriterion(input: {
     typeof validationRules?.maxLength === "number" ? validationRules.maxLength : null;
 
   if (numericValue !== null && minValue !== null && numericValue < minValue) {
-    return `${criterion.title} must be at least ${minValue}.`;
+    return `${block.title} must be at least ${minValue}.`;
   }
 
   if (numericValue !== null && maxValue !== null && numericValue > maxValue) {
-    return `${criterion.title} must be at most ${maxValue}.`;
+    return `${block.title} must be at most ${maxValue}.`;
   }
 
   if (textValue && maxLength !== null && textValue.length > maxLength) {
-    return `${criterion.title} must not exceed ${maxLength} characters.`;
+    return `${block.title} must not exceed ${maxLength} characters.`;
   }
 
   return null;
@@ -2171,11 +2229,16 @@ export async function createAssessmentWorkspace(
     },
     select: {
       id: true,
+      lifecycleStatus: true,
     },
   });
 
   if (!version) {
     return { status: "error", message: "Accreditation version not found or inactive." };
+  }
+
+  if (version.lifecycleStatus !== AccreditationTemplateLifecycleStatus.PUBLISHED) {
+    return { status: "error", message: "Only published accreditation templates can be used to create workspaces." };
   }
 
   const profile = await prisma.accreditationProfile.findFirst({
@@ -2192,7 +2255,7 @@ export async function createAssessmentWorkspace(
     return { status: "error", message: "Accreditation profile not found for this version." };
   }
 
-  const leafCriterionCount = await prisma.accreditationCriterion.count({
+  const leafCriterionCount = await prisma.criterionBlock.count({
     where: {
       versionId: version.id,
       isLeaf: true,
@@ -2302,7 +2365,7 @@ export async function listAssessmentWorkspaces(
       },
       entries: {
         include: {
-          yearData: {
+          responses: {
             select: {
               id: true,
               actualValue: true,
@@ -2322,21 +2385,21 @@ export async function listAssessmentWorkspaces(
   const items = workspaces.map((workspace) => {
     const yearSpan = Math.max(1, getWorkspaceYearSpan(workspace.periodStart, workspace.periodEnd));
     const totalEntries = workspace.entries.length;
-    const progressStatuses: CriterionEntryStatus[] = [
-      CriterionEntryStatus.COMPLETE,
-      CriterionEntryStatus.UNDER_REVIEW,
-      CriterionEntryStatus.APPROVED,
+    const progressStatuses: BlockEntryStatus[] = [
+      BlockEntryStatus.COMPLETE,
+      BlockEntryStatus.UNDER_REVIEW,
+      BlockEntryStatus.APPROVED,
     ];
     const progressCount = workspace.entries.filter((entry) =>
       progressStatuses.includes(entry.status),
     ).length;
     const approvalCount = workspace.entries.filter(
-      (entry) => entry.status === CriterionEntryStatus.APPROVED,
+      (entry) => entry.status === BlockEntryStatus.APPROVED,
     ).length;
     const populatedYearCells = workspace.entries.reduce(
       (sum, entry) =>
         sum +
-        entry.yearData.filter((row) => row.actualValue !== null || row.textValue !== null).length,
+        entry.responses.filter((row) => row.actualValue !== null || row.textValue !== null).length,
       0,
     );
     const expectedYearCells = totalEntries * yearSpan;
@@ -2438,17 +2501,17 @@ export async function getAssessmentWorkspace(
       },
       entries: {
         include: {
-          criterion: {
+          block: {
             select: {
               id: true,
-              criterionCode: true,
+              blockCode: true,
               title: true,
               dataType: true,
               maxScore: true,
               expectedEvidence: true,
             },
           },
-          yearData: {
+          responses: {
             orderBy: { year: "asc" },
           },
           evidenceLinks: {
@@ -2464,8 +2527,8 @@ export async function getAssessmentWorkspace(
           },
         },
         orderBy: {
-          criterion: {
-            criterionCode: "asc",
+          block: {
+            blockCode: "asc",
           },
         },
       },
@@ -2492,21 +2555,21 @@ export async function getAssessmentWorkspace(
   ]);
   const yearSpan = Math.max(1, getWorkspaceYearSpan(workspace.periodStart, workspace.periodEnd));
   const totalEntries = workspace.entries.length;
-  const progressStatuses: CriterionEntryStatus[] = [
-    CriterionEntryStatus.COMPLETE,
-    CriterionEntryStatus.UNDER_REVIEW,
-    CriterionEntryStatus.APPROVED,
+  const progressStatuses: BlockEntryStatus[] = [
+    BlockEntryStatus.COMPLETE,
+    BlockEntryStatus.UNDER_REVIEW,
+    BlockEntryStatus.APPROVED,
   ];
   const progressCount = workspace.entries.filter((entry) =>
     progressStatuses.includes(entry.status),
   ).length;
   const approvalCount = workspace.entries.filter(
-    (entry) => entry.status === CriterionEntryStatus.APPROVED,
+    (entry) => entry.status === BlockEntryStatus.APPROVED,
   ).length;
   const populatedYearCells = workspace.entries.reduce(
     (sum, entry) =>
       sum +
-      entry.yearData.filter((row) => row.actualValue !== null || row.textValue !== null).length,
+      entry.responses.filter((row) => row.actualValue !== null || row.textValue !== null).length,
     0,
   );
   const expectedYearCells = totalEntries * yearSpan;
@@ -2561,11 +2624,11 @@ export async function getAssessmentWorkspace(
       milestones: workspace.milestones,
       entries: workspace.entries.map((entry) => ({
         id: entry.id,
-        criterionId: entry.criterionId,
-        criterionCode: entry.criterion.criterionCode,
-        criterionTitle: entry.criterion.title,
-        dataType: entry.criterion.dataType,
-        maxScore: entry.criterion.maxScore,
+        blockId: entry.blockId,
+        blockCode: entry.block.blockCode,
+        blockTitle: entry.block.title,
+        dataType: entry.block.dataType,
+        maxScore: entry.block.maxScore,
         status: entry.status,
         computedScore: entry.computedScore,
         manualOverride: entry.manualOverride,
@@ -2573,7 +2636,7 @@ export async function getAssessmentWorkspace(
         finalScore: entry.finalScore,
         remarks: entry.remarks,
         lastUpdatedAt: entry.lastUpdatedAt,
-        yearData: entry.yearData,
+        responses: entry.responses,
         evidence: entry.evidenceLinks.map((link) => ({
           linkId: link.id,
           evidenceId: link.evidenceId,
@@ -2780,23 +2843,23 @@ export async function listAssessmentWorkspaceEntries(
     return { status: "error", message: "You do not have access to this workspace." } satisfies ErrorResult;
   }
 
-  const entries = await prisma.criterionEntry.findMany({
+  const entries = await prisma.blockEntry.findMany({
     where: {
       workspaceId,
       ...(filters.status ? { status: filters.status } : {}),
     },
     include: {
-      criterion: {
+      block: {
         select: {
           id: true,
-          criterionCode: true,
+          blockCode: true,
           title: true,
           dataType: true,
           maxScore: true,
           expectedEvidence: true,
         },
       },
-      yearData: {
+      responses: {
         orderBy: { year: "asc" },
       },
       evidenceLinks: {
@@ -2813,7 +2876,7 @@ export async function listAssessmentWorkspaceEntries(
       },
     },
     orderBy: {
-      criterion: { criterionCode: "asc" },
+      block: { blockCode: "asc" },
     },
   });
 
@@ -2821,18 +2884,18 @@ export async function listAssessmentWorkspaceEntries(
     status: "success",
     entries: entries.map((entry) => ({
       id: entry.id,
-      criterionId: entry.criterionId,
-      criterionCode: entry.criterion.criterionCode,
-      criterionTitle: entry.criterion.title,
-      dataType: entry.criterion.dataType,
-      maxScore: entry.criterion.maxScore,
+      blockId: entry.blockId,
+      blockCode: entry.block.blockCode,
+      blockTitle: entry.block.title,
+      dataType: entry.block.dataType,
+      maxScore: entry.block.maxScore,
       status: entry.status,
       computedScore: entry.computedScore,
       manualOverride: entry.manualOverride,
       manualOverrideForced: entry.manualOverrideForced,
       finalScore: entry.finalScore,
       remarks: entry.remarks,
-      yearData: entry.yearData,
+      responses: entry.responses,
       evidenceCount: entry.evidenceLinks.length,
       latestEvidence: entry.evidenceLinks.map((link) => ({
         linkId: link.id,
@@ -2845,19 +2908,19 @@ export async function listAssessmentWorkspaceEntries(
   } satisfies SuccessResult<{ entries: unknown[] }>;
 }
 
-export async function setCriterionEntryYearData(
+export async function setBlockEntryResponse(
   entryId: string,
   tenantId: string,
   input: unknown,
   actorUserId: string,
   actorRole: Role | null | undefined,
 ) {
-  const parsed = yearDataInputSchema.safeParse(input);
+  const parsed = responsesInputSchema.safeParse(input);
   if (!parsed.success) {
     return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid year data." } satisfies ErrorResult;
   }
 
-  const entry = await prisma.criterionEntry.findUnique({
+  const entry = await prisma.blockEntry.findUnique({
     where: { id: entryId },
     include: {
       workspace: {
@@ -2869,10 +2932,10 @@ export async function setCriterionEntryYearData(
           periodEnd: true,
         },
       },
-      criterion: {
+      block: {
         select: {
           id: true,
-          criterionCode: true,
+          blockCode: true,
           title: true,
           dataType: true,
           validationRules: true,
@@ -2897,20 +2960,21 @@ export async function setCriterionEntryYearData(
   }
 
   if (
-    !canPerformOnCriterionCode(
+    !(await canPerformOnBlock(
+      prisma,
       permissionContext,
       [WorkspaceCollaboratorRole.RESPONSIBLE, WorkspaceCollaboratorRole.COORDINATOR],
-      entry.criterion.criterionCode,
-    )
+      entry.block.id,
+    ))
   ) {
-    return { status: "error", message: "You do not have permission to edit this criterion." } satisfies ErrorResult;
+    return { status: "error", message: "You do not have permission to edit this block." } satisfies ErrorResult;
   }
 
   if (isWorkspaceLockedForEntryEdits(entry.workspace.status)) {
     return { status: "error", message: "This workspace is read-only in its current status." } satisfies ErrorResult;
   }
 
-  if (!entry.criterion.isLeaf) {
+  if (!entry.block.isLeaf) {
     return { status: "error", message: "Only leaf criteria can capture year data." } satisfies ErrorResult;
   }
 
@@ -2922,10 +2986,21 @@ export async function setCriterionEntryYearData(
     } satisfies ErrorResult;
   }
 
+  const liveProjectionLocks = await findActiveLiveProjectionTargetPaths(entryId, parsed.data.year);
+  if (
+    (parsed.data.numericValue !== undefined && liveProjectionLocks.has("actualValue")) ||
+    (parsed.data.textValue !== undefined && liveProjectionLocks.has("textValue"))
+  ) {
+    return {
+      status: "error",
+      message: "This data is linked to a live projection. Detach the projection before editing it manually.",
+    } satisfies ErrorResult;
+  }
+
   const numericValue = parsed.data.numericValue ?? null;
   const textValue = normalizeNullableString(parsed.data.textValue);
   const validationError = validateYearDataByCriterion({
-    criterion: entry.criterion,
+    block: entry.block,
     numericValue,
     textValue,
   });
@@ -2934,7 +3009,7 @@ export async function setCriterionEntryYearData(
   }
 
   const updated = await prisma.$transaction(async (tx) => {
-    const existing = await tx.criterionYearData.findUnique({
+    const existing = await tx.blockEntryYearValue.findUnique({
       where: {
         entryId_year: {
           entryId,
@@ -2969,25 +3044,25 @@ export async function setCriterionEntryYearData(
     }
 
     const saved = existing
-      ? await tx.criterionYearData.update({
+      ? await tx.blockEntryYearValue.update({
           where: { id: existing.id },
           data: {
             actualValue: numericValue,
             textValue,
             remarks: nextRemarks,
-            dataSource: CriterionYearDataSource.MANUAL,
+            dataSource: BlockEntryValueSource.MANUAL,
             sourceRef: null,
             updatedByUserId: actorUserId,
           },
         })
-      : await tx.criterionYearData.create({
+      : await tx.blockEntryYearValue.create({
           data: {
             entryId,
             year: parsed.data.year,
             actualValue: numericValue,
             textValue,
             remarks: nextRemarks,
-            dataSource: CriterionYearDataSource.MANUAL,
+            dataSource: BlockEntryValueSource.MANUAL,
             updatedByUserId: actorUserId,
           },
         });
@@ -3028,11 +3103,11 @@ export async function setCriterionEntryYearData(
       });
     }
 
-    if (entry.status === CriterionEntryStatus.BLANK) {
-      await tx.criterionEntry.update({
+    if (entry.status === BlockEntryStatus.BLANK) {
+      await tx.blockEntry.update({
         where: { id: entryId },
         data: {
-          status: CriterionEntryStatus.IN_PROGRESS,
+          status: BlockEntryStatus.IN_PROGRESS,
           lastUpdatedAt: new Date(),
           lastUpdatedByUserId: actorUserId,
         },
@@ -3040,13 +3115,13 @@ export async function setCriterionEntryYearData(
       await recordCriterionEntryChange(tx, {
         entryId,
         fieldChanged: "status",
-        oldValue: CriterionEntryStatus.BLANK,
-        newValue: CriterionEntryStatus.IN_PROGRESS,
+        oldValue: BlockEntryStatus.BLANK,
+        newValue: BlockEntryStatus.IN_PROGRESS,
         reason: "Initial data entry",
         changedByUserId: actorUserId,
       });
     } else {
-      await tx.criterionEntry.update({
+      await tx.blockEntry.update({
         where: { id: entryId },
         data: {
           lastUpdatedAt: new Date(),
@@ -3063,11 +3138,11 @@ export async function setCriterionEntryYearData(
         ? await invalidateSectionReviewForCriterionTx(tx, {
             workspaceId: entry.workspace.id,
             versionId: permissionContext.workspace.versionId,
-            criterionId: entry.criterion.id,
+            blockId: entry.block.id,
             actorUserId,
-            triggerMessage: `${entry.criterion.criterionCode} ${parsed.data.year} data was updated.`,
+            triggerMessage: `${entry.block.blockCode} ${parsed.data.year} data was updated.`,
             metadata: {
-              criterionCode: entry.criterion.criterionCode,
+              blockCode: entry.block.blockCode,
               year: parsed.data.year,
               numericChanged,
               textChanged,
@@ -3078,7 +3153,7 @@ export async function setCriterionEntryYearData(
 
     return {
       status: "success" as const,
-      yearData: saved,
+      responses: saved,
       invalidation,
     };
   });
@@ -3091,9 +3166,9 @@ export async function setCriterionEntryYearData(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId: entry.workspace.id,
-      sectionCriterionId: updated.invalidation.sectionCriterionId,
+      sectionBlockId: updated.invalidation.sectionBlockId,
       sectionCode: updated.invalidation.sectionCode,
-      triggerMessage: `${entry.criterion.criterionCode} data changed and reopened the section review.`,
+      triggerMessage: `${entry.block.blockCode} data changed and reopened the section review.`,
       actorUserId,
     });
   }
@@ -3101,11 +3176,11 @@ export async function setCriterionEntryYearData(
   return {
     status: "success",
     message: "Year data saved.",
-    yearData: updated.yearData,
-  } satisfies SuccessResult<{ yearData: typeof updated.yearData }>;
+    responses: updated.responses,
+  } satisfies SuccessResult<{ responses: typeof updated.responses }>;
 }
 
-export async function updateCriterionEntryStatus(
+export async function updateBlockEntryStatus(
   entryId: string,
   tenantId: string,
   input: unknown,
@@ -3117,7 +3192,7 @@ export async function updateCriterionEntryStatus(
     return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid entry status." } satisfies ErrorResult;
   }
 
-  const entry = await prisma.criterionEntry.findUnique({
+  const entry = await prisma.blockEntry.findUnique({
     where: { id: entryId },
     include: {
       workspace: {
@@ -3127,9 +3202,9 @@ export async function updateCriterionEntryStatus(
           status: true,
         },
       },
-      criterion: {
+      block: {
         select: {
-          criterionCode: true,
+          blockCode: true,
           title: true,
         },
       },
@@ -3156,46 +3231,51 @@ export async function updateCriterionEntryStatus(
   }
 
   const nextStatus = parsed.data.status;
-  const criterionCode = entry.criterion.criterionCode;
+  const blockCode = entry.block.blockCode;
   const reason = normalizeNullableString(parsed.data.reason);
 
   let allowed = false;
-  if (nextStatus === CriterionEntryStatus.COMPLETE) {
-    allowed = canPerformOnCriterionCode(
+  if (nextStatus === BlockEntryStatus.COMPLETE) {
+    allowed = await canPerformOnBlock(
+      prisma,
       permissionContext,
       [WorkspaceCollaboratorRole.RESPONSIBLE, WorkspaceCollaboratorRole.COORDINATOR],
-      criterionCode,
+      entry.blockId,
     );
-  } else if (nextStatus === CriterionEntryStatus.UNDER_REVIEW) {
-    allowed = canPerformOnCriterionCode(
+  } else if (nextStatus === BlockEntryStatus.UNDER_REVIEW) {
+    allowed = await canPerformOnBlock(
+      prisma,
       permissionContext,
       [WorkspaceCollaboratorRole.REVIEWER, WorkspaceCollaboratorRole.COORDINATOR],
-      criterionCode,
+      entry.blockId,
     );
-  } else if (nextStatus === CriterionEntryStatus.APPROVED) {
-    allowed = canPerformOnCriterionCode(
+  } else if (nextStatus === BlockEntryStatus.APPROVED) {
+    allowed = await canPerformOnBlock(
+      prisma,
       permissionContext,
       [WorkspaceCollaboratorRole.APPROVER, WorkspaceCollaboratorRole.COORDINATOR],
-      criterionCode,
+      entry.blockId,
     );
-  } else if (nextStatus === CriterionEntryStatus.CHANGES_REQUESTED) {
-    allowed = canPerformOnCriterionCode(
+  } else if (nextStatus === BlockEntryStatus.CHANGES_REQUESTED) {
+    allowed = await canPerformOnBlock(
+      prisma,
       permissionContext,
       [
         WorkspaceCollaboratorRole.REVIEWER,
         WorkspaceCollaboratorRole.APPROVER,
         WorkspaceCollaboratorRole.COORDINATOR,
       ],
-      criterionCode,
+      entry.blockId,
     );
-  } else if (nextStatus === CriterionEntryStatus.IN_PROGRESS) {
+  } else if (nextStatus === BlockEntryStatus.IN_PROGRESS) {
     allowed =
-      canPerformOnCriterionCode(
+      (await canPerformOnBlock(
+        prisma,
         permissionContext,
         [WorkspaceCollaboratorRole.RESPONSIBLE, WorkspaceCollaboratorRole.COORDINATOR],
-        criterionCode,
-      ) ||
-      (entry.status === CriterionEntryStatus.APPROVED &&
+        entry.blockId,
+      )) ||
+      (entry.status === BlockEntryStatus.APPROVED &&
         canPerformWorkspaceRole(permissionContext, [WorkspaceCollaboratorRole.COORDINATOR]) &&
         !isWorkspaceLockedForEntryEdits(entry.workspace.status));
   }
@@ -3204,7 +3284,7 @@ export async function updateCriterionEntryStatus(
     return { status: "error", message: "You do not have permission to apply this status transition." } satisfies ErrorResult;
   }
 
-  if (entry.status === CriterionEntryStatus.APPROVED && nextStatus === CriterionEntryStatus.IN_PROGRESS) {
+  if (entry.status === BlockEntryStatus.APPROVED && nextStatus === BlockEntryStatus.IN_PROGRESS) {
     if (
       isWorkspaceLockedForEntryEdits(entry.workspace.status)
     ) {
@@ -3213,7 +3293,7 @@ export async function updateCriterionEntryStatus(
   }
 
   const statusUpdate = await prisma.$transaction(async (tx) => {
-    await tx.criterionEntry.update({
+    await tx.blockEntry.update({
       where: { id: entryId },
       data: {
         status: nextStatus,
@@ -3235,11 +3315,11 @@ export async function updateCriterionEntryStatus(
     const invalidation = await invalidateSectionReviewForCriterionTx(tx, {
       workspaceId: entry.workspace.id,
       versionId: permissionContext.workspace.versionId,
-      criterionId: entry.criterionId,
+      blockId: entry.blockId,
       actorUserId,
-      triggerMessage: `${criterionCode} status changed from ${entry.status} to ${nextStatus}.`,
+      triggerMessage: `${blockCode} status changed from ${entry.status} to ${nextStatus}.`,
       metadata: {
-        criterionCode,
+        blockCode,
         previousStatus: entry.status,
         nextStatus,
       } satisfies Prisma.JsonObject,
@@ -3248,13 +3328,14 @@ export async function updateCriterionEntryStatus(
     return { invalidation };
   });
 
-  if (nextStatus === CriterionEntryStatus.CHANGES_REQUESTED) {
+  if (nextStatus === BlockEntryStatus.CHANGES_REQUESTED) {
     await notifyChangesRequested({
       workspaceId: entry.workspace.id,
       tenantId,
       entryId,
-      criterionCode,
-      title: entry.criterion.title,
+      sectionBlockId: statusUpdate.invalidation?.sectionBlockId ?? null,
+      blockCode,
+      title: entry.block.title,
       actorUserId,
     });
   }
@@ -3263,9 +3344,9 @@ export async function updateCriterionEntryStatus(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId: entry.workspace.id,
-      sectionCriterionId: statusUpdate.invalidation.sectionCriterionId,
+      sectionBlockId: statusUpdate.invalidation.sectionBlockId,
       sectionCode: statusUpdate.invalidation.sectionCode,
-      triggerMessage: `${criterionCode} status changed and reopened the section review.`,
+      triggerMessage: `${blockCode} status changed and reopened the section review.`,
       actorUserId,
     });
   }
@@ -3276,7 +3357,7 @@ export async function updateCriterionEntryStatus(
   };
 }
 
-export async function setCriterionEntryManualOverride(
+export async function setBlockEntryManualOverride(
   entryId: string,
   tenantId: string,
   input: unknown,
@@ -3288,7 +3369,7 @@ export async function setCriterionEntryManualOverride(
     return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid override input." } satisfies ErrorResult;
   }
 
-  const entry = await prisma.criterionEntry.findUnique({
+  const entry = await prisma.blockEntry.findUnique({
     where: { id: entryId },
     include: {
       workspace: {
@@ -3298,10 +3379,10 @@ export async function setCriterionEntryManualOverride(
           status: true,
         },
       },
-      criterion: {
+      block: {
         select: {
           id: true,
-          criterionCode: true,
+          blockCode: true,
         },
       },
     },
@@ -3322,11 +3403,12 @@ export async function setCriterionEntryManualOverride(
   }
 
   if (
-    !canPerformOnCriterionCode(
+    !(await canPerformOnBlock(
+      prisma,
       permissionContext,
       [WorkspaceCollaboratorRole.APPROVER, WorkspaceCollaboratorRole.COORDINATOR],
-      entry.criterion.criterionCode,
-    )
+      entry.block.id,
+    ))
   ) {
     return { status: "error", message: "You do not have permission to apply manual score overrides." } satisfies ErrorResult;
   }
@@ -3340,15 +3422,15 @@ export async function setCriterionEntryManualOverride(
     return { status: "error", message: "Unable to compute the effective maximum score." } satisfies ErrorResult;
   }
 
-  const criterion = scoringContext.criteria.find((item) => item.id === entry.criterion.id);
-  if (!criterion) {
+  const block = scoringContext.criteria.find((item) => item.id === entry.block.id);
+  if (!block) {
     return { status: "error", message: "Criterion not found." } satisfies ErrorResult;
   }
 
   const weightOverride =
-    scoringContext.workspace.profile.weightOverrides.find((weight) => weight.criterionId === criterion.id)
+    scoringContext.workspace.profile.weightOverrides.find((weight) => weight.blockId === block.id)
       ?.maxScore ?? null;
-  const effectiveMax = weightOverride ?? criterion.maxScore;
+  const effectiveMax = weightOverride ?? block.maxScore;
   const manualOverride = parsed.data.manualOverride;
   const force = parsed.data.force ?? false;
   const reason = normalizeReason(parsed.data.reason);
@@ -3379,7 +3461,7 @@ export async function setCriterionEntryManualOverride(
   }
 
   const overrideUpdate = await prisma.$transaction(async (tx) => {
-    await tx.criterionEntry.update({
+    await tx.blockEntry.update({
       where: { id: entryId },
       data: {
         manualOverride,
@@ -3403,11 +3485,11 @@ export async function setCriterionEntryManualOverride(
     const invalidation = await invalidateSectionReviewForCriterionTx(tx, {
       workspaceId: entry.workspace.id,
       versionId: permissionContext.workspace.versionId,
-      criterionId: entry.criterion.id,
+      blockId: entry.block.id,
       actorUserId,
-      triggerMessage: `${entry.criterion.criterionCode} manual override changed.`,
+      triggerMessage: `${entry.block.blockCode} manual override changed.`,
       metadata: {
-        criterionCode: entry.criterion.criterionCode,
+        blockCode: entry.block.blockCode,
         previousManualOverride: entry.manualOverride,
         nextManualOverride: manualOverride,
       } satisfies Prisma.JsonObject,
@@ -3420,9 +3502,9 @@ export async function setCriterionEntryManualOverride(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId: entry.workspace.id,
-      sectionCriterionId: overrideUpdate.invalidation.sectionCriterionId,
+      sectionBlockId: overrideUpdate.invalidation.sectionBlockId,
       sectionCode: overrideUpdate.invalidation.sectionCode,
-      triggerMessage: `${entry.criterion.criterionCode} manual override changed and reopened the section review.`,
+      triggerMessage: `${entry.block.blockCode} manual override changed and reopened the section review.`,
       actorUserId,
     });
   }
@@ -3433,13 +3515,13 @@ export async function setCriterionEntryManualOverride(
   };
 }
 
-export async function listCriterionEntryChangeLog(
+export async function listBlockEntryChangeLog(
   entryId: string,
   tenantId: string,
   actorUserId: string,
   actorRole: Role | null | undefined,
 ) {
-  const entry = await prisma.criterionEntry.findUnique({
+  const entry = await prisma.blockEntry.findUnique({
     where: { id: entryId },
     select: {
       workspaceId: true,
@@ -3469,7 +3551,7 @@ export async function listCriterionEntryChangeLog(
     return { status: "error", message: "You do not have access to this workspace." } satisfies ErrorResult;
   }
 
-  const changes = await prisma.criterionEntryChange.findMany({
+  const changes = await prisma.blockEntryChange.findMany({
     where: { entryId },
     orderBy: { changedAt: "desc" },
   });
@@ -3658,9 +3740,9 @@ export async function removeAssessmentWorkspaceCollaborator(
       userId,
     },
     include: {
-      sectionCriterion: {
+      sectionBlock: {
         select: {
-          criterionCode: true,
+          blockCode: true,
         },
       },
     },
@@ -3669,7 +3751,7 @@ export async function removeAssessmentWorkspaceCollaborator(
     return {
       status: "error",
       message: `This collaborator still has section assignments (${activeAssignments
-        .map((assignment) => assignment.sectionCriterion.criterionCode)
+        .map((assignment) => assignment.sectionBlock.blockCode)
         .join(", ")}). Reassign or remove those first.`,
     } satisfies ErrorResult;
   }
@@ -3911,7 +3993,7 @@ export async function createAssessmentWorkspaceEvidence(
     return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid evidence input." } satisfies ErrorResult;
   }
 
-  const evidence = await prisma.criterionEvidence.create({
+  const evidence = await prisma.blockEvidence.create({
     data: {
       workspaceId,
       title: parsed.data.title,
@@ -3951,7 +4033,7 @@ export async function listAssessmentWorkspaceEvidence(
     return { status: "error", message: "You do not have access to this workspace." } satisfies ErrorResult;
   }
 
-  const evidence = await prisma.criterionEvidence.findMany({
+  const evidence = await prisma.blockEvidence.findMany({
     where: { workspaceId },
     include: {
       versions: {
@@ -3961,9 +4043,9 @@ export async function listAssessmentWorkspaceEvidence(
         include: {
           entry: {
             include: {
-              criterion: {
+              block: {
                 select: {
-                  criterionCode: true,
+                  blockCode: true,
                   title: true,
                 },
               },
@@ -3989,8 +4071,8 @@ export async function listAssessmentWorkspaceEvidence(
       links: item.entryLinks.map((link) => ({
         linkId: link.id,
         entryId: link.entryId,
-        criterionCode: link.entry.criterion.criterionCode,
-        criterionTitle: link.entry.criterion.title,
+        blockCode: link.entry.block.blockCode,
+        blockTitle: link.entry.block.title,
       })),
     })),
   } satisfies SuccessResult<{ evidence: unknown[] }>;
@@ -4003,7 +4085,7 @@ export async function addAssessmentWorkspaceEvidenceVersion(
   actorUserId: string,
   actorRole: Role | null | undefined,
 ) {
-  const evidence = await prisma.criterionEvidence.findUnique({
+  const evidence = await prisma.blockEvidence.findUnique({
     where: { id: evidenceId },
     include: {
       workspace: {
@@ -4052,13 +4134,13 @@ export async function addAssessmentWorkspaceEvidenceVersion(
   let versionResult:
     | {
         version: Awaited<ReturnType<typeof prisma.evidenceVersion.create>>;
-        invalidations: Array<{ sectionCriterionId: string; sectionCode: string }>;
+        invalidations: Array<{ sectionBlockId: string; sectionCode: string }>;
       }
     | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       versionResult = await prisma.$transaction(async (tx) => {
-        const refreshedEvidence = await tx.criterionEvidence.findUniqueOrThrow({
+        const refreshedEvidence = await tx.blockEvidence.findUniqueOrThrow({
           where: { id: evidenceId },
           select: {
             latestVersionNumber: true,
@@ -4092,7 +4174,7 @@ export async function addAssessmentWorkspaceEvidenceVersion(
           },
         });
 
-        await tx.criterionEvidence.update({
+        await tx.blockEvidence.update({
           where: { id: evidenceId },
           data: {
             latestVersionNumber: createdVersion.versionNumber,
@@ -4105,18 +4187,18 @@ export async function addAssessmentWorkspaceEvidenceVersion(
           include: {
             entry: {
               select: {
-                criterionId: true,
+                blockId: true,
               },
             },
           },
         });
 
-        const invalidations: Array<{ sectionCriterionId: string; sectionCode: string }> = [];
+        const invalidations: Array<{ sectionBlockId: string; sectionCode: string }> = [];
         for (const link of linkedEntries) {
           const invalidation = await invalidateSectionReviewForCriterionTx(tx, {
             workspaceId: evidence.workspace.id,
             versionId: permissionContext.workspace.versionId,
-            criterionId: link.entry.criterionId,
+            blockId: link.entry.blockId,
             actorUserId,
             triggerMessage: `Evidence "${evidence.title}" received a new version.`,
             metadata: {
@@ -4127,7 +4209,7 @@ export async function addAssessmentWorkspaceEvidenceVersion(
           });
           if (invalidation?.invalidated) {
             invalidations.push({
-              sectionCriterionId: invalidation.sectionCriterionId,
+              sectionBlockId: invalidation.sectionBlockId,
               sectionCode: invalidation.sectionCode,
             });
           }
@@ -4158,7 +4240,7 @@ export async function addAssessmentWorkspaceEvidenceVersion(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId: evidence.workspace.id,
-      sectionCriterionId: invalidation.sectionCriterionId,
+      sectionBlockId: invalidation.sectionBlockId,
       sectionCode: invalidation.sectionCode,
       triggerMessage: `Evidence "${evidence.title}" changed and reopened the section review.`,
       actorUserId,
@@ -4185,7 +4267,7 @@ export async function linkAssessmentWorkspaceEvidence(
   }
 
   const [evidence, entry] = await Promise.all([
-    prisma.criterionEvidence.findUnique({
+    prisma.blockEvidence.findUnique({
       where: { id: evidenceId },
       include: {
         workspace: {
@@ -4197,7 +4279,7 @@ export async function linkAssessmentWorkspaceEvidence(
         },
       },
     }),
-    prisma.criterionEntry.findUnique({
+    prisma.blockEntry.findUnique({
       where: { id: parsed.data.entryId },
       include: {
         workspace: {
@@ -4206,9 +4288,9 @@ export async function linkAssessmentWorkspaceEvidence(
             tenantId: true,
           },
         },
-        criterion: {
+        block: {
           select: {
-            criterionCode: true,
+            blockCode: true,
           },
         },
       },
@@ -4234,13 +4316,14 @@ export async function linkAssessmentWorkspaceEvidence(
   }
 
   if (
-    !canPerformOnCriterionCode(
+    !(await canPerformOnBlock(
+      prisma,
       permissionContext,
       [WorkspaceCollaboratorRole.RESPONSIBLE, WorkspaceCollaboratorRole.COORDINATOR],
-      entry.criterion.criterionCode,
-    )
+      entry.blockId,
+    ))
   ) {
-    return { status: "error", message: "You do not have permission to link evidence to this criterion." } satisfies ErrorResult;
+    return { status: "error", message: "You do not have permission to link evidence to this block." } satisfies ErrorResult;
   }
 
   if (isWorkspaceLockedForEntryEdits(evidence.workspace.status)) {
@@ -4256,15 +4339,15 @@ export async function linkAssessmentWorkspaceEvidence(
       },
     });
 
-    const currentEntry = await tx.criterionEntry.findUnique({
+    const currentEntry = await tx.blockEntry.findUnique({
       where: { id: entry.id },
       select: { status: true },
     });
-    if (currentEntry?.status === CriterionEntryStatus.BLANK) {
-      await tx.criterionEntry.update({
+    if (currentEntry?.status === BlockEntryStatus.BLANK) {
+      await tx.blockEntry.update({
         where: { id: entry.id },
         data: {
-          status: CriterionEntryStatus.IN_PROGRESS,
+          status: BlockEntryStatus.IN_PROGRESS,
           lastUpdatedAt: new Date(),
           lastUpdatedByUserId: actorUserId,
         },
@@ -4275,13 +4358,13 @@ export async function linkAssessmentWorkspaceEvidence(
     const invalidation = await invalidateSectionReviewForCriterionTx(tx, {
       workspaceId: evidence.workspace.id,
       versionId: permissionContext.workspace.versionId,
-      criterionId: entry.criterionId,
+      blockId: entry.blockId,
       actorUserId,
-      triggerMessage: `Evidence "${evidence.title}" was linked to ${entry.criterion.criterionCode}.`,
+      triggerMessage: `Evidence "${evidence.title}" was linked to ${entry.block.blockCode}.`,
       metadata: {
         evidenceId,
         entryId: entry.id,
-        criterionCode: entry.criterion.criterionCode,
+        blockCode: entry.block.blockCode,
       } satisfies Prisma.JsonObject,
     });
 
@@ -4292,9 +4375,9 @@ export async function linkAssessmentWorkspaceEvidence(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId: evidence.workspace.id,
-      sectionCriterionId: linkResult.invalidation.sectionCriterionId,
+      sectionBlockId: linkResult.invalidation.sectionBlockId,
       sectionCode: linkResult.invalidation.sectionCode,
-      triggerMessage: `${entry.criterion.criterionCode} evidence links changed and reopened the section review.`,
+      triggerMessage: `${entry.block.blockCode} evidence links changed and reopened the section review.`,
       actorUserId,
     });
   }
@@ -4328,9 +4411,9 @@ export async function unlinkAssessmentWorkspaceEvidence(
       },
       entry: {
         include: {
-          criterion: {
+          block: {
             select: {
-              criterionCode: true,
+              blockCode: true,
             },
           },
         },
@@ -4353,13 +4436,14 @@ export async function unlinkAssessmentWorkspaceEvidence(
   }
 
   if (
-    !canPerformOnCriterionCode(
+    !(await canPerformOnBlock(
+      prisma,
       permissionContext,
       [WorkspaceCollaboratorRole.RESPONSIBLE, WorkspaceCollaboratorRole.COORDINATOR],
-      link.entry.criterion.criterionCode,
-    )
+      link.entry.blockId,
+    ))
   ) {
-    return { status: "error", message: "You do not have permission to unlink evidence from this criterion." } satisfies ErrorResult;
+    return { status: "error", message: "You do not have permission to unlink evidence from this block." } satisfies ErrorResult;
   }
 
   if (isWorkspaceLockedForEntryEdits(link.evidence.workspace.status)) {
@@ -4374,13 +4458,13 @@ export async function unlinkAssessmentWorkspaceEvidence(
     const invalidation = await invalidateSectionReviewForCriterionTx(tx, {
       workspaceId: link.evidence.workspace.id,
       versionId: permissionContext.workspace.versionId,
-      criterionId: link.entry.criterionId,
+      blockId: link.entry.blockId,
       actorUserId,
-      triggerMessage: `Evidence "${link.evidence.title}" was unlinked from ${link.entry.criterion.criterionCode}.`,
+      triggerMessage: `Evidence "${link.evidence.title}" was unlinked from ${link.entry.block.blockCode}.`,
       metadata: {
         evidenceId: link.evidenceId,
         entryId: link.entryId,
-        criterionCode: link.entry.criterion.criterionCode,
+        blockCode: link.entry.block.blockCode,
       } satisfies Prisma.JsonObject,
     });
 
@@ -4391,9 +4475,9 @@ export async function unlinkAssessmentWorkspaceEvidence(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId: link.evidence.workspace.id,
-      sectionCriterionId: unlinkResult.invalidation.sectionCriterionId,
+      sectionBlockId: unlinkResult.invalidation.sectionBlockId,
       sectionCode: unlinkResult.invalidation.sectionCode,
-      triggerMessage: `${link.entry.criterion.criterionCode} evidence links changed and reopened the section review.`,
+      triggerMessage: `${link.entry.block.blockCode} evidence links changed and reopened the section review.`,
       actorUserId,
     });
   }
@@ -4410,7 +4494,7 @@ export async function deleteAssessmentWorkspaceEvidence(
   actorUserId: string,
   actorRole: Role | null | undefined,
 ) {
-  const evidence = await prisma.criterionEvidence.findUnique({
+  const evidence = await prisma.blockEvidence.findUnique({
     where: { id: evidenceId },
     include: {
       workspace: {
@@ -4424,9 +4508,9 @@ export async function deleteAssessmentWorkspaceEvidence(
         include: {
           entry: {
             include: {
-              criterion: {
+              block: {
                 select: {
-                  criterionCode: true,
+                  blockCode: true,
                 },
               },
             },
@@ -4462,12 +4546,12 @@ export async function deleteAssessmentWorkspaceEvidence(
     return {
       status: "error",
       message: `This evidence is linked to ${evidence.entryLinks
-        .map((link) => link.entry.criterion.criterionCode)
+        .map((link) => link.entry.block.blockCode)
         .join(", ")}. Unlink it first before deleting.`,
     } satisfies ErrorResult;
   }
 
-  await prisma.criterionEvidence.delete({
+  await prisma.blockEvidence.delete({
     where: { id: evidenceId },
   });
 
@@ -4564,7 +4648,7 @@ async function takeSnapshotTx(
       overallConvertedScore: scoring.overallConvertedScore,
       resolvedGrade: scoring.resolvedGrade,
       resolvedOutcome: scoring.resolvedOutcome,
-      criterionScores: scoring.criterionScores as Prisma.JsonObject,
+      blockScores: scoring.blockScores as Prisma.JsonObject,
       thresholdResult: scoring.thresholdResult as Prisma.JsonObject,
       dataSourceSnapshot: scoring.dataSourceCounts as Prisma.JsonObject,
       takenByUserId: actorUserId,
@@ -4699,22 +4783,22 @@ export async function compareAssessmentWorkspaceSnapshots(
   }
 
   const [left, right] = snapshots.sort((a, b) => a.takenAt.getTime() - b.takenAt.getTime());
-  const leftScores = parseSnapshotCriterionScores(left.criterionScores);
-  const rightScores = parseSnapshotCriterionScores(right.criterionScores);
-  const criterionIds = [...new Set([...Object.keys(leftScores), ...Object.keys(rightScores)])];
-  const deltas = criterionIds
-    .map((criterionId) => {
-      const before = leftScores[criterionId] ?? null;
-      const after = rightScores[criterionId] ?? null;
+  const leftScores = parseSnapshotCriterionScores(left.blockScores);
+  const rightScores = parseSnapshotCriterionScores(right.blockScores);
+  const blockIds = [...new Set([...Object.keys(leftScores), ...Object.keys(rightScores)])];
+  const deltas = blockIds
+    .map((blockId) => {
+      const before = leftScores[blockId] ?? null;
+      const after = rightScores[blockId] ?? null;
       const beforeScore = before?.finalScore ?? null;
       const afterScore = after?.finalScore ?? null;
       if (beforeScore === afterScore) {
         return null;
       }
       return {
-        criterionId,
-        criterionCode: after?.criterionCode ?? before?.criterionCode ?? criterionId,
-        title: after?.title ?? before?.title ?? criterionId,
+        blockId,
+        blockCode: after?.blockCode ?? before?.blockCode ?? blockId,
+        title: after?.title ?? before?.title ?? blockId,
         beforeScore,
         afterScore,
         delta:
@@ -4791,22 +4875,22 @@ export async function checkAssessmentWorkspaceDrift(
   }
 
   const currentScoring = computeWorkspaceScoresFromContext(currentScoringContext);
-  const baselineScores = parseSnapshotCriterionScores(baseline.criterionScores);
-  const currentScores = currentScoring.criterionScores;
-  const criterionIds = [...new Set([...Object.keys(baselineScores), ...Object.keys(currentScores)])];
-  const deltas = criterionIds
-    .map((criterionId) => {
-      const before = baselineScores[criterionId]?.finalScore ?? null;
-      const after = currentScores[criterionId]?.finalScore ?? null;
+  const baselineScores = parseSnapshotCriterionScores(baseline.blockScores);
+  const currentScores = currentScoring.blockScores;
+  const blockIds = [...new Set([...Object.keys(baselineScores), ...Object.keys(currentScores)])];
+  const deltas = blockIds
+    .map((blockId) => {
+      const before = baselineScores[blockId]?.finalScore ?? null;
+      const after = currentScores[blockId]?.finalScore ?? null;
       if (before === after) {
         return null;
       }
       return {
-        criterionId,
-        criterionCode:
-          currentScores[criterionId]?.criterionCode ??
-          baselineScores[criterionId]?.criterionCode ??
-          criterionId,
+        blockId,
+        blockCode:
+          currentScores[blockId]?.blockCode ??
+          baselineScores[blockId]?.blockCode ??
+          blockId,
         before,
         after,
         delta:
@@ -4906,14 +4990,14 @@ export async function freezeAssessmentWorkspace(
         select: {
           overallRawScore: true,
           overallConvertedScore: true,
-          criterionScores: true,
+          blockScores: true,
         },
       });
       if (previousSnapshot) {
-        const currentScores = taken.scoring.criterionScores;
-        const previousScores = asJsonObject(previousSnapshot.criterionScores);
-        const changedCriterionCount = Object.entries(currentScores).filter(([criterionId, row]) => {
-          const previous = asJsonObject(previousScores?.[criterionId] as Prisma.JsonValue | undefined);
+        const currentScores = taken.scoring.blockScores;
+        const previousScores = asJsonObject(previousSnapshot.blockScores);
+        const changedCriterionCount = Object.entries(currentScores).filter(([blockId, row]) => {
+          const previous = asJsonObject(previousScores?.[blockId] as Prisma.JsonValue | undefined);
           return previous?.finalScore !== row.finalScore;
         }).length;
         changesSummary = {
@@ -5090,12 +5174,12 @@ export async function importAssessmentWorkspaceData(
   const parsed = parseWorkspaceImportFile(input.buffer, input.fileName);
   const entryMap = new Map(
     (
-      await prisma.criterionEntry.findMany({
+      await prisma.blockEntry.findMany({
         where: { workspaceId },
         include: {
-          criterion: {
+          block: {
             select: {
-              criterionCode: true,
+              blockCode: true,
               dataType: true,
               title: true,
               validationRules: true,
@@ -5103,7 +5187,7 @@ export async function importAssessmentWorkspaceData(
           },
         },
       })
-    ).map((entry) => [entry.criterion.criterionCode, entry]),
+    ).map((entry) => [entry.block.blockCode, entry]),
   );
 
   const { startYear, endYear } = getWorkspaceYearBounds(
@@ -5116,7 +5200,7 @@ export async function importAssessmentWorkspaceData(
   let skipped = 0;
 
   const importResult = await prisma.$transaction(async (tx) => {
-    const invalidations: Array<{ sectionCriterionId: string; sectionCode: string }> = [];
+    const invalidations: Array<{ sectionBlockId: string; sectionCode: string }> = [];
     for (const row of parsed.rows) {
       if (row.errors.length > 0) {
         errors.push(`Row ${row.rowIndex}: ${row.errors.join(" ")}`);
@@ -5130,9 +5214,9 @@ export async function importAssessmentWorkspaceData(
         continue;
       }
 
-      const entry = entryMap.get(row.criterionCode);
+      const entry = entryMap.get(row.blockCode);
       if (!entry) {
-        errors.push(`Row ${row.rowIndex}: criterion ${row.criterionCode} was not found in this workspace.`);
+        errors.push(`Row ${row.rowIndex}: criterion ${row.blockCode} was not found in this workspace.`);
         skipped += 1;
         continue;
       }
@@ -5140,7 +5224,7 @@ export async function importAssessmentWorkspaceData(
       const numericValue = row.numericValue ?? null;
       const textValue = normalizeNullableString(row.textValue);
       const validationError = validateYearDataByCriterion({
-        criterion: entry.criterion,
+        block: entry.block,
         numericValue,
         textValue,
       });
@@ -5150,7 +5234,7 @@ export async function importAssessmentWorkspaceData(
         continue;
       }
 
-      const existing = await tx.criterionYearData.findUnique({
+      const existing = await tx.blockEntryYearValue.findUnique({
         where: {
           entryId_year: {
             entryId: entry.id,
@@ -5159,7 +5243,7 @@ export async function importAssessmentWorkspaceData(
         },
       });
 
-      await tx.criterionYearData.upsert({
+      await tx.blockEntryYearValue.upsert({
         where: {
           entryId_year: {
             entryId: entry.id,
@@ -5172,7 +5256,7 @@ export async function importAssessmentWorkspaceData(
           actualValue: numericValue,
           textValue,
           remarks: normalizeNullableString(row.remarks),
-          dataSource: CriterionYearDataSource.IMPORTED,
+          dataSource: BlockEntryValueSource.IMPORTED,
           sourceRef: input.fileName,
           updatedByUserId: actorUserId,
         },
@@ -5180,7 +5264,7 @@ export async function importAssessmentWorkspaceData(
           actualValue: numericValue,
           textValue,
           remarks: normalizeNullableString(row.remarks),
-          dataSource: CriterionYearDataSource.IMPORTED,
+          dataSource: BlockEntryValueSource.IMPORTED,
           sourceRef: input.fileName,
           updatedByUserId: actorUserId,
         },
@@ -5196,11 +5280,11 @@ export async function importAssessmentWorkspaceData(
         changedByUserId: actorUserId,
       });
 
-      if (entry.status === CriterionEntryStatus.BLANK) {
-        await tx.criterionEntry.update({
+      if (entry.status === BlockEntryStatus.BLANK) {
+        await tx.blockEntry.update({
           where: { id: entry.id },
           data: {
-            status: CriterionEntryStatus.IN_PROGRESS,
+            status: BlockEntryStatus.IN_PROGRESS,
             lastUpdatedAt: new Date(),
             lastUpdatedByUserId: actorUserId,
           },
@@ -5210,18 +5294,18 @@ export async function importAssessmentWorkspaceData(
       const invalidation = await invalidateSectionReviewForCriterionTx(tx, {
         workspaceId,
         versionId: permissionContext.workspace.versionId,
-        criterionId: entry.criterionId,
+        blockId: entry.blockId,
         actorUserId,
-        triggerMessage: `${entry.criterion.criterionCode} was updated by bulk import.`,
+        triggerMessage: `${entry.block.blockCode} was updated by bulk import.`,
         metadata: {
-          criterionCode: entry.criterion.criterionCode,
+          blockCode: entry.block.blockCode,
           sourceFile: input.fileName,
           year: row.year,
         } satisfies Prisma.JsonObject,
       });
       if (invalidation?.invalidated) {
         invalidations.push({
-          sectionCriterionId: invalidation.sectionCriterionId,
+          sectionBlockId: invalidation.sectionBlockId,
           sectionCode: invalidation.sectionCode,
         });
       }
@@ -5243,7 +5327,7 @@ export async function importAssessmentWorkspaceData(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId,
-      sectionCriterionId: invalidation.sectionCriterionId,
+      sectionBlockId: invalidation.sectionBlockId,
       sectionCode: invalidation.sectionCode,
       triggerMessage: `Bulk import updated ${invalidation.sectionCode} and reopened the section review.`,
       actorUserId,
@@ -5299,12 +5383,12 @@ export async function cloneAssessmentWorkspace(
       },
       entries: {
         include: {
-          criterion: {
+          block: {
             select: {
-              criterionCode: true,
+              blockCode: true,
             },
           },
-          yearData: {
+          responses: {
             orderBy: { year: "asc" },
           },
         },
@@ -5359,51 +5443,51 @@ export async function cloneAssessmentWorkspace(
     });
 
     const initialized = await initializeWorkspaceEntriesTx(tx, workspace.id, source.versionId);
-    const createdEntries = await tx.criterionEntry.findMany({
+    const createdEntries = await tx.blockEntry.findMany({
       where: { workspaceId: workspace.id },
       include: {
-        criterion: {
+        block: {
           select: {
-            criterionCode: true,
+            blockCode: true,
           },
         },
       },
     });
     const createdEntryByCode = new Map(
-      createdEntries.map((entry) => [entry.criterion.criterionCode, entry]),
+      createdEntries.map((entry) => [entry.block.blockCode, entry]),
     );
     const { startYear, endYear } = getWorkspaceYearBounds(parsed.data.periodStart, parsed.data.periodEnd);
 
     for (const sourceEntry of source.entries) {
-      const targetEntry = createdEntryByCode.get(sourceEntry.criterion.criterionCode);
+      const targetEntry = createdEntryByCode.get(sourceEntry.block.blockCode);
       if (!targetEntry) {
         continue;
       }
 
-      const overlappingRows = sourceEntry.yearData.filter(
+      const overlappingRows = sourceEntry.responses.filter(
         (row) => row.year >= startYear && row.year <= endYear,
       );
       if (overlappingRows.length === 0) {
         continue;
       }
 
-      await tx.criterionYearData.createMany({
+      await tx.blockEntryYearValue.createMany({
         data: overlappingRows.map((row) => ({
           entryId: targetEntry.id,
           year: row.year,
           actualValue: row.actualValue,
           textValue: row.textValue,
           remarks: row.remarks,
-          dataSource: CriterionYearDataSource.CLONED,
+          dataSource: BlockEntryValueSource.CLONED,
           sourceRef: sourceWorkspaceId,
           updatedByUserId: actorUserId,
         })),
       });
 
-      await tx.criterionEntry.update({
+      await tx.blockEntry.update({
         where: { id: targetEntry.id },
         data: {
-          status: CriterionEntryStatus.IN_PROGRESS,
+          status: BlockEntryStatus.IN_PROGRESS,
           lastUpdatedAt: new Date(),
           lastUpdatedByUserId: actorUserId,
         },
@@ -5434,14 +5518,14 @@ export async function cloneAssessmentWorkspace(
 async function getWorkspaceSectionBundleTx(
   tx: DbClient,
   workspaceId: string,
-  sectionCriterionId: string,
+  sectionBlockId: string,
 ) {
   const sectionContext = await ensureWorkspaceSectionCollaborationBackfillTx(tx, workspaceId);
   if (!sectionContext) {
     return null;
   }
 
-  const section = sectionContext.sectionsById.get(sectionCriterionId);
+  const section = sectionContext.sectionsById.get(sectionBlockId);
   if (!section) {
     return null;
   }
@@ -5449,9 +5533,9 @@ async function getWorkspaceSectionBundleTx(
   const [review, assignments] = await Promise.all([
     tx.workspaceSectionReview.findUnique({
       where: {
-        workspaceId_sectionCriterionId: {
+        workspaceId_sectionBlockId: {
           workspaceId,
-          sectionCriterionId,
+          sectionBlockId,
         },
       },
       include: {
@@ -5461,7 +5545,7 @@ async function getWorkspaceSectionBundleTx(
     tx.workspaceSectionAssignment.findMany({
       where: {
         workspaceId,
-        sectionCriterionId,
+        sectionBlockId,
       },
       include: {
         user: {
@@ -5500,16 +5584,16 @@ function sectionReviewIsActionable(section: WorkspaceSectionDefinition) {
 async function buildSectionHandoffSummaryTx(
   tx: DbClient,
   workspaceId: string,
-  sectionCriterionId: string,
+  sectionBlockId: string,
 ) {
-  const bundle = await getWorkspaceSectionBundleTx(tx, workspaceId, sectionCriterionId);
+  const bundle = await getWorkspaceSectionBundleTx(tx, workspaceId, sectionBlockId);
   if (!bundle) {
     return null;
   }
 
   const entryIds = bundle.section.leafEntries.map((entry) => entry.entryId);
   const [recentChanges, openThreads, evidenceCounts] = await Promise.all([
-    tx.criterionEntryChange.findMany({
+    tx.blockEntryChange.findMany({
       where: {
         entryId: {
           in: entryIds,
@@ -5522,7 +5606,7 @@ async function buildSectionHandoffSummaryTx(
       where: {
         workspaceId,
         OR: [
-          { sectionCriterionId },
+          { sectionBlockId },
           { entryId: { in: entryIds } },
         ],
         isResolved: false,
@@ -5537,7 +5621,7 @@ async function buildSectionHandoffSummaryTx(
       orderBy: { updatedAt: "desc" },
       take: 8,
     }),
-    tx.criterionEntry.findMany({
+    tx.blockEntry.findMany({
       where: {
         id: {
           in: entryIds,
@@ -5551,8 +5635,8 @@ async function buildSectionHandoffSummaryTx(
 
   return {
     entries: bundle.section.leafEntries.map((entry) => ({
-      criterionCode: entry.criterionCode,
-      criterionTitle: entry.criterionTitle,
+      blockCode: entry.blockCode,
+      blockTitle: entry.blockTitle,
       status: entry.status,
       evidenceCount:
         evidenceCounts.find((candidate) => candidate.id === entry.entryId)?.evidenceLinks.length ?? 0,
@@ -5622,12 +5706,12 @@ export async function listAssessmentWorkspaceSections(
     }),
   ]);
 
-  const reviewBySectionId = new Map(reviews.map((review) => [review.sectionCriterionId, review]));
+  const reviewBySectionId = new Map(reviews.map((review) => [review.sectionBlockId, review]));
   const assignmentsBySectionId = new Map<string, typeof assignments>();
   for (const assignment of assignments) {
-    const existing = assignmentsBySectionId.get(assignment.sectionCriterionId) ?? [];
+    const existing = assignmentsBySectionId.get(assignment.sectionBlockId) ?? [];
     existing.push(assignment);
-    assignmentsBySectionId.set(assignment.sectionCriterionId, existing);
+    assignmentsBySectionId.set(assignment.sectionBlockId, existing);
   }
 
   const now = Date.now();
@@ -5638,17 +5722,18 @@ export async function listAssessmentWorkspaceSections(
   return {
     status: "success",
     sections: sectionContext.sections.map((section) => {
-      const review = reviewBySectionId.get(section.sectionCriterionId);
-      const sectionAssignments = assignmentsBySectionId.get(section.sectionCriterionId) ?? [];
+      const review = reviewBySectionId.get(section.sectionBlockId);
+      const sectionAssignments = assignmentsBySectionId.get(section.sectionBlockId) ?? [];
       const approvedLeafCount = section.leafEntries.filter(
-        (entry) => entry.status === CriterionEntryStatus.APPROVED,
+        (entry) => entry.status === BlockEntryStatus.APPROVED,
       ).length;
       const overdueAssignments = sectionAssignments.filter(
         (assignment) => assignment.deadline && assignment.deadline.getTime() < now,
       ).length;
 
       return {
-        sectionCriterionId: section.sectionCriterionId,
+        sectionBlockId: section.sectionBlockId,
+        blockCode: section.sectionCode,
         sectionCode: section.sectionCode,
         title: section.title,
         leafEntryCount: section.leafEntries.length,
@@ -5659,7 +5744,7 @@ export async function listAssessmentWorkspaceSections(
         currentUserRoles: permissionContext.isWorkspaceAdmin
           ? [WorkspaceSectionAssignmentRole.APPROVER]
           : currentAssignments
-              .filter((assignment) => assignment.sectionCriterionId === section.sectionCriterionId)
+              .filter((assignment) => assignment.sectionBlockId === section.sectionBlockId)
               .map((assignment) => assignment.role),
         reviewerDecisionSummary: {
           total: review?.reviewerDecisions.length ?? 0,
@@ -5766,9 +5851,9 @@ export async function bulkAssignAssessmentWorkspaceSections(
         message: "The collaborator role is not compatible with the requested section assignment.",
       } satisfies ErrorResult;
     }
-    const section = sectionContext.sectionsById.get(assignment.sectionCriterionId);
+    const section = sectionContext.sectionsById.get(assignment.sectionBlockId);
     if (!section) {
-      return { status: "error", message: "Section assignments must target a root criterion." } satisfies ErrorResult;
+      return { status: "error", message: "Section assignments must target a root block." } satisfies ErrorResult;
     }
   }
 
@@ -5778,16 +5863,16 @@ export async function bulkAssignAssessmentWorkspaceSections(
     for (const assignment of parsed.data.assignments) {
       await tx.workspaceSectionAssignment.upsert({
         where: {
-          workspaceId_sectionCriterionId_userId_role: {
+          workspaceId_sectionBlockId_userId_role: {
             workspaceId,
-            sectionCriterionId: assignment.sectionCriterionId,
+            sectionBlockId: assignment.sectionBlockId,
             userId: assignment.userId,
             role: assignment.role,
           },
         },
         create: {
           workspaceId,
-          sectionCriterionId: assignment.sectionCriterionId,
+          sectionBlockId: assignment.sectionBlockId,
           userId: assignment.userId,
           role: assignment.role,
           deadline: assignment.deadline ?? null,
@@ -5799,8 +5884,8 @@ export async function bulkAssignAssessmentWorkspaceSections(
         },
       });
 
-      touchedSections.add(assignment.sectionCriterionId);
-      const section = sectionContext.sectionsById.get(assignment.sectionCriterionId)!;
+      touchedSections.add(assignment.sectionBlockId);
+      const section = sectionContext.sectionsById.get(assignment.sectionBlockId)!;
       results.push({
         sectionCode: section.sectionCode,
         userId: assignment.userId,
@@ -5808,12 +5893,12 @@ export async function bulkAssignAssessmentWorkspaceSections(
       await syncCollaboratorAssignedSectionsFromAssignmentsTx(tx, workspaceId, assignment.userId);
     }
 
-    for (const sectionCriterionId of touchedSections) {
+    for (const sectionBlockId of touchedSections) {
       const review = await tx.workspaceSectionReview.findUnique({
         where: {
-          workspaceId_sectionCriterionId: {
+          workspaceId_sectionBlockId: {
             workspaceId,
-            sectionCriterionId,
+            sectionBlockId,
           },
         },
         select: {
@@ -5822,7 +5907,7 @@ export async function bulkAssignAssessmentWorkspaceSections(
         },
       });
       if (review) {
-        await syncWorkspaceSectionReviewerDecisionsTx(tx, review.id, workspaceId, sectionCriterionId);
+        await syncWorkspaceSectionReviewerDecisionsTx(tx, review.id, workspaceId, sectionBlockId);
         if (
           review.status !== WorkspaceSectionReviewStatus.NOT_STARTED &&
           review.status !== WorkspaceSectionReviewStatus.IN_PROGRESS
@@ -5908,9 +5993,9 @@ export async function reassignAssessmentWorkspaceSection(
   if (!sectionContext) {
     return { status: "error", message: "Workspace not found." } satisfies ErrorResult;
   }
-  const section = sectionContext.sectionsById.get(parsed.data.sectionCriterionId);
+  const section = sectionContext.sectionsById.get(parsed.data.sectionBlockId);
   if (!section) {
-    return { status: "error", message: "Section assignments must target a root criterion." } satisfies ErrorResult;
+    return { status: "error", message: "Section assignments must target a root block." } satisfies ErrorResult;
   }
 
   const targetCollaborator = await prisma.workspaceCollaborator.findUnique({
@@ -5941,7 +6026,7 @@ export async function reassignAssessmentWorkspaceSection(
     const existing = await tx.workspaceSectionAssignment.findFirst({
       where: {
         workspaceId,
-        sectionCriterionId: parsed.data.sectionCriterionId,
+        sectionBlockId: parsed.data.sectionBlockId,
         userId: parsed.data.fromUserId,
         role: parsed.data.role,
       },
@@ -5952,16 +6037,16 @@ export async function reassignAssessmentWorkspaceSection(
 
     await tx.workspaceSectionAssignment.upsert({
       where: {
-        workspaceId_sectionCriterionId_userId_role: {
+        workspaceId_sectionBlockId_userId_role: {
           workspaceId,
-          sectionCriterionId: parsed.data.sectionCriterionId,
+          sectionBlockId: parsed.data.sectionBlockId,
           userId: parsed.data.toUserId,
           role: parsed.data.role,
         },
       },
       create: {
         workspaceId,
-        sectionCriterionId: parsed.data.sectionCriterionId,
+        sectionBlockId: parsed.data.sectionBlockId,
         userId: parsed.data.toUserId,
         role: parsed.data.role,
         deadline: parsed.data.deadline ?? existing.deadline,
@@ -5982,9 +6067,9 @@ export async function reassignAssessmentWorkspaceSection(
 
     const review = await tx.workspaceSectionReview.findUnique({
       where: {
-        workspaceId_sectionCriterionId: {
+        workspaceId_sectionBlockId: {
           workspaceId,
-          sectionCriterionId: parsed.data.sectionCriterionId,
+          sectionBlockId: parsed.data.sectionBlockId,
         },
       },
       select: {
@@ -5996,7 +6081,7 @@ export async function reassignAssessmentWorkspaceSection(
         tx,
         review.id,
         workspaceId,
-        parsed.data.sectionCriterionId,
+        parsed.data.sectionBlockId,
       );
       await tx.workspaceSectionReviewEvent.create({
         data: {
@@ -6016,7 +6101,7 @@ export async function reassignAssessmentWorkspaceSection(
     const handoffSummary = await buildSectionHandoffSummaryTx(
       tx,
       workspaceId,
-      parsed.data.sectionCriterionId,
+      parsed.data.sectionBlockId,
     );
 
     return {
@@ -6077,7 +6162,7 @@ async function transitionAssessmentWorkspaceSectionReview(
     return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid section review input." } satisfies ErrorResult;
   }
 
-  const bundle = await getWorkspaceSectionBundleTx(prisma, workspaceId, parsed.data.sectionCriterionId);
+  const bundle = await getWorkspaceSectionBundleTx(prisma, workspaceId, parsed.data.sectionBlockId);
   if (!bundle) {
     return { status: "error", message: "Section not found." } satisfies ErrorResult;
   }
@@ -6094,7 +6179,7 @@ async function transitionAssessmentWorkspaceSectionReview(
     canPerformSectionAssignmentAction(
       permissionContext,
       currentAssignments,
-      parsed.data.sectionCriterionId,
+      parsed.data.sectionBlockId,
       roles,
     );
 
@@ -6102,7 +6187,7 @@ async function transitionAssessmentWorkspaceSectionReview(
     if (!actorCan([WorkspaceSectionAssignmentRole.SECTION_LEAD, WorkspaceSectionAssignmentRole.RESPONSIBLE])) {
       return { status: "error", message: "Only section leads or responsibles can submit a section." } satisfies ErrorResult;
     }
-    if (!bundle.section.leafEntries.every((entry) => entry.status === CriterionEntryStatus.APPROVED)) {
+    if (!bundle.section.leafEntries.every((entry) => entry.status === BlockEntryStatus.APPROVED)) {
       return { status: "error", message: "All leaf entries in the section must be approved before section submission." } satisfies ErrorResult;
     }
   }
@@ -6150,9 +6235,9 @@ async function transitionAssessmentWorkspaceSectionReview(
   const result = await prisma.$transaction(async (tx) => {
     const review = await tx.workspaceSectionReview.findUniqueOrThrow({
       where: {
-        workspaceId_sectionCriterionId: {
+        workspaceId_sectionBlockId: {
           workspaceId,
-          sectionCriterionId: parsed.data.sectionCriterionId,
+          sectionBlockId: parsed.data.sectionBlockId,
         },
       },
       include: {
@@ -6370,20 +6455,20 @@ export async function getAssessmentWorkspaceDataGaps(
     include: {
       entries: {
         include: {
-          criterion: {
+          block: {
             select: {
-              criterionCode: true,
+              blockCode: true,
               title: true,
               dataType: true,
             },
           },
-          yearData: {
+          responses: {
             orderBy: { year: "asc" },
           },
         },
         orderBy: {
-          criterion: {
-            criterionCode: "asc",
+          block: {
+            blockCode: "asc",
           },
         },
       },
@@ -6395,14 +6480,14 @@ export async function getAssessmentWorkspaceDataGaps(
 
   const { startYear, endYear } = getWorkspaceYearBounds(workspace.periodStart, workspace.periodEnd);
   const gaps = workspace.entries.flatMap((entry) => {
-    const yearMap = new Map(entry.yearData.map((row) => [row.year, row]));
+    const yearMap = new Map(entry.responses.map((row) => [row.year, row]));
     const missingYears: number[] = [];
     for (let year = startYear; year <= endYear; year += 1) {
       const row = yearMap.get(year);
       const hasValue =
-        entry.criterion.dataType === CriterionDataType.QUANTITATIVE
+        entry.block.dataType === CriterionDataType.QUANTITATIVE
           ? row?.actualValue !== null && row?.actualValue !== undefined
-          : entry.criterion.dataType === CriterionDataType.QUALITATIVE
+          : entry.block.dataType === CriterionDataType.QUALITATIVE
             ? !!normalizeNullableString(row?.textValue ?? null)
             : (row?.actualValue !== null && row?.actualValue !== undefined) ||
               !!normalizeNullableString(row?.textValue ?? null);
@@ -6412,11 +6497,11 @@ export async function getAssessmentWorkspaceDataGaps(
     }
 
     return missingYears.length > 0
-      ? [
+        ? [
           {
             entryId: entry.id,
-            criterionCode: entry.criterion.criterionCode,
-            criterionTitle: entry.criterion.title,
+            blockCode: entry.block.blockCode,
+            blockTitle: entry.block.title,
             missingYears,
           },
         ]
@@ -6430,11 +6515,11 @@ export async function getAssessmentWorkspaceDataGaps(
 }
 
 function dedupeSectionInvalidations(
-  invalidations: Array<{ sectionCriterionId: string; sectionCode: string }>,
+  invalidations: Array<{ sectionBlockId: string; sectionCode: string }>,
 ) {
   const seen = new Set<string>();
   return invalidations.filter((invalidation) => {
-    const key = `${invalidation.sectionCriterionId}:${invalidation.sectionCode}`;
+    const key = `${invalidation.sectionBlockId}:${invalidation.sectionCode}`;
     if (seen.has(key)) {
       return false;
     }
@@ -6474,12 +6559,12 @@ export async function previewAssessmentWorkspaceReuse(
       include: {
         entries: {
           include: {
-            criterion: {
+            block: {
               select: {
-                criterionCode: true,
+                blockCode: true,
               },
             },
-            yearData: true,
+            responses: true,
           },
         },
       },
@@ -6489,12 +6574,12 @@ export async function previewAssessmentWorkspaceReuse(
       include: {
         entries: {
           include: {
-            criterion: {
+            block: {
               select: {
-                criterionCode: true,
+                blockCode: true,
               },
             },
-            yearData: true,
+            responses: true,
           },
         },
       },
@@ -6514,46 +6599,46 @@ export async function previewAssessmentWorkspaceReuse(
   }
 
   const allowedCriterionCodes =
-    parsed.data.sectionCriterionIds && parsed.data.sectionCriterionIds.length > 0
+    parsed.data.sectionBlockIds && parsed.data.sectionBlockIds.length > 0
       ? new Set(
           sectionContext.sections
-            .filter((section) => parsed.data.sectionCriterionIds?.includes(section.sectionCriterionId))
-            .flatMap((section) => section.leafEntries.map((entry) => entry.criterionCode)),
+            .filter((section) => parsed.data.sectionBlockIds?.includes(section.sectionBlockId))
+            .flatMap((section) => section.leafEntries.map((entry) => entry.blockCode)),
         )
       : null;
 
-  const targetEntryByCode = new Map(target.entries.map((entry) => [entry.criterion.criterionCode, entry]));
+  const targetEntryByCode = new Map(target.entries.map((entry) => [entry.block.blockCode, entry]));
   const { startYear, endYear } = getWorkspaceYearBounds(target.periodStart, target.periodEnd);
 
   const willCopy: Array<{
-    criterionCode: string;
+    blockCode: string;
     years: number[];
     hasExistingData: boolean;
   }> = [];
-  const willSkip: Array<{ criterionCode: string; reason: string }> = [];
-  const conflicts: Array<{ criterionCode: string; year: number }> = [];
+  const willSkip: Array<{ blockCode: string; reason: string }> = [];
+  const conflicts: Array<{ blockCode: string; year: number }> = [];
 
   for (const sourceEntry of source.entries) {
-    const criterionCode = sourceEntry.criterion.criterionCode;
-    if (allowedCriterionCodes && !allowedCriterionCodes.has(criterionCode)) {
+    const blockCode = sourceEntry.block.blockCode;
+    if (allowedCriterionCodes && !allowedCriterionCodes.has(blockCode)) {
       continue;
     }
 
-    const targetEntry = targetEntryByCode.get(criterionCode);
+    const targetEntry = targetEntryByCode.get(blockCode);
     if (!targetEntry) {
-      willSkip.push({ criterionCode, reason: "Criterion not present in target workspace." });
+      willSkip.push({ blockCode, reason: "Criterion not present in target workspace." });
       continue;
     }
 
-    const overlappingRows = sourceEntry.yearData.filter(
+    const overlappingRows = sourceEntry.responses.filter(
       (row) => row.year >= startYear && row.year <= endYear && (row.actualValue !== null || row.textValue !== null),
     );
     if (overlappingRows.length === 0) {
-      willSkip.push({ criterionCode, reason: "No overlapping data for the target period." });
+      willSkip.push({ blockCode, reason: "No overlapping data for the target period." });
       continue;
     }
 
-    const targetYearMap = new Map(targetEntry.yearData.map((row) => [row.year, row]));
+    const targetYearMap = new Map(targetEntry.responses.map((row) => [row.year, row]));
     const hasExistingData = overlappingRows.some((row) => {
       const targetRow = targetYearMap.get(row.year);
       return !!targetRow && (targetRow.actualValue !== null || targetRow.textValue !== null);
@@ -6566,11 +6651,11 @@ export async function previewAssessmentWorkspaceReuse(
           (normalizeNullableString(targetRow.textValue) ?? null) !==
             (normalizeNullableString(row.textValue) ?? null))
       ) {
-        conflicts.push({ criterionCode, year: row.year });
+        conflicts.push({ blockCode, year: row.year });
       }
     }
     willCopy.push({
-      criterionCode,
+      blockCode,
       years: overlappingRows.map((row) => row.year),
       hasExistingData,
     });
@@ -6631,12 +6716,12 @@ export async function applyAssessmentWorkspaceReuse(
       include: {
         entries: {
           include: {
-            criterion: {
+            block: {
               select: {
-                criterionCode: true,
+                blockCode: true,
               },
             },
-            yearData: true,
+            responses: true,
           },
         },
       },
@@ -6646,12 +6731,12 @@ export async function applyAssessmentWorkspaceReuse(
       include: {
         entries: {
           include: {
-            criterion: {
+            block: {
               select: {
-                criterionCode: true,
+                blockCode: true,
               },
             },
-            yearData: true,
+            responses: true,
           },
         },
       },
@@ -6666,31 +6751,31 @@ export async function applyAssessmentWorkspaceReuse(
     return { status: "error", message: "Workspace not found." } satisfies ErrorResult;
   }
   const allowedCriterionCodes =
-    parsed.data.sectionCriterionIds && parsed.data.sectionCriterionIds.length > 0
+    parsed.data.sectionBlockIds && parsed.data.sectionBlockIds.length > 0
       ? new Set(
           sectionContext.sections
-            .filter((section) => parsed.data.sectionCriterionIds?.includes(section.sectionCriterionId))
-            .flatMap((section) => section.leafEntries.map((entry) => entry.criterionCode)),
+            .filter((section) => parsed.data.sectionBlockIds?.includes(section.sectionBlockId))
+            .flatMap((section) => section.leafEntries.map((entry) => entry.blockCode)),
         )
       : null;
 
   const { startYear, endYear } = getWorkspaceYearBounds(target.periodStart, target.periodEnd);
-  const targetEntryByCode = new Map(target.entries.map((entry) => [entry.criterion.criterionCode, entry]));
+  const targetEntryByCode = new Map(target.entries.map((entry) => [entry.block.blockCode, entry]));
 
   const applied = await prisma.$transaction(async (tx) => {
     let copiedRows = 0;
-    const invalidations: Array<{ sectionCriterionId: string; sectionCode: string }> = [];
+    const invalidations: Array<{ sectionBlockId: string; sectionCode: string }> = [];
     for (const sourceEntry of source.entries) {
-      const criterionCode = sourceEntry.criterion.criterionCode;
-      if (allowedCriterionCodes && !allowedCriterionCodes.has(criterionCode)) {
+      const blockCode = sourceEntry.block.blockCode;
+      if (allowedCriterionCodes && !allowedCriterionCodes.has(blockCode)) {
         continue;
       }
-      const targetEntry = targetEntryByCode.get(criterionCode);
+      const targetEntry = targetEntryByCode.get(blockCode);
       if (!targetEntry) {
         continue;
       }
 
-      for (const row of sourceEntry.yearData) {
+      for (const row of sourceEntry.responses) {
         if (row.year < startYear || row.year > endYear) {
           continue;
         }
@@ -6698,7 +6783,7 @@ export async function applyAssessmentWorkspaceReuse(
           continue;
         }
 
-        await tx.criterionYearData.upsert({
+        await tx.blockEntryYearValue.upsert({
           where: {
             entryId_year: {
               entryId: targetEntry.id,
@@ -6711,7 +6796,7 @@ export async function applyAssessmentWorkspaceReuse(
             actualValue: row.actualValue,
             textValue: normalizeNullableString(row.textValue),
             remarks: row.remarks,
-            dataSource: CriterionYearDataSource.CLONED,
+            dataSource: BlockEntryValueSource.CLONED,
             sourceRef: source.id,
             updatedByUserId: actorUserId,
           },
@@ -6719,7 +6804,7 @@ export async function applyAssessmentWorkspaceReuse(
             actualValue: row.actualValue,
             textValue: normalizeNullableString(row.textValue),
             remarks: row.remarks,
-            dataSource: CriterionYearDataSource.CLONED,
+            dataSource: BlockEntryValueSource.CLONED,
             sourceRef: source.id,
             updatedByUserId: actorUserId,
           },
@@ -6727,12 +6812,12 @@ export async function applyAssessmentWorkspaceReuse(
         copiedRows += 1;
       }
 
-      await tx.criterionEntry.update({
+      await tx.blockEntry.update({
         where: { id: targetEntry.id },
         data: {
           status:
-            targetEntry.status === CriterionEntryStatus.BLANK
-              ? CriterionEntryStatus.IN_PROGRESS
+            targetEntry.status === BlockEntryStatus.BLANK
+              ? BlockEntryStatus.IN_PROGRESS
               : targetEntry.status,
           lastUpdatedAt: new Date(),
           lastUpdatedByUserId: actorUserId,
@@ -6741,7 +6826,7 @@ export async function applyAssessmentWorkspaceReuse(
       await recordCriterionEntryChange(tx, {
         entryId: targetEntry.id,
         fieldChanged: "reuse",
-        oldValue: targetEntry.criterion.criterionCode,
+        oldValue: targetEntry.block.blockCode,
         newValue: source.id,
         reason: "Cross-workspace reuse",
         changedByUserId: actorUserId,
@@ -6754,17 +6839,17 @@ export async function applyAssessmentWorkspaceReuse(
       const invalidation = await invalidateSectionReviewForCriterionTx(tx, {
         workspaceId: targetWorkspaceId,
         versionId: permissionContext.workspace.versionId,
-        criterionId: targetEntry.criterionId,
+        blockId: targetEntry.blockId,
         actorUserId,
-        triggerMessage: `${criterionCode} was refreshed from workspace ${source.title}.`,
+        triggerMessage: `${blockCode} was refreshed from workspace ${source.title}.`,
         metadata: {
           sourceWorkspaceId: source.id,
-          criterionCode,
+          blockCode,
         } satisfies Prisma.JsonObject,
       });
       if (invalidation?.invalidated) {
         invalidations.push({
-          sectionCriterionId: invalidation.sectionCriterionId,
+          sectionBlockId: invalidation.sectionBlockId,
           sectionCode: invalidation.sectionCode,
         });
       }
@@ -6782,7 +6867,7 @@ export async function applyAssessmentWorkspaceReuse(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId: targetWorkspaceId,
-      sectionCriterionId: invalidation.sectionCriterionId,
+      sectionBlockId: invalidation.sectionBlockId,
       sectionCode: invalidation.sectionCode,
       triggerMessage: `Workspace reuse updated ${invalidation.sectionCode} and reopened the section review.`,
       actorUserId,
@@ -6818,7 +6903,7 @@ export async function getAssessmentWorkspaceActivitySinceLastVisit(
 
   const since = permissionContext.collaborator?.lastVisitedAt ?? new Date(0);
   const [entryChanges, sectionEvents, unreadThreads] = await Promise.all([
-    prisma.criterionEntryChange.count({
+    prisma.blockEntryChange.count({
       where: {
         entry: {
           workspaceId,
@@ -6891,9 +6976,9 @@ export async function getAssessmentWorkspaceSubmissionManifest(
     include: {
       entries: {
         include: {
-          criterion: {
+          block: {
             select: {
-              criterionCode: true,
+              blockCode: true,
               title: true,
             },
           },
@@ -6911,8 +6996,8 @@ export async function getAssessmentWorkspaceSubmissionManifest(
           },
         },
         orderBy: {
-          criterion: {
-            criterionCode: "asc",
+          block: {
+            blockCode: "asc",
           },
         },
       },
@@ -6942,8 +7027,8 @@ export async function getAssessmentWorkspaceSubmissionManifest(
       lastFreezeLog: workspace.freezeLogs[0] ?? null,
       sections: sections.sections,
       entries: workspace.entries.map((entry) => ({
-        criterionCode: entry.criterion.criterionCode,
-        criterionTitle: entry.criterion.title,
+        blockCode: entry.block.blockCode,
+        blockTitle: entry.block.title,
         finalScore: entry.finalScore,
         approvedAt: entry.updatedAt,
         evidence: entry.evidenceLinks.map((link) => ({
@@ -7014,10 +7099,10 @@ export async function deleteAssessmentWorkspaceEvidenceVersion(
             include: {
               entry: {
                 select: {
-                  criterionId: true,
-                  criterion: {
+                  blockId: true,
+                  block: {
                     select: {
-                      criterionCode: true,
+                      blockCode: true,
                     },
                   },
                 },
@@ -7055,18 +7140,18 @@ export async function deleteAssessmentWorkspaceEvidenceVersion(
     await tx.evidenceVersion.delete({
       where: { id: versionId },
     });
-    await tx.criterionEvidence.update({
+    await tx.blockEvidence.update({
       where: { id: version.evidenceId },
       data: {
         latestVersionNumber: Math.max(0, version.evidence.latestVersionNumber - 1),
       },
     });
-    const invalidations: Array<{ sectionCriterionId: string; sectionCode: string }> = [];
+    const invalidations: Array<{ sectionBlockId: string; sectionCode: string }> = [];
     for (const link of version.evidence.entryLinks) {
       const invalidation = await invalidateSectionReviewForCriterionTx(tx, {
         workspaceId: version.evidence.workspace.id,
         versionId: permissionContext.workspace.versionId,
-        criterionId: link.entry.criterionId,
+        blockId: link.entry.blockId,
         actorUserId,
         triggerMessage: `Evidence version ${version.versionNumber} for "${version.evidence.title}" was deleted.`,
         metadata: {
@@ -7078,7 +7163,7 @@ export async function deleteAssessmentWorkspaceEvidenceVersion(
       });
       if (invalidation?.invalidated) {
         invalidations.push({
-          sectionCriterionId: invalidation.sectionCriterionId,
+          sectionBlockId: invalidation.sectionBlockId,
           sectionCode: invalidation.sectionCode,
         });
       }
@@ -7092,7 +7177,7 @@ export async function deleteAssessmentWorkspaceEvidenceVersion(
     await notifySectionReviewInvalidated({
       tenantId,
       workspaceId: version.evidence.workspace.id,
-      sectionCriterionId: invalidation.sectionCriterionId,
+      sectionBlockId: invalidation.sectionBlockId,
       sectionCode: invalidation.sectionCode,
       triggerMessage: `Evidence history changed and reopened the ${invalidation.sectionCode} section review.`,
       actorUserId,
@@ -7108,30 +7193,30 @@ export async function deleteAssessmentWorkspaceEvidenceVersion(
 async function validateDiscussionScopeTarget(
   workspaceId: string,
   scope: WorkspaceDiscussionScope,
-  sectionCriterionId: string | null,
+  sectionBlockId: string | null,
   entryId: string | null,
 ) {
   if (scope === WorkspaceDiscussionScope.WORKSPACE) {
-    return { sectionCriterionId: null, entryId: null };
+    return { sectionBlockId: null, entryId: null };
   }
   if (scope === WorkspaceDiscussionScope.SECTION) {
-    if (!sectionCriterionId) {
-      return { error: "Section discussions require a sectionCriterionId." };
+    if (!sectionBlockId) {
+      return { error: "Section discussions require a sectionBlockId." };
     }
-    const bundle = await getWorkspaceSectionBundleTx(prisma, workspaceId, sectionCriterionId);
-    return bundle ? { sectionCriterionId, entryId: null } : { error: "Section not found." };
+    const bundle = await getWorkspaceSectionBundleTx(prisma, workspaceId, sectionBlockId);
+    return bundle ? { sectionBlockId, entryId: null } : { error: "Section not found." };
   }
   if (!entryId) {
     return { error: "Entry discussions require an entryId." };
   }
-  const entry = await prisma.criterionEntry.findFirst({
+  const entry = await prisma.blockEntry.findFirst({
     where: {
       id: entryId,
       workspaceId,
     },
     select: { id: true },
   });
-  return entry ? { sectionCriterionId: null, entryId } : { error: "Entry not found." };
+  return entry ? { sectionBlockId: null, entryId } : { error: "Entry not found." };
 }
 
 async function notifyDiscussionParticipants(input: {
@@ -7158,7 +7243,7 @@ async function notifyDiscussionParticipants(input: {
         workspaceId: input.workspaceId,
       },
       select: {
-        sectionCriterionId: true,
+        sectionBlockId: true,
         userId: true,
       },
     }),
@@ -7173,10 +7258,10 @@ async function notifyDiscussionParticipants(input: {
       participantIds.add(message.authorUserId);
     }
   }
-  if (thread.sectionCriterionId) {
+  if (thread.sectionBlockId) {
     for (const assignment of assignments) {
       if (
-        assignment.sectionCriterionId === thread.sectionCriterionId &&
+        assignment.sectionBlockId === thread.sectionBlockId &&
         assignment.userId &&
         assignment.userId !== input.actorUserId
       ) {
@@ -7268,7 +7353,7 @@ export async function createAssessmentWorkspaceDiscussionThread(
   const target = await validateDiscussionScopeTarget(
     workspaceId,
     parsed.data.scope,
-    normalizeNullableString(parsed.data.sectionCriterionId),
+    normalizeNullableString(parsed.data.sectionBlockId),
     normalizeNullableString(parsed.data.entryId),
   );
   if ("error" in target) {
@@ -7279,13 +7364,13 @@ export async function createAssessmentWorkspaceDiscussionThread(
   }
 
   const postApproval =
-    target.sectionCriterionId
+    target.sectionBlockId
       ? (
           await prisma.workspaceSectionReview.findUnique({
             where: {
-              workspaceId_sectionCriterionId: {
+              workspaceId_sectionBlockId: {
                 workspaceId,
-                sectionCriterionId: target.sectionCriterionId,
+                sectionBlockId: target.sectionBlockId,
               },
             },
             select: { status: true },
@@ -7297,7 +7382,7 @@ export async function createAssessmentWorkspaceDiscussionThread(
     data: {
       workspaceId,
       scope: parsed.data.scope,
-      sectionCriterionId: target.sectionCriterionId,
+      sectionBlockId: target.sectionBlockId,
       entryId: target.entryId,
       title: parsed.data.title,
       createdByUserId: actorUserId,
@@ -7372,13 +7457,13 @@ export async function addAssessmentWorkspaceDiscussionMessage(
   }
 
   const postApproval =
-    thread.sectionCriterionId
+    thread.sectionBlockId
       ? (
           await prisma.workspaceSectionReview.findUnique({
             where: {
-              workspaceId_sectionCriterionId: {
+              workspaceId_sectionBlockId: {
                 workspaceId: thread.workspaceId,
-                sectionCriterionId: thread.sectionCriterionId,
+                sectionBlockId: thread.sectionBlockId,
               },
             },
             select: { status: true },
@@ -7416,4 +7501,2118 @@ export async function addAssessmentWorkspaceDiscussionMessage(
     message: "Discussion message posted.",
     discussionMessage: message,
   } satisfies SuccessResult<{ discussionMessage: typeof message }>;
+}
+
+type ProjectionPrimitiveValue = string | number | boolean;
+type ProjectionDimensions = Record<string, ProjectionPrimitiveValue>;
+
+type ProjectionPreviewMatch = {
+  targetYear: number;
+  targetScopeKey: string;
+  sourceYear: number | null;
+  sourceScopeKey: string | null;
+  materializedNumberValue: number | null;
+  materializedTextValue: string | null;
+  rowCount: number;
+  dimensions: ProjectionDimensions;
+};
+
+type ProjectionSourceGroup = {
+  sourceYear: number | null;
+  sourceScopeKey: string | null;
+  values: Array<{
+    numberValue: number | null;
+    textValue: string | null;
+    dimensions: ProjectionDimensions;
+  }>;
+  rowCount: number;
+};
+
+type ProjectionTargetEntryContext = {
+  entry: {
+    id: string;
+    status: BlockEntryStatus;
+    workspace: {
+      id: string;
+      tenantId: string;
+      status: AssessmentWorkspaceStatus;
+      periodStart: Date;
+      periodEnd: Date;
+      versionId: string;
+      profileId: string;
+    };
+    block: {
+      id: string;
+      blockCode: string;
+      title: string;
+      dataType: CriterionDataType;
+      validationRules: Prisma.JsonValue | null;
+      isLeaf: boolean;
+    };
+  };
+  permissionContext: WorkspacePermissionContext;
+};
+
+type PreparedProjectionPreview = {
+  sourceKind: ProjectionSourceKind;
+  targetPath: "actualValue" | "textValue";
+  storageMode: ProjectionStorageMode;
+  sourceSummary: Prisma.JsonObject;
+  filters: Prisma.JsonObject | null;
+  transform: Prisma.JsonObject;
+  sourceRevisionHash: string;
+  matches: ProjectionPreviewMatch[];
+  conflicts: Array<{
+    targetYear: number;
+    message: string;
+  }>;
+  overwriteWarnings: Array<{
+    targetYear: number;
+    targetPath: string;
+    currentValue: string | null;
+  }>;
+};
+
+function normalizeProjectionDimensions(
+  value: Record<string, ProjectionPrimitiveValue> | null | undefined,
+): ProjectionDimensions {
+  if (!value) {
+    return {};
+  }
+
+  const normalizedEntries = Object.entries(value)
+    .filter(([, item]) => item !== null && item !== undefined)
+    .map(([key, item]) => [
+      key.trim(),
+      typeof item === "string" ? item.trim() : item,
+    ] satisfies [string, ProjectionPrimitiveValue])
+    .filter(([key, item]) => key.length > 0 && (typeof item !== "string" || item.length > 0))
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  return Object.fromEntries(normalizedEntries);
+}
+
+function asProjectionDimensions(value: Prisma.JsonValue | null | undefined): ProjectionDimensions {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const output: ProjectionDimensions = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") {
+      output[key] = item;
+    }
+  }
+  return normalizeProjectionDimensions(output);
+}
+
+function matchesProjectionDimensions(
+  candidate: Prisma.JsonValue | null | undefined,
+  filter: ProjectionDimensions | undefined,
+) {
+  if (!filter || Object.keys(filter).length === 0) {
+    return true;
+  }
+
+  const normalizedCandidate = asProjectionDimensions(candidate);
+  return Object.entries(filter).every(([key, value]) => normalizedCandidate[key] === value);
+}
+
+function buildProjectionDimensionFingerprint(
+  dimensions: Record<string, ProjectionPrimitiveValue> | null | undefined,
+) {
+  const normalized = normalizeProjectionDimensions(dimensions);
+  return Object.keys(normalized).length === 0 ? "__NONE__" : stableStringify(normalized);
+}
+
+function serializeProjectionFilter(
+  filter: z.infer<typeof projectionFilterSchema> | undefined,
+): Prisma.JsonObject | null {
+  if (!filter) {
+    return null;
+  }
+
+  const value: Prisma.JsonObject = {};
+  if (filter.years && filter.years.length > 0) {
+    value.years = [...new Set(filter.years)].sort((left, right) => left - right);
+  }
+  const dimensions = normalizeProjectionDimensions(filter.dimensions as ProjectionDimensions | undefined);
+  if (Object.keys(dimensions).length > 0) {
+    value.dimensions = dimensions as Prisma.JsonObject;
+  }
+  return Object.keys(value).length > 0 ? value : null;
+}
+
+function serializeProjectionTransform(
+  transform: z.infer<typeof projectionTransformSchema> | undefined,
+): Prisma.JsonObject {
+  return {
+    mode: transform?.mode ?? "DIRECT",
+    ...(transform?.sourceColumnKey ? { sourceColumnKey: transform.sourceColumnKey } : {}),
+    ...(transform?.multiplier !== undefined ? { multiplier: transform.multiplier } : {}),
+    ...(transform?.divisor !== undefined ? { divisor: transform.divisor } : {}),
+    ...(transform?.separator ? { separator: transform.separator } : {}),
+  };
+}
+
+function getProjectionTransformMode(
+  transform: Prisma.JsonValue | null | undefined,
+): z.infer<typeof projectionTransformSchema>["mode"] {
+  const asObject = asJsonObject(transform);
+  const mode = asObject?.mode;
+  return mode === "SUM" || mode === "AVG" || mode === "COUNT" || mode === "FIRST" || mode === "TEXT_JOIN"
+    ? mode
+    : "DIRECT";
+}
+
+function getProjectionTransformSourceColumnKey(transform: Prisma.JsonValue | null | undefined) {
+  const asObject = asJsonObject(transform);
+  return typeof asObject?.sourceColumnKey === "string" && asObject.sourceColumnKey.trim().length > 0
+    ? asObject.sourceColumnKey.trim()
+    : null;
+}
+
+function getProjectionTransformMultiplier(transform: Prisma.JsonValue | null | undefined) {
+  const asObject = asJsonObject(transform);
+  return typeof asObject?.multiplier === "number" ? asObject.multiplier : null;
+}
+
+function getProjectionTransformDivisor(transform: Prisma.JsonValue | null | undefined) {
+  const asObject = asJsonObject(transform);
+  return typeof asObject?.divisor === "number" ? asObject.divisor : null;
+}
+
+function getProjectionTransformSeparator(transform: Prisma.JsonValue | null | undefined) {
+  const asObject = asJsonObject(transform);
+  return typeof asObject?.separator === "string" && asObject.separator.length > 0
+    ? asObject.separator
+    : ", ";
+}
+
+function stringifyProjectionCurrentValue(value: number | string | null | undefined) {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function applyProjectionNumericScale(
+  value: number,
+  transform: Prisma.JsonValue | null | undefined,
+) {
+  const multiplied = value * (getProjectionTransformMultiplier(transform) ?? 1);
+  const divisor = getProjectionTransformDivisor(transform);
+  if (divisor === null || divisor === undefined) {
+    return multiplied;
+  }
+  if (divisor === 0) {
+    return null;
+  }
+  return multiplied / divisor;
+}
+
+function resolveProjectionGroupValue(input: {
+  group: ProjectionSourceGroup;
+  transform: Prisma.JsonValue | null | undefined;
+  targetPath: "actualValue" | "textValue";
+}): ErrorResult | SuccessResult<{ numberValue: number | null; textValue: string | null }> {
+  const mode = getProjectionTransformMode(input.transform);
+  const separator = getProjectionTransformSeparator(input.transform);
+
+  if (mode === "COUNT") {
+    const countValue = applyProjectionNumericScale(input.group.values.length, input.transform);
+    if (countValue === null) {
+      return { status: "error", message: "Projection divisor cannot be zero." };
+    }
+    return {
+      status: "success",
+      numberValue: countValue,
+      textValue: input.targetPath === "textValue" ? String(countValue) : null,
+    };
+  }
+
+  const numberValues = input.group.values
+    .map((value) => value.numberValue)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const textValues = input.group.values
+    .map((value) => value.textValue)
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+
+  switch (mode) {
+    case "SUM": {
+      if (numberValues.length === 0) {
+        return { status: "error", message: "Projection source does not contain numeric values for SUM." };
+      }
+      const sum = applyProjectionNumericScale(numberValues.reduce((total, value) => total + value, 0), input.transform);
+      if (sum === null) {
+        return { status: "error", message: "Projection divisor cannot be zero." };
+      }
+      return {
+        status: "success",
+        numberValue: sum,
+        textValue: input.targetPath === "textValue" ? String(sum) : null,
+      };
+    }
+    case "AVG": {
+      if (numberValues.length === 0) {
+        return { status: "error", message: "Projection source does not contain numeric values for AVG." };
+      }
+      const avg = applyProjectionNumericScale(
+        numberValues.reduce((total, value) => total + value, 0) / numberValues.length,
+        input.transform,
+      );
+      if (avg === null) {
+        return { status: "error", message: "Projection divisor cannot be zero." };
+      }
+      return {
+        status: "success",
+        numberValue: avg,
+        textValue: input.targetPath === "textValue" ? String(avg) : null,
+      };
+    }
+    case "TEXT_JOIN": {
+      const joined = [...textValues, ...numberValues.map((value) => String(value))].join(separator).trim();
+      return {
+        status: "success",
+        numberValue: null,
+        textValue: joined.length > 0 ? joined : null,
+      };
+    }
+    case "FIRST":
+    case "DIRECT":
+    default: {
+      if (mode === "DIRECT" && input.group.values.length !== 1) {
+        return {
+          status: "error",
+          message: "DIRECT projection requires exactly one matching source value. Apply a filter or use an aggregate transform.",
+        };
+      }
+
+      const first = input.group.values[0] ?? null;
+      if (!first) {
+        return { status: "error", message: "Projection source did not return any values." };
+      }
+
+      if (input.targetPath === "actualValue") {
+        if (typeof first.numberValue !== "number" || !Number.isFinite(first.numberValue)) {
+          return { status: "error", message: "Projection result is not numeric enough for actualValue." };
+        }
+        const scaled = applyProjectionNumericScale(first.numberValue, input.transform);
+        if (scaled === null) {
+          return { status: "error", message: "Projection divisor cannot be zero." };
+        }
+        return {
+          status: "success",
+          numberValue: scaled,
+          textValue: null,
+        };
+      }
+
+      const textValue =
+        first.textValue ??
+        (typeof first.numberValue === "number" && Number.isFinite(first.numberValue)
+          ? String(applyProjectionNumericScale(first.numberValue, input.transform) ?? first.numberValue)
+          : null);
+      return {
+        status: "success",
+        numberValue: null,
+        textValue,
+      };
+    }
+  }
+}
+
+async function getProjectionTargetEntryContext(
+  entryId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+  requireEditAccess: boolean,
+): Promise<ProjectionTargetEntryContext | ErrorResult> {
+  const entry = await prisma.blockEntry.findUnique({
+    where: { id: entryId },
+    include: {
+      workspace: {
+        select: {
+          id: true,
+          tenantId: true,
+          status: true,
+          periodStart: true,
+          periodEnd: true,
+          versionId: true,
+          profileId: true,
+        },
+      },
+      block: {
+        select: {
+          id: true,
+          blockCode: true,
+          title: true,
+          dataType: true,
+          validationRules: true,
+          isLeaf: true,
+        },
+      },
+    },
+  });
+
+  if (!entry || entry.workspace.tenantId !== tenantId) {
+    return { status: "error", message: "Entry not found." };
+  }
+  if (!entry.block.isLeaf) {
+    return { status: "error", message: "Only leaf criteria can use projections." };
+  }
+
+  const permissionContext = await getWorkspacePermissionContext({
+    tenantId,
+    workspaceId: entry.workspace.id,
+    actorUserId,
+    actorRole,
+  });
+  if ("status" in permissionContext) {
+    return permissionContext;
+  }
+  if (!canReadWorkspace(permissionContext)) {
+    return { status: "error", message: "You do not have access to this workspace." };
+  }
+  if (
+    requireEditAccess &&
+    !(await canPerformOnBlock(
+      prisma,
+      permissionContext,
+      [WorkspaceCollaboratorRole.RESPONSIBLE, WorkspaceCollaboratorRole.COORDINATOR],
+      entry.block.id,
+    ))
+  ) {
+    return { status: "error", message: "You do not have permission to import data into this block." };
+  }
+  if (requireEditAccess && isWorkspaceLockedForEntryEdits(entry.workspace.status)) {
+    return { status: "error", message: "This workspace is read-only in its current status." };
+  }
+
+  return {
+    entry,
+    permissionContext,
+  };
+}
+
+async function findActiveLiveProjectionTargetPaths(entryId: string, year: number) {
+  const targets = await prisma.blockProjectionTarget.findMany({
+    where: {
+      targetEntryId: entryId,
+      targetScopeKey: buildScopeKey(year),
+      recipe: {
+        isActive: true,
+        storageMode: ProjectionStorageMode.LIVE_REFERENCE,
+      },
+    },
+    select: {
+      targetPath: true,
+    },
+  });
+
+  return new Set(targets.map((target) => target.targetPath));
+}
+
+async function findProjectionTargetConflicts(input: {
+  targetEntryId: string;
+  matches: ProjectionPreviewMatch[];
+  excludeRecipeId?: string;
+}) {
+  const scopeKeys = [...new Set(input.matches.map((match) => match.targetScopeKey))];
+  if (scopeKeys.length === 0) {
+    return [];
+  }
+
+  const conflicts = await prisma.blockProjectionTarget.findMany({
+    where: {
+      targetEntryId: input.targetEntryId,
+      targetScopeKey: {
+        in: scopeKeys,
+      },
+      recipe: {
+        isActive: true,
+        ...(input.excludeRecipeId ? { id: { not: input.excludeRecipeId } } : {}),
+      },
+    },
+    include: {
+      recipe: {
+        select: {
+          id: true,
+          storageMode: true,
+        },
+      },
+    },
+  });
+
+  return conflicts;
+}
+
+async function wouldCreateLiveProjectionCycle(
+  sourceEntryId: string,
+  targetEntryId: string,
+  excludeRecipeId?: string,
+) {
+  if (sourceEntryId === targetEntryId) {
+    return true;
+  }
+
+  const recipes = await prisma.blockProjectionRecipe.findMany({
+    where: {
+      isActive: true,
+      storageMode: ProjectionStorageMode.LIVE_REFERENCE,
+      sourceEntryId: {
+        not: null,
+      },
+      ...(excludeRecipeId ? { id: { not: excludeRecipeId } } : {}),
+    },
+    select: {
+      sourceEntryId: true,
+      targetEntryId: true,
+    },
+  });
+
+  const adjacency = new Map<string, string[]>();
+  for (const recipe of recipes) {
+    if (!recipe.sourceEntryId) {
+      continue;
+    }
+    const list = adjacency.get(recipe.sourceEntryId) ?? [];
+    list.push(recipe.targetEntryId);
+    adjacency.set(recipe.sourceEntryId, list);
+  }
+
+  const queue = [targetEntryId];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current === sourceEntryId) {
+      return true;
+    }
+    if (seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    for (const next of adjacency.get(current) ?? []) {
+      queue.push(next);
+    }
+  }
+
+  return false;
+}
+
+function buildProjectionSourceSummary(value: Record<string, unknown>): Prisma.JsonObject {
+  return value as Prisma.JsonObject;
+}
+
+function extractTableCellValue(cell: {
+  numberValue: number | null;
+  textValue: string | null;
+  booleanValue: boolean | null;
+  dateValue: Date | null;
+  jsonValue: Prisma.JsonValue | null;
+}) {
+  if (typeof cell.numberValue === "number" && Number.isFinite(cell.numberValue)) {
+    return {
+      numberValue: cell.numberValue,
+      textValue: String(cell.numberValue),
+    };
+  }
+  if (cell.textValue && cell.textValue.trim().length > 0) {
+    return {
+      numberValue: null,
+      textValue: cell.textValue.trim(),
+    };
+  }
+  if (typeof cell.booleanValue === "boolean") {
+    return {
+      numberValue: null,
+      textValue: cell.booleanValue ? "true" : "false",
+    };
+  }
+  if (cell.dateValue) {
+    return {
+      numberValue: null,
+      textValue: cell.dateValue.toISOString(),
+    };
+  }
+  if (cell.jsonValue !== null && cell.jsonValue !== undefined) {
+    return {
+      numberValue: null,
+      textValue: stableStringify(cell.jsonValue),
+    };
+  }
+  return {
+    numberValue: null,
+    textValue: null,
+  };
+}
+
+async function collectProjectionSourceGroups(input: {
+  tenantId: string;
+  parsed: z.infer<typeof entryProjectionInputSchema>;
+  targetPath: "actualValue" | "textValue";
+  actorUserId: string;
+  actorRole: Role | null | undefined;
+}): Promise<
+  | ErrorResult
+  | SuccessResult<{
+      sourceKind: ProjectionSourceKind;
+      sourceSummary: Prisma.JsonObject;
+      groups: ProjectionSourceGroup[];
+    }>
+> {
+  const normalizedFilter = serializeProjectionFilter(input.parsed.filters);
+  const yearsFilter = Array.isArray(normalizedFilter?.years)
+    ? (normalizedFilter.years as number[])
+    : [];
+  const dimensionsFilter = normalizedFilter?.dimensions
+    ? normalizeProjectionDimensions(normalizedFilter.dimensions as ProjectionDimensions)
+    : undefined;
+
+  if (input.parsed.sourceMetricId) {
+    const metric = await prisma.sourceMetricDefinition.findFirst({
+      where: {
+        id: input.parsed.sourceMetricId,
+        tenantId: input.tenantId,
+        isActive: true,
+      },
+      include: {
+        observations: {
+          orderBy: [{ observedYear: "asc" }, { createdAt: "asc" }],
+        },
+      },
+    });
+    if (!metric) {
+      return { status: "error", message: "Source metric not found." };
+    }
+
+    const groupsByScope = new Map<string, ProjectionSourceGroup>();
+    for (const observation of metric.observations) {
+      if (yearsFilter.length > 0 && !yearsFilter.includes(observation.observedYear ?? Number.NaN)) {
+        continue;
+      }
+      if (!matchesProjectionDimensions(observation.dimensions, dimensionsFilter)) {
+        continue;
+      }
+
+      const key = observation.scopeKey;
+      const group = groupsByScope.get(key) ?? {
+        sourceYear: observation.observedYear ?? null,
+        sourceScopeKey: observation.scopeKey,
+        values: [],
+        rowCount: 0,
+      };
+      group.values.push({
+        numberValue: observation.numberValue ?? null,
+        textValue: normalizeNullableString(observation.textValue),
+        dimensions: asProjectionDimensions(observation.dimensions),
+      });
+      group.rowCount += 1;
+      groupsByScope.set(key, group);
+    }
+
+    const groups = [...groupsByScope.values()].sort(
+      (left, right) => (left.sourceYear ?? 0) - (right.sourceYear ?? 0),
+    );
+    if (groups.length === 0) {
+      return { status: "error", message: "No source metric observations matched the selected filters." };
+    }
+
+    return {
+      status: "success",
+      sourceKind: ProjectionSourceKind.SOURCE_METRIC,
+      sourceSummary: buildProjectionSourceSummary({
+        metricId: metric.id,
+        code: metric.code,
+        name: metric.name,
+        valueType: metric.valueType,
+        unitOfMeasure: metric.unitOfMeasure,
+      }),
+      groups,
+    };
+  }
+
+  if (!input.parsed.sourceWorkspaceId || !input.parsed.sourceEntryId) {
+    return { status: "error", message: "Select a source workspace/entry or a source metric." };
+  }
+
+  const sourceEntry = await prisma.blockEntry.findUnique({
+    where: { id: input.parsed.sourceEntryId },
+    include: {
+      workspace: {
+        select: {
+          id: true,
+          tenantId: true,
+          title: true,
+          status: true,
+          versionId: true,
+          periodStart: true,
+          periodEnd: true,
+        },
+      },
+      block: {
+        select: {
+          id: true,
+          blockCode: true,
+          title: true,
+        },
+      },
+      responses: {
+        orderBy: { year: "asc" },
+      },
+      tableInstances: {
+        orderBy: [{ year: "asc" }, { createdAt: "asc" }],
+        include: {
+          rows: {
+            orderBy: { rowIndex: "asc" },
+            include: {
+              cells: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (
+    !sourceEntry ||
+    sourceEntry.workspace.tenantId !== input.tenantId ||
+    sourceEntry.workspace.id !== input.parsed.sourceWorkspaceId
+  ) {
+    return { status: "error", message: "Source entry not found." };
+  }
+
+  const sourcePermissionContext = await getWorkspacePermissionContext({
+    tenantId: input.tenantId,
+    workspaceId: sourceEntry.workspace.id,
+    actorUserId: input.actorUserId,
+    actorRole: input.actorRole,
+  });
+  if ("status" in sourcePermissionContext) {
+    return sourcePermissionContext;
+  }
+  if (!canReadWorkspace(sourcePermissionContext)) {
+    return { status: "error", message: "You do not have access to the selected source workspace." };
+  }
+
+  if (input.parsed.sourceTableFieldKey) {
+    const groups: ProjectionSourceGroup[] = [];
+    const instances = sourceEntry.tableInstances.filter((instance) => {
+      if (instance.fieldKey !== input.parsed.sourceTableFieldKey) {
+        return false;
+      }
+      if (yearsFilter.length > 0) {
+        return yearsFilter.includes(instance.year ?? Number.NaN);
+      }
+      return true;
+    });
+
+    if (instances.length === 0) {
+      return { status: "error", message: "No source table data matched the selected field and filters." };
+    }
+
+    const sourceColumnKey = getProjectionTransformSourceColumnKey(serializeProjectionTransform(input.parsed.transform));
+    const mode = getProjectionTransformMode(serializeProjectionTransform(input.parsed.transform));
+    if (mode !== "COUNT" && !sourceColumnKey) {
+      return {
+        status: "error",
+        message: "Table projections require transform.sourceColumnKey for non-count transforms.",
+      };
+    }
+
+    for (const instance of instances) {
+      const matchingRows = instance.rows.filter((row) => matchesProjectionDimensions(row.dimensions, dimensionsFilter));
+      if (matchingRows.length === 0) {
+        continue;
+      }
+
+      const values =
+        mode === "COUNT"
+          ? matchingRows.map((row) => ({
+              numberValue: 1,
+              textValue: row.rowKey ?? null,
+              dimensions: asProjectionDimensions(row.dimensions),
+            }))
+          : matchingRows
+              .map((row) => {
+                const cell = row.cells.find((item) => item.columnKey === sourceColumnKey);
+                if (!cell) {
+                  return null;
+                }
+                const extracted = extractTableCellValue(cell);
+                return {
+                  numberValue: extracted.numberValue,
+                  textValue: extracted.textValue,
+                  dimensions: asProjectionDimensions(row.dimensions),
+                };
+              })
+              .filter((value): value is ProjectionSourceGroup["values"][number] => value !== null);
+
+      if (values.length === 0) {
+        continue;
+      }
+
+      groups.push({
+        sourceYear: instance.year ?? null,
+        sourceScopeKey: instance.scopeKey,
+        values,
+        rowCount: matchingRows.length,
+      });
+    }
+
+    if (groups.length === 0) {
+      return { status: "error", message: "No source table rows matched the selected filters." };
+    }
+
+    return {
+      status: "success",
+      sourceKind: ProjectionSourceKind.ENTRY_TABLE,
+      sourceSummary: buildProjectionSourceSummary({
+        workspaceId: sourceEntry.workspace.id,
+        workspaceTitle: sourceEntry.workspace.title,
+        blockCode: sourceEntry.block.blockCode,
+        blockTitle: sourceEntry.block.title,
+        tableFieldKey: input.parsed.sourceTableFieldKey,
+      }),
+      groups,
+    };
+  }
+
+  if (dimensionsFilter && Object.keys(dimensionsFilter).length > 0) {
+    return {
+      status: "error",
+      message: "Dimension filters are only supported for source metrics and relational table sources.",
+    };
+  }
+
+  const sourcePath = input.parsed.sourcePath ?? input.targetPath;
+  const responsesGroups = sourceEntry.responses
+    .filter((row) => (yearsFilter.length > 0 ? yearsFilter.includes(row.year) : true))
+    .map<ProjectionSourceGroup>((row) => ({
+      sourceYear: row.year,
+      sourceScopeKey: buildScopeKey(row.year),
+      values: [
+        {
+          numberValue: sourcePath === "actualValue" ? row.actualValue ?? null : null,
+          textValue: sourcePath === "textValue" ? normalizeNullableString(row.textValue) : null,
+          dimensions: {},
+        },
+      ],
+      rowCount: 1,
+    }));
+
+  if (responsesGroups.length === 0) {
+    return { status: "error", message: "No source criterion values matched the selected filters." };
+  }
+
+  return {
+    status: "success",
+    sourceKind: ProjectionSourceKind.WORKSPACE_ENTRY,
+    sourceSummary: buildProjectionSourceSummary({
+      workspaceId: sourceEntry.workspace.id,
+      workspaceTitle: sourceEntry.workspace.title,
+      blockCode: sourceEntry.block.blockCode,
+      blockTitle: sourceEntry.block.title,
+      sourcePath,
+    }),
+    groups: responsesGroups,
+  };
+}
+
+async function prepareCriterionEntryProjectionPreview(input: {
+  entryId: string;
+  tenantId: string;
+  parsed: z.infer<typeof entryProjectionInputSchema>;
+  actorUserId: string;
+  actorRole: Role | null | undefined;
+  existingRecipeId?: string;
+  requireEditAccess: boolean;
+}): Promise<ErrorResult | SuccessResult<{ targetContext: ProjectionTargetEntryContext; preview: PreparedProjectionPreview }>> {
+  const targetContext = await getProjectionTargetEntryContext(
+    input.entryId,
+    input.tenantId,
+    input.actorUserId,
+    input.actorRole,
+    input.requireEditAccess,
+  );
+  if ("status" in targetContext) {
+    return targetContext;
+  }
+
+  const sourceGroupsResult = await collectProjectionSourceGroups({
+    tenantId: input.tenantId,
+    parsed: input.parsed,
+    targetPath: input.parsed.targetPath,
+    actorUserId: input.actorUserId,
+    actorRole: input.actorRole,
+  });
+  if (sourceGroupsResult.status === "error") {
+    return sourceGroupsResult;
+  }
+
+  if (
+    input.parsed.storageMode === ProjectionStorageMode.LIVE_REFERENCE &&
+    sourceGroupsResult.sourceKind !== ProjectionSourceKind.SOURCE_METRIC &&
+    input.parsed.sourceEntryId &&
+    (await wouldCreateLiveProjectionCycle(input.parsed.sourceEntryId, input.entryId, input.existingRecipeId))
+  ) {
+    return { status: "error", message: "This live projection would create a dependency cycle." };
+  }
+
+  const transform = serializeProjectionTransform(input.parsed.transform);
+  const matches: ProjectionPreviewMatch[] = [];
+  const { startYear, endYear } = getWorkspaceYearBounds(
+    targetContext.entry.workspace.periodStart,
+    targetContext.entry.workspace.periodEnd,
+  );
+
+  if (input.parsed.targetYear !== undefined && sourceGroupsResult.groups.length !== 1) {
+    return {
+      status: "error",
+      message: "A specific target year can only be used when the projection resolves to one source group.",
+    };
+  }
+
+  for (const group of sourceGroupsResult.groups) {
+    const resolved = resolveProjectionGroupValue({
+      group,
+      transform,
+      targetPath: input.parsed.targetPath,
+    });
+    if (resolved.status === "error") {
+      return resolved;
+    }
+
+    const targetYear = input.parsed.targetYear ?? group.sourceYear;
+    if (targetYear === null || targetYear === undefined) {
+      return {
+        status: "error",
+        message: "A target year is required when projecting from source data without a year dimension.",
+      };
+    }
+    if (targetYear < startYear || targetYear > endYear) {
+      return {
+        status: "error",
+        message: `Target year ${targetYear} is outside the workspace period (${startYear}-${endYear}).`,
+      };
+    }
+
+    matches.push({
+      targetYear,
+      targetScopeKey: buildScopeKey(targetYear),
+      sourceYear: group.sourceYear,
+      sourceScopeKey: group.sourceScopeKey,
+      materializedNumberValue: input.parsed.targetPath === "actualValue" ? resolved.numberValue : null,
+      materializedTextValue: input.parsed.targetPath === "textValue" ? resolved.textValue : null,
+      rowCount: group.rowCount,
+      dimensions:
+        group.values.length === 1
+          ? group.values[0]?.dimensions ?? {}
+          : normalizeProjectionDimensions(input.parsed.filters?.dimensions as ProjectionDimensions | undefined),
+    });
+  }
+
+  if (matches.length === 0) {
+    return { status: "error", message: "No projection results were produced for the selected source." };
+  }
+
+  const existingYearData = await prisma.blockEntryYearValue.findMany({
+    where: {
+      entryId: input.entryId,
+      year: {
+        in: matches.map((match) => match.targetYear),
+      },
+    },
+  });
+  const existingByYear = new Map(existingYearData.map((row) => [row.year, row]));
+
+  const overwriteWarningCandidates = matches
+    .map((match) => {
+      const existing = existingByYear.get(match.targetYear);
+      const currentValue =
+        input.parsed.targetPath === "actualValue"
+          ? stringifyProjectionCurrentValue(existing?.actualValue ?? null)
+          : stringifyProjectionCurrentValue(existing?.textValue ?? null);
+      const projectedValue =
+        input.parsed.targetPath === "actualValue"
+          ? stringifyProjectionCurrentValue(match.materializedNumberValue)
+          : stringifyProjectionCurrentValue(match.materializedTextValue);
+      if (currentValue === null || currentValue === projectedValue) {
+        return null;
+      }
+      return {
+        targetYear: match.targetYear,
+        targetPath: input.parsed.targetPath,
+        currentValue,
+      };
+    })
+    .filter((value) => value !== null);
+  const overwriteWarnings: PreparedProjectionPreview["overwriteWarnings"] = overwriteWarningCandidates;
+
+  const conflicts = (
+    await findProjectionTargetConflicts({
+      targetEntryId: input.entryId,
+      matches,
+      excludeRecipeId: input.existingRecipeId,
+    })
+  ).map((conflict) => ({
+    targetYear: conflict.targetYear ?? Number.parseInt(conflict.targetScopeKey.replace("YEAR:", ""), 10),
+    message:
+      conflict.recipe.storageMode === ProjectionStorageMode.LIVE_REFERENCE
+        ? "Target year is already managed by another live projection."
+        : "Target year is already managed by another projection.",
+  }));
+
+  const sourceRevisionHash = hashProjectionPayload({
+    sourceKind: sourceGroupsResult.sourceKind,
+    sourceSummary: sourceGroupsResult.sourceSummary,
+    transform,
+    matches: matches.map((match) => ({
+      sourceYear: match.sourceYear,
+      sourceScopeKey: match.sourceScopeKey,
+      materializedNumberValue: match.materializedNumberValue,
+      materializedTextValue: match.materializedTextValue,
+      rowCount: match.rowCount,
+      dimensions: match.dimensions,
+    })),
+  });
+
+  return {
+    status: "success",
+    targetContext,
+    preview: {
+      sourceKind: sourceGroupsResult.sourceKind,
+      targetPath: input.parsed.targetPath,
+      storageMode: input.parsed.storageMode,
+      sourceSummary: sourceGroupsResult.sourceSummary,
+      filters: serializeProjectionFilter(input.parsed.filters),
+      transform,
+      sourceRevisionHash,
+      matches,
+      conflicts,
+      overwriteWarnings,
+    },
+  };
+}
+
+async function upsertProjectedYearDataTx(input: {
+  tx: DbClient;
+  recipeId: string;
+  targetEntry: ProjectionTargetEntryContext["entry"];
+  targetPath: "actualValue" | "textValue";
+  match: ProjectionPreviewMatch;
+  actorUserId: string;
+  reason: string;
+}) {
+  const existing = await input.tx.blockEntryYearValue.findUnique({
+    where: {
+      entryId_year: {
+        entryId: input.targetEntry.id,
+        year: input.match.targetYear,
+      },
+    },
+  });
+
+  const nextActualValue =
+    input.targetPath === "actualValue"
+      ? input.match.materializedNumberValue
+      : existing?.actualValue ?? null;
+  const nextTextValue =
+    input.targetPath === "textValue"
+      ? normalizeNullableString(input.match.materializedTextValue)
+      : existing?.textValue ?? null;
+
+  const validationError = validateYearDataByCriterion({
+    block: input.targetEntry.block,
+    numericValue: nextActualValue,
+    textValue: nextTextValue,
+  });
+  if (validationError) {
+    return { status: "error", message: validationError } satisfies ErrorResult;
+  }
+
+  const numericChanged = (existing?.actualValue ?? null) !== nextActualValue;
+  const textChanged = (existing?.textValue ?? null) !== nextTextValue;
+  const hasMeaningfulChange =
+    !existing ||
+    numericChanged ||
+    textChanged ||
+    existing.dataSource !== BlockEntryValueSource.PROJECTED ||
+    existing.sourceRef !== input.recipeId;
+
+  const saved = existing
+    ? await input.tx.blockEntryYearValue.update({
+        where: { id: existing.id },
+        data: {
+          actualValue: nextActualValue,
+          textValue: nextTextValue,
+          dataSource: BlockEntryValueSource.PROJECTED,
+          sourceRef: input.recipeId,
+          updatedByUserId: input.actorUserId,
+        },
+      })
+    : await input.tx.blockEntryYearValue.create({
+        data: {
+          entryId: input.targetEntry.id,
+          year: input.match.targetYear,
+          actualValue: nextActualValue,
+          textValue: nextTextValue,
+          dataSource: BlockEntryValueSource.PROJECTED,
+          sourceRef: input.recipeId,
+          updatedByUserId: input.actorUserId,
+        },
+      });
+
+  if (numericChanged) {
+    await recordCriterionEntryChange(input.tx, {
+      entryId: input.targetEntry.id,
+      year: input.match.targetYear,
+      fieldChanged: "actualValue",
+      oldValue: stringifyChangeValue(existing?.actualValue ?? null),
+      newValue: stringifyChangeValue(nextActualValue),
+      reason: input.reason,
+      changedByUserId: input.actorUserId,
+    });
+  }
+  if (textChanged) {
+    const textLog = buildTextChangeLog(existing?.textValue, nextTextValue);
+    await recordCriterionEntryChange(input.tx, {
+      entryId: input.targetEntry.id,
+      year: input.match.targetYear,
+      fieldChanged: "textValue",
+      oldValue: textLog.oldValue,
+      newValue: textLog.newValue,
+      changeMeta: textLog.changeMeta,
+      reason: input.reason,
+      changedByUserId: input.actorUserId,
+    });
+  }
+
+  if (input.targetEntry.status === BlockEntryStatus.BLANK) {
+    await input.tx.blockEntry.update({
+      where: { id: input.targetEntry.id },
+      data: {
+        status: BlockEntryStatus.IN_PROGRESS,
+        lastUpdatedAt: new Date(),
+        lastUpdatedByUserId: input.actorUserId,
+      },
+    });
+    await recordCriterionEntryChange(input.tx, {
+      entryId: input.targetEntry.id,
+      fieldChanged: "status",
+      oldValue: BlockEntryStatus.BLANK,
+      newValue: BlockEntryStatus.IN_PROGRESS,
+      reason: input.reason,
+      changedByUserId: input.actorUserId,
+    });
+  } else if (hasMeaningfulChange) {
+    await input.tx.blockEntry.update({
+      where: { id: input.targetEntry.id },
+      data: {
+        lastUpdatedAt: new Date(),
+        lastUpdatedByUserId: input.actorUserId,
+      },
+    });
+  }
+
+  await input.tx.blockProjectionTarget.upsert({
+    where: {
+      recipeId_targetEntryId_targetScopeKey_targetPath: {
+        recipeId: input.recipeId,
+        targetEntryId: input.targetEntry.id,
+        targetScopeKey: input.match.targetScopeKey,
+        targetPath: input.targetPath,
+      },
+    },
+    update: {
+      targetYear: input.match.targetYear,
+      sourceYear: input.match.sourceYear,
+      sourceScopeKey: input.match.sourceScopeKey,
+      sourceRevisionHash: input.match.sourceScopeKey
+        ? hashProjectionPayload({
+            sourceScopeKey: input.match.sourceScopeKey,
+            sourceYear: input.match.sourceYear,
+            materializedNumberValue: input.match.materializedNumberValue,
+            materializedTextValue: input.match.materializedTextValue,
+          })
+        : null,
+      materializedNumberValue: input.match.materializedNumberValue,
+      materializedTextValue: normalizeNullableString(input.match.materializedTextValue),
+      importedByUserId: input.actorUserId,
+      importedAt: new Date(),
+    },
+    create: {
+      recipeId: input.recipeId,
+      targetEntryId: input.targetEntry.id,
+      targetYear: input.match.targetYear,
+      targetScopeKey: input.match.targetScopeKey,
+      targetPath: input.targetPath,
+      sourceYear: input.match.sourceYear,
+      sourceScopeKey: input.match.sourceScopeKey,
+      sourceRevisionHash: input.match.sourceScopeKey
+        ? hashProjectionPayload({
+            sourceScopeKey: input.match.sourceScopeKey,
+            sourceYear: input.match.sourceYear,
+            materializedNumberValue: input.match.materializedNumberValue,
+            materializedTextValue: input.match.materializedTextValue,
+          })
+        : null,
+      materializedNumberValue: input.match.materializedNumberValue,
+      materializedTextValue: normalizeNullableString(input.match.materializedTextValue),
+      importedByUserId: input.actorUserId,
+    },
+  });
+
+  return {
+    status: "success",
+    responses: saved,
+    changed: hasMeaningfulChange,
+  } satisfies SuccessResult<{ responses: typeof saved; changed: boolean }>;
+}
+
+async function clearProjectedYearDataTargetTx(input: {
+  tx: DbClient;
+  targetEntry: ProjectionTargetEntryContext["entry"];
+  targetPath: "actualValue" | "textValue";
+  targetYear: number;
+  actorUserId: string;
+  reason: string;
+}) {
+  const existing = await input.tx.blockEntryYearValue.findUnique({
+    where: {
+      entryId_year: {
+        entryId: input.targetEntry.id,
+        year: input.targetYear,
+      },
+    },
+  });
+  if (!existing) {
+    return { status: "success", changed: false } satisfies SuccessResult<{ changed: boolean }>;
+  }
+
+  const nextActualValue = input.targetPath === "actualValue" ? null : existing.actualValue ?? null;
+  const nextTextValue = input.targetPath === "textValue" ? null : existing.textValue ?? null;
+  const numericChanged = (existing.actualValue ?? null) !== nextActualValue;
+  const textChanged = (existing.textValue ?? null) !== nextTextValue;
+
+  if (!numericChanged && !textChanged && existing.sourceRef === null && existing.dataSource === BlockEntryValueSource.MANUAL) {
+    return { status: "success", changed: false } satisfies SuccessResult<{ changed: boolean }>;
+  }
+
+  if (nextActualValue === null && nextTextValue === null && !existing.remarks) {
+    await input.tx.blockEntryYearValue.delete({
+      where: { id: existing.id },
+    });
+  } else {
+    await input.tx.blockEntryYearValue.update({
+      where: { id: existing.id },
+      data: {
+        actualValue: nextActualValue,
+        textValue: nextTextValue,
+        dataSource: BlockEntryValueSource.MANUAL,
+        sourceRef: null,
+        updatedByUserId: input.actorUserId,
+      },
+    });
+  }
+
+  if (numericChanged) {
+    await recordCriterionEntryChange(input.tx, {
+      entryId: input.targetEntry.id,
+      year: input.targetYear,
+      fieldChanged: "actualValue",
+      oldValue: stringifyChangeValue(existing.actualValue ?? null),
+      newValue: stringifyChangeValue(nextActualValue),
+      reason: input.reason,
+      changedByUserId: input.actorUserId,
+    });
+  }
+  if (textChanged) {
+    const textLog = buildTextChangeLog(existing.textValue, nextTextValue);
+    await recordCriterionEntryChange(input.tx, {
+      entryId: input.targetEntry.id,
+      year: input.targetYear,
+      fieldChanged: "textValue",
+      oldValue: textLog.oldValue,
+      newValue: textLog.newValue,
+      changeMeta: textLog.changeMeta,
+      reason: input.reason,
+      changedByUserId: input.actorUserId,
+    });
+  }
+
+  await input.tx.blockEntry.update({
+    where: { id: input.targetEntry.id },
+    data: {
+      lastUpdatedAt: new Date(),
+      lastUpdatedByUserId: input.actorUserId,
+    },
+  });
+
+  return { status: "success", changed: true } satisfies SuccessResult<{ changed: boolean }>;
+}
+
+async function persistProjectionRecipeRunTx(input: {
+  tx: DbClient;
+  recipeId: string;
+  runType: ProjectionRunType;
+  status: ProjectionRunStatus;
+  previewSummary?: Prisma.JsonValue | null;
+  appliedCount?: number;
+  errorMessage?: string | null;
+  sourceRevisionHash?: string | null;
+  createdByUserId: string;
+}) {
+  return input.tx.blockProjectionRun.create({
+    data: {
+      recipeId: input.recipeId,
+      runType: input.runType,
+      status: input.status,
+      previewSummary: input.previewSummary ?? undefined,
+      appliedCount: input.appliedCount ?? 0,
+      errorMessage: input.errorMessage ?? null,
+      sourceRevisionHash: input.sourceRevisionHash ?? null,
+      createdByUserId: input.createdByUserId,
+    },
+  });
+}
+
+async function applyProjectionRecipeTx(input: {
+  tx: DbClient;
+  recipeId: string;
+  targetContext: ProjectionTargetEntryContext;
+  preview: PreparedProjectionPreview;
+  actorUserId: string;
+  runType: ProjectionRunType;
+}): Promise<ErrorResult | SuccessResult<{ appliedCount: number; removedCount: number; changed: boolean }>> {
+  const existingTargets = await input.tx.blockProjectionTarget.findMany({
+    where: {
+      recipeId: input.recipeId,
+    },
+  });
+  const nextKeys = new Set(input.preview.matches.map((match) => `${match.targetScopeKey}:${input.preview.targetPath}`));
+  let appliedCount = 0;
+  let removedCount = 0;
+  let changed = false;
+
+  for (const match of input.preview.matches) {
+    const saved = await upsertProjectedYearDataTx({
+      tx: input.tx,
+      recipeId: input.recipeId,
+      targetEntry: input.targetContext.entry,
+      targetPath: input.preview.targetPath,
+      match,
+      actorUserId: input.actorUserId,
+      reason:
+        input.runType === ProjectionRunType.APPLY
+          ? "Projection import"
+          : "Projection refresh",
+    });
+    if (saved.status === "error") {
+      return saved;
+    }
+    appliedCount += 1;
+    changed = changed || saved.changed;
+  }
+
+  for (const existingTarget of existingTargets) {
+    const key = `${existingTarget.targetScopeKey}:${existingTarget.targetPath}`;
+    if (nextKeys.has(key)) {
+      continue;
+    }
+
+    const cleared = await clearProjectedYearDataTargetTx({
+      tx: input.tx,
+      targetEntry: input.targetContext.entry,
+      targetPath: existingTarget.targetPath as "actualValue" | "textValue",
+      targetYear: existingTarget.targetYear ?? Number.parseInt(existingTarget.targetScopeKey.replace("YEAR:", ""), 10),
+      actorUserId: input.actorUserId,
+      reason: "Projection refresh removed source data",
+    });
+    changed = changed || cleared.changed;
+    removedCount += 1;
+    await input.tx.blockProjectionTarget.delete({
+      where: { id: existingTarget.id },
+    });
+  }
+
+  if (changed) {
+    await ensureWorkspaceInProgress(input.tx, input.targetContext.entry.workspace.id);
+    await recomputeAndPersistWorkspaceScores(input.tx, input.targetContext.entry.workspace.id, false);
+    await invalidateSectionReviewForCriterionTx(input.tx, {
+      workspaceId: input.targetContext.entry.workspace.id,
+      versionId: input.targetContext.permissionContext.workspace.versionId,
+      blockId: input.targetContext.entry.block.id,
+      actorUserId: input.actorUserId,
+      triggerMessage:
+        input.runType === ProjectionRunType.APPLY
+          ? `${input.targetContext.entry.block.blockCode} was updated from a projection.`
+          : `${input.targetContext.entry.block.blockCode} was refreshed from a live projection.`,
+      metadata: {
+        targetEntryId: input.targetContext.entry.id,
+        recipeId: input.recipeId,
+        appliedCount,
+        removedCount,
+      } satisfies Prisma.JsonObject,
+    });
+  }
+
+  await input.tx.blockProjectionRecipe.update({
+    where: { id: input.recipeId },
+    data: {
+      lastSourceRevisionHash: input.preview.sourceRevisionHash,
+      updatedByUserId: input.actorUserId,
+      updatedAt: new Date(),
+    },
+  });
+
+  await persistProjectionRecipeRunTx({
+    tx: input.tx,
+    recipeId: input.recipeId,
+    runType: input.runType,
+    status: ProjectionRunStatus.SUCCESS,
+    previewSummary: {
+      matches: input.preview.matches.map((match) => ({
+        targetYear: match.targetYear,
+        sourceYear: match.sourceYear,
+        rowCount: match.rowCount,
+      })),
+    } satisfies Prisma.JsonObject,
+    appliedCount,
+    sourceRevisionHash: input.preview.sourceRevisionHash,
+    createdByUserId: input.actorUserId,
+  });
+
+  return {
+    status: "success",
+    appliedCount,
+    removedCount,
+    changed,
+  } satisfies SuccessResult<{ appliedCount: number; removedCount: number; changed: boolean }>;
+}
+
+export async function listTenantSourceMetrics(
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const serviceError = await ensureAccreditationServiceEnabled(tenantId);
+  if (serviceError) {
+    return { status: "error", message: serviceError } satisfies ErrorResult;
+  }
+
+  const allowed = await hasWorkspaceAdminAccess(tenantId, actorUserId, actorRole);
+  if (!allowed) {
+    return { status: "error", message: "You do not have permission to view source metrics." } satisfies ErrorResult;
+  }
+
+  const metrics = await prisma.sourceMetricDefinition.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+    },
+    include: {
+      _count: {
+        select: {
+          observations: true,
+          projectionRecipes: true,
+        },
+      },
+    },
+    orderBy: [{ name: "asc" }],
+  });
+
+  return {
+    status: "success",
+    sourceMetrics: metrics,
+  } satisfies SuccessResult<{ sourceMetrics: typeof metrics }>;
+}
+
+export async function createTenantSourceMetric(
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const parsed = sourceMetricInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid source metric." } satisfies ErrorResult;
+  }
+
+  const serviceError = await ensureAccreditationServiceEnabled(tenantId);
+  if (serviceError) {
+    return { status: "error", message: serviceError } satisfies ErrorResult;
+  }
+
+  const allowed = await hasWorkspaceAdminAccess(tenantId, actorUserId, actorRole);
+  if (!allowed) {
+    return { status: "error", message: "You do not have permission to manage source metrics." } satisfies ErrorResult;
+  }
+
+  const metric = await prisma.sourceMetricDefinition.create({
+    data: {
+      tenantId,
+      code: parsed.data.code,
+      name: parsed.data.name,
+      description: normalizeNullableString(parsed.data.description),
+      valueType: parsed.data.valueType,
+      unitOfMeasure: normalizeNullableString(parsed.data.unitOfMeasure),
+      allowedDimensions:
+        parsed.data.allowedDimensions && Object.keys(parsed.data.allowedDimensions).length > 0
+          ? (parsed.data.allowedDimensions as Prisma.InputJsonObject)
+          : undefined,
+      createdByUserId: actorUserId,
+    },
+  });
+
+  return {
+    status: "success",
+    message: "Source metric created.",
+    sourceMetric: metric,
+  } satisfies SuccessResult<{ sourceMetric: typeof metric }>;
+}
+
+export async function upsertTenantSourceMetricObservations(
+  metricId: string,
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const parsed = sourceMetricObservationInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid source metric observations." } satisfies ErrorResult;
+  }
+
+  const serviceError = await ensureAccreditationServiceEnabled(tenantId);
+  if (serviceError) {
+    return { status: "error", message: serviceError } satisfies ErrorResult;
+  }
+
+  const allowed = await hasWorkspaceAdminAccess(tenantId, actorUserId, actorRole);
+  if (!allowed) {
+    return { status: "error", message: "You do not have permission to manage source metrics." } satisfies ErrorResult;
+  }
+
+  const metric = await prisma.sourceMetricDefinition.findFirst({
+    where: {
+      id: metricId,
+      tenantId,
+      isActive: true,
+    },
+  });
+  if (!metric) {
+    return { status: "error", message: "Source metric not found." } satisfies ErrorResult;
+  }
+
+  const observations = await prisma.$transaction(async (tx) => {
+    const saved: Awaited<ReturnType<typeof tx.sourceMetricObservation.upsert>>[] = [];
+    for (const observation of parsed.data.observations) {
+      const dimensions = normalizeProjectionDimensions(observation.dimensions as ProjectionDimensions);
+      const scopeKey = buildScopeKey(observation.observedYear ?? null);
+      const dimensionFingerprint = buildProjectionDimensionFingerprint(dimensions);
+      const textValue = normalizeNullableString(observation.textValue);
+      const revisionHash = hashProjectionPayload({
+        observedYear: observation.observedYear ?? null,
+        dimensions,
+        numberValue: observation.numberValue ?? null,
+        textValue,
+        jsonValue: observation.jsonValue ?? null,
+      });
+
+      if (
+        metric.valueType === SourceMetricValueType.NUMBER &&
+        (typeof observation.numberValue !== "number" || !Number.isFinite(observation.numberValue))
+      ) {
+        return { status: "error" as const, message: "Numeric source metrics require numberValue." };
+      }
+      if (metric.valueType === SourceMetricValueType.TEXT && !textValue) {
+        return { status: "error" as const, message: "Text source metrics require textValue." };
+      }
+
+      const savedObservation = await tx.sourceMetricObservation.upsert({
+        where: {
+          metricId_scopeKey_dimensionFingerprint: {
+            metricId,
+            scopeKey,
+            dimensionFingerprint,
+          },
+        },
+        update: {
+          observedYear: observation.observedYear ?? null,
+          dimensions: Object.keys(dimensions).length > 0 ? (dimensions as Prisma.InputJsonObject) : Prisma.DbNull,
+          numberValue: observation.numberValue ?? null,
+          textValue,
+          jsonValue: observation.jsonValue !== undefined ? (observation.jsonValue as Prisma.InputJsonValue) : Prisma.DbNull,
+          sourceType: observation.sourceType?.trim() || "MANUAL",
+          sourceRef: normalizeNullableString(observation.sourceRef),
+          sourceRevisionHash: revisionHash,
+          recordedByUserId: actorUserId,
+          recordedAt: new Date(),
+        },
+        create: {
+          metricId,
+          observedYear: observation.observedYear ?? null,
+          scopeKey,
+          dimensions: Object.keys(dimensions).length > 0 ? (dimensions as Prisma.InputJsonObject) : Prisma.DbNull,
+          dimensionFingerprint,
+          numberValue: observation.numberValue ?? null,
+          textValue,
+          jsonValue: observation.jsonValue !== undefined ? (observation.jsonValue as Prisma.InputJsonValue) : Prisma.DbNull,
+          sourceType: observation.sourceType?.trim() || "MANUAL",
+          sourceRef: normalizeNullableString(observation.sourceRef),
+          sourceRevisionHash: revisionHash,
+          recordedByUserId: actorUserId,
+          recordedAt: new Date(),
+        },
+      });
+      saved.push(savedObservation);
+    }
+
+    return { status: "success" as const, observations: saved };
+  });
+
+  if (observations.status === "error") {
+    return observations;
+  }
+
+  return {
+    status: "success",
+    message: "Source metric observations saved.",
+    observations: observations.observations,
+  } satisfies SuccessResult<{ observations: typeof observations.observations }>;
+}
+
+export async function listBlockEntryProjectionSources(
+  entryId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const targetContext = await getProjectionTargetEntryContext(
+    entryId,
+    tenantId,
+    actorUserId,
+    actorRole,
+    false,
+  );
+  if ("status" in targetContext) {
+    return targetContext;
+  }
+
+  const [sourceMetrics, sourceEntries, activeRecipes] = await Promise.all([
+    prisma.sourceMetricDefinition.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+      },
+      include: {
+        _count: {
+          select: {
+            observations: true,
+          },
+        },
+      },
+      orderBy: [{ name: "asc" }],
+    }),
+    prisma.blockEntry.findMany({
+      where: {
+        workspace: {
+          tenantId,
+        },
+        id: {
+          not: entryId,
+        },
+        OR: [
+          {
+            responses: {
+              some: {},
+            },
+          },
+          {
+            tableInstances: {
+              some: {},
+            },
+          },
+        ],
+      },
+      include: {
+        workspace: {
+          select: {
+            id: true,
+            title: true,
+            status: true,
+          },
+        },
+        block: {
+          select: {
+            blockCode: true,
+            title: true,
+          },
+        },
+        responses: {
+          select: {
+            year: true,
+          },
+          orderBy: { year: "asc" },
+        },
+        tableInstances: {
+          select: {
+            fieldKey: true,
+            year: true,
+            rowCount: true,
+          },
+          orderBy: [{ fieldKey: "asc" }, { year: "asc" }],
+        },
+      },
+      orderBy: [{ updatedAt: "desc" }],
+      take: 100,
+    }),
+    prisma.blockProjectionRecipe.findMany({
+      where: {
+        tenantId,
+        targetEntryId: entryId,
+        isActive: true,
+      },
+      include: {
+        sourceMetric: {
+          select: {
+            code: true,
+            name: true,
+          },
+        },
+        sourceEntry: {
+          include: {
+            block: {
+              select: {
+                blockCode: true,
+                title: true,
+              },
+            },
+            workspace: {
+              select: {
+                title: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: [{ createdAt: "desc" }],
+    }),
+  ]);
+
+  return {
+    status: "success",
+    sources: {
+      sourceMetrics,
+      sourceEntries: sourceEntries.map((entry) => ({
+        entryId: entry.id,
+        workspaceId: entry.workspace.id,
+        workspaceTitle: entry.workspace.title,
+        workspaceStatus: entry.workspace.status,
+        blockCode: entry.block.blockCode,
+        blockTitle: entry.block.title,
+        availableYears: [...new Set(entry.responses.map((row) => row.year))],
+        tableFields: entry.tableInstances.map((instance) => ({
+          fieldKey: instance.fieldKey,
+          year: instance.year,
+          rowCount: instance.rowCount,
+        })),
+      })),
+      activeProjections: activeRecipes.map((recipe) => ({
+        recipeId: recipe.id,
+        sourceKind: recipe.sourceKind,
+        storageMode: recipe.storageMode,
+        targetPath: recipe.targetPath,
+        sourceMetric: recipe.sourceMetric,
+        sourceEntry:
+          recipe.sourceEntry
+            ? {
+                workspaceTitle: recipe.sourceEntry.workspace.title,
+                blockCode: recipe.sourceEntry.block.blockCode,
+                blockTitle: recipe.sourceEntry.block.title,
+              }
+            : null,
+      })),
+    },
+  } satisfies SuccessResult<{
+    sources: {
+      sourceMetrics: typeof sourceMetrics;
+      sourceEntries: Array<{
+        entryId: string;
+        workspaceId: string;
+        workspaceTitle: string;
+        workspaceStatus: AssessmentWorkspaceStatus;
+        blockCode: string;
+        blockTitle: string;
+        availableYears: number[];
+        tableFields: Array<{
+          fieldKey: string;
+          year: number | null;
+          rowCount: number;
+        }>;
+      }>;
+      activeProjections: Array<{
+        recipeId: string;
+        sourceKind: ProjectionSourceKind;
+        storageMode: ProjectionStorageMode;
+        targetPath: string;
+        sourceMetric: {
+          code: string;
+          name: string;
+        } | null;
+        sourceEntry: {
+          workspaceTitle: string;
+          blockCode: string;
+          blockTitle: string;
+        } | null;
+      }>;
+    };
+  }>;
+}
+
+export async function previewBlockEntryProjection(
+  entryId: string,
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const parsed = entryProjectionInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid projection input." } satisfies ErrorResult;
+  }
+
+  const prepared = await prepareCriterionEntryProjectionPreview({
+    entryId,
+    tenantId,
+    parsed: parsed.data,
+    actorUserId,
+    actorRole,
+    requireEditAccess: false,
+  });
+  if (prepared.status === "error") {
+    return prepared;
+  }
+
+  return {
+    status: "success",
+    preview: prepared.preview,
+  } satisfies SuccessResult<{ preview: PreparedProjectionPreview }>;
+}
+
+export async function applyBlockEntryProjection(
+  entryId: string,
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const parsed = entryProjectionInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid projection input." } satisfies ErrorResult;
+  }
+
+  const prepared = await prepareCriterionEntryProjectionPreview({
+    entryId,
+    tenantId,
+    parsed: parsed.data,
+    actorUserId,
+    actorRole,
+    requireEditAccess: true,
+  });
+  if (prepared.status === "error") {
+    return prepared;
+  }
+  if (prepared.preview.conflicts.length > 0) {
+    return {
+      status: "error",
+      message: prepared.preview.conflicts[0]?.message ?? "Projection conflicts with an existing active projection.",
+    } satisfies ErrorResult;
+  }
+
+  const recipe = await prisma.$transaction(async (tx) => {
+    const createdRecipe = await tx.blockProjectionRecipe.create({
+      data: {
+        tenantId,
+        targetWorkspaceId: prepared.targetContext.entry.workspace.id,
+        targetEntryId: entryId,
+        sourceKind: prepared.preview.sourceKind,
+        sourceWorkspaceId: parsed.data.sourceWorkspaceId ?? null,
+        sourceEntryId: parsed.data.sourceEntryId ?? null,
+        sourceMetricId: parsed.data.sourceMetricId ?? null,
+        sourceTableFieldKey: normalizeNullableString(parsed.data.sourceTableFieldKey),
+        sourcePath: normalizeNullableString(parsed.data.sourcePath),
+        filters: prepared.preview.filters ?? Prisma.DbNull,
+        transform: prepared.preview.transform,
+        storageMode: parsed.data.storageMode,
+        targetPath: parsed.data.targetPath,
+        lastSourceRevisionHash: prepared.preview.sourceRevisionHash,
+        createdByUserId: actorUserId,
+      },
+    });
+
+    const applied = await applyProjectionRecipeTx({
+      tx,
+      recipeId: createdRecipe.id,
+      targetContext: prepared.targetContext,
+      preview: prepared.preview,
+      actorUserId,
+      runType: ProjectionRunType.APPLY,
+    });
+    if (applied.status === "error") {
+      throw new Error(applied.message);
+    }
+
+    return {
+      recipe: createdRecipe,
+      applied,
+    };
+  }).catch((error: Error) => ({ error }));
+
+  if ("error" in recipe) {
+    return { status: "error", message: recipe.error.message } satisfies ErrorResult;
+  }
+
+  return {
+    status: "success",
+    message: "Projection applied.",
+    recipe: recipe.recipe,
+    appliedCount: recipe.applied.appliedCount,
+    removedCount: recipe.applied.removedCount,
+    preview: prepared.preview,
+  } satisfies SuccessResult<{
+    recipe: typeof recipe.recipe;
+    appliedCount: number;
+    removedCount: number;
+    preview: PreparedProjectionPreview;
+  }>;
+}
+
+export async function refreshBlockEntryProjection(
+  recipeId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const recipe = await prisma.blockProjectionRecipe.findFirst({
+    where: {
+      id: recipeId,
+      tenantId,
+      isActive: true,
+    },
+  });
+  if (!recipe) {
+    return { status: "error", message: "Projection recipe not found." } satisfies ErrorResult;
+  }
+
+  const prepared = await prepareCriterionEntryProjectionPreview({
+    entryId: recipe.targetEntryId,
+    tenantId,
+    parsed: {
+      sourceWorkspaceId: recipe.sourceWorkspaceId ?? undefined,
+      sourceEntryId: recipe.sourceEntryId ?? undefined,
+      sourceMetricId: recipe.sourceMetricId ?? undefined,
+      sourceTableFieldKey: recipe.sourceTableFieldKey ?? undefined,
+      sourcePath:
+        recipe.sourcePath === "actualValue" || recipe.sourcePath === "textValue"
+          ? (recipe.sourcePath as "actualValue" | "textValue")
+          : undefined,
+      filters: (asJsonObject(recipe.filters) as z.infer<typeof projectionFilterSchema> | null) ?? undefined,
+      transform: (asJsonObject(recipe.transform) as z.infer<typeof projectionTransformSchema> | null) ?? undefined,
+      targetPath: recipe.targetPath as "actualValue" | "textValue",
+      storageMode: recipe.storageMode,
+    },
+    actorUserId,
+    actorRole,
+    existingRecipeId: recipe.id,
+    requireEditAccess: true,
+  });
+  if (prepared.status === "error") {
+    await prisma.$transaction(async (tx) => {
+      await persistProjectionRecipeRunTx({
+        tx,
+        recipeId: recipe.id,
+        runType: ProjectionRunType.REFRESH,
+        status: ProjectionRunStatus.ERROR,
+        errorMessage: prepared.message,
+        createdByUserId: actorUserId,
+      });
+    });
+    return prepared;
+  }
+  if (prepared.preview.conflicts.length > 0) {
+    return {
+      status: "error",
+      message: prepared.preview.conflicts[0]?.message ?? "Projection conflicts with an existing active projection.",
+    } satisfies ErrorResult;
+  }
+
+  const refreshed = await prisma.$transaction(async (tx) => {
+    const applied = await applyProjectionRecipeTx({
+      tx,
+      recipeId: recipe.id,
+      targetContext: prepared.targetContext,
+      preview: prepared.preview,
+      actorUserId,
+      runType: ProjectionRunType.REFRESH,
+    });
+    if (applied.status === "error") {
+      throw new Error(applied.message);
+    }
+    return applied;
+  }).catch((error: Error) => ({ error }));
+
+  if ("error" in refreshed) {
+    return { status: "error", message: refreshed.error.message } satisfies ErrorResult;
+  }
+
+  return {
+    status: "success",
+    message: "Projection refreshed.",
+    appliedCount: refreshed.appliedCount,
+    removedCount: refreshed.removedCount,
+    preview: prepared.preview,
+  } satisfies SuccessResult<{
+    appliedCount: number;
+    removedCount: number;
+    preview: PreparedProjectionPreview;
+  }>;
+}
+
+export async function detachBlockEntryProjection(
+  recipeId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const recipe = await prisma.blockProjectionRecipe.findFirst({
+    where: {
+      id: recipeId,
+      tenantId,
+      isActive: true,
+    },
+    include: {
+      targetEntry: {
+        include: {
+          workspace: {
+            select: {
+              id: true,
+              tenantId: true,
+              status: true,
+              periodStart: true,
+              periodEnd: true,
+              versionId: true,
+              profileId: true,
+            },
+          },
+          block: {
+            select: {
+              id: true,
+              blockCode: true,
+              title: true,
+              dataType: true,
+              validationRules: true,
+              isLeaf: true,
+            },
+          },
+        },
+      },
+      targets: true,
+    },
+  });
+  if (!recipe || recipe.targetEntry.workspace.tenantId !== tenantId) {
+    return { status: "error", message: "Projection recipe not found." } satisfies ErrorResult;
+  }
+
+  const permissionContext = await getWorkspacePermissionContext({
+    tenantId,
+    workspaceId: recipe.targetEntry.workspace.id,
+    actorUserId,
+    actorRole,
+  });
+  if ("status" in permissionContext) {
+    return permissionContext;
+  }
+  if (
+    !(await canPerformOnBlock(
+      prisma,
+      permissionContext,
+      [WorkspaceCollaboratorRole.RESPONSIBLE, WorkspaceCollaboratorRole.COORDINATOR],
+      recipe.targetEntry.block.id,
+    ))
+  ) {
+    return { status: "error", message: "You do not have permission to detach this projection." } satisfies ErrorResult;
+  }
+  if (isWorkspaceLockedForEntryEdits(recipe.targetEntry.workspace.status)) {
+    return { status: "error", message: "This workspace is read-only in its current status." } satisfies ErrorResult;
+  }
+
+  const detached = await prisma.$transaction(async (tx) => {
+    const touchedYears = new Set<number>();
+    for (const target of recipe.targets) {
+      if (target.targetYear !== null) {
+        touchedYears.add(target.targetYear);
+      }
+
+      const responses = target.targetYear === null
+        ? null
+        : await tx.blockEntryYearValue.findUnique({
+            where: {
+              entryId_year: {
+                entryId: recipe.targetEntryId,
+                year: target.targetYear,
+              },
+            },
+          });
+      if (responses && responses.sourceRef === recipe.id) {
+        await tx.blockEntryYearValue.update({
+          where: { id: responses.id },
+          data: {
+            dataSource: BlockEntryValueSource.MANUAL,
+            sourceRef: null,
+            updatedByUserId: actorUserId,
+          },
+        });
+      }
+    }
+
+    await tx.blockProjectionRecipe.update({
+      where: { id: recipe.id },
+      data: {
+        isActive: false,
+        updatedByUserId: actorUserId,
+      },
+    });
+
+    await persistProjectionRecipeRunTx({
+      tx,
+      recipeId: recipe.id,
+      runType: ProjectionRunType.DETACH,
+      status: ProjectionRunStatus.SUCCESS,
+      appliedCount: recipe.targets.length,
+      createdByUserId: actorUserId,
+    });
+
+    await tx.blockEntry.update({
+      where: { id: recipe.targetEntryId },
+      data: {
+        lastUpdatedAt: new Date(),
+        lastUpdatedByUserId: actorUserId,
+      },
+    });
+
+    await ensureWorkspaceInProgress(tx, recipe.targetEntry.workspace.id);
+    await recomputeAndPersistWorkspaceScores(tx, recipe.targetEntry.workspace.id, false);
+
+    return {
+      detachedCount: recipe.targets.length,
+      touchedYears: [...touchedYears].sort((left, right) => left - right),
+    };
+  });
+
+  return {
+    status: "success",
+    message: "Projection detached. Imported values are now editable.",
+    detachedCount: detached.detachedCount,
+    touchedYears: detached.touchedYears,
+  } satisfies SuccessResult<{ detachedCount: number; touchedYears: number[] }>;
 }

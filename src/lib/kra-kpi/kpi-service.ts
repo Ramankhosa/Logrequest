@@ -261,7 +261,7 @@ async function mapKpiView(k: any): Promise<KpiDefinitionView> {
     finalReviewerWarning: finalReviewer.warning,
     workflowWarnings,
     targetUnitCount: k._count.targetUnits,
-    accreditationLinkCount: k._count.accreditationCriterionLinks ?? 0,
+    accreditationLinkCount: k._count.accreditationBlockLinks ?? 0,
     evidenceRequired: k.evidenceRequired,
     evidenceTypes: k.evidenceTypes,
     evidenceInstructions: k.evidenceInstructions,
@@ -381,7 +381,7 @@ export async function listKpis(
       startingUnit: { select: { name: true } },
       keyUnit: { select: { name: true } },
       finalUnit: { select: { name: true } },
-      _count: { select: { targetAllocations: true, targetUnits: true, accreditationCriterionLinks: true } },
+      _count: { select: { targetAllocations: true, targetUnits: true, accreditationBlockLinks: true } },
     },
     orderBy: [{ sortOrder: "asc" }, { title: "asc" }],
   });
@@ -402,7 +402,7 @@ export async function getKpi(
       startingUnit: { select: { name: true } },
       keyUnit: { select: { name: true } },
       finalUnit: { select: { name: true } },
-      _count: { select: { targetAllocations: true, targetUnits: true, accreditationCriterionLinks: true } },
+      _count: { select: { targetAllocations: true, targetUnits: true, accreditationBlockLinks: true } },
     },
   });
   if (!k) return null;

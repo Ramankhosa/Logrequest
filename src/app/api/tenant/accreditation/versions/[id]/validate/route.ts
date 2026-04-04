@@ -2,10 +2,10 @@ import type { Role } from "@prisma/client";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { updateTenantCriterion } from "@/lib/accreditation/service";
+import { validateTenantVersionBlocks } from "@/lib/accreditation/block-template-service";
 
-export async function PATCH(
-  request: Request,
+export async function POST(
+  _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getServerSession(authOptions);
@@ -13,18 +13,10 @@ export async function PATCH(
     return NextResponse.json({ status: "error", message: "You do not have tenant access." }, { status: 403 });
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ status: "error", message: "Invalid request body." }, { status: 400 });
-  }
-
   const { id } = await params;
-  const result = await updateTenantCriterion(
+  const result = await validateTenantVersionBlocks(
     session.user.tenantId,
     id,
-    body,
     session.user.id,
     session.user.role as Role,
   );

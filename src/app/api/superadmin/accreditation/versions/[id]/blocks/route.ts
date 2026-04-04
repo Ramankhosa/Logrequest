@@ -2,9 +2,9 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
 import {
-  createSuperadminVersionCriterion,
-  listSuperadminVersionCriteria,
-} from "@/lib/accreditation/service";
+  createSuperadminVersionBlock,
+  listSuperadminVersionBlocks,
+} from "@/lib/accreditation/block-template-service";
 
 export async function GET(
   _request: Request,
@@ -16,7 +16,7 @@ export async function GET(
   }
 
   const { id } = await params;
-  const result = await listSuperadminVersionCriteria(id);
+  const result = await listSuperadminVersionBlocks(id);
   return NextResponse.json(result, { status: result.status === "success" ? 200 : 404 });
 }
 
@@ -37,6 +37,6 @@ export async function POST(
   }
 
   const { id } = await params;
-  const result = await createSuperadminVersionCriterion(id, body);
+  const result = await createSuperadminVersionBlock(id, body, session.user.id);
   return NextResponse.json(result, { status: result.status === "success" ? 201 : 400 });
 }

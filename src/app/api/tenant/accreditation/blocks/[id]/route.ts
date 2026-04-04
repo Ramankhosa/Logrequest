@@ -2,26 +2,9 @@ import type { Role } from "@prisma/client";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import {
-  createTenantVersionCriterion,
-  listTenantVersionCriteria,
-} from "@/lib/accreditation/service";
+import { updateTenantVersionBlock } from "@/lib/accreditation/block-template-service";
 
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id || !session.user.tenantId) {
-    return NextResponse.json({ status: "error", message: "You do not have tenant access." }, { status: 403 });
-  }
-
-  const { id } = await params;
-  const result = await listTenantVersionCriteria(session.user.tenantId, id);
-  return NextResponse.json(result, { status: result.status === "success" ? 200 : 403 });
-}
-
-export async function POST(
+export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -38,12 +21,12 @@ export async function POST(
   }
 
   const { id } = await params;
-  const result = await createTenantVersionCriterion(
+  const result = await updateTenantVersionBlock(
     session.user.tenantId,
     id,
     body,
     session.user.id,
     session.user.role as Role,
   );
-  return NextResponse.json(result, { status: result.status === "success" ? 201 : 400 });
+  return NextResponse.json(result, { status: result.status === "success" ? 200 : 400 });
 }

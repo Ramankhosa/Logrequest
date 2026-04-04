@@ -2,7 +2,7 @@ import * as XLSX from "xlsx";
 
 export type ParsedWorkspaceImportRow = {
   rowIndex: number;
-  criterionCode: string;
+  blockCode: string;
   year: number | null;
   numericValue: number | null;
   textValue: string | null;
@@ -48,8 +48,8 @@ function resolveMappedRow(rawRow: Record<string, unknown>) {
 
   for (const [key, value] of Object.entries(rawRow)) {
     const normalized = normalizeHeader(key);
-    if (normalized === "criterioncode" || normalized === "criterion") {
-      mapped.criterionCode = value;
+    if (normalized === "blockcode" || normalized === "block" || normalized === "criterioncode" || normalized === "criterion") {
+      mapped.blockCode = value;
       continue;
     }
     if (normalized === "year") {
@@ -106,20 +106,20 @@ export function parseWorkspaceImportFile(
   for (let index = 0; index < rawRows.length; index += 1) {
     const rawRow = rawRows[index]!;
     const mapped = resolveMappedRow(rawRow);
-    const criterionCode = (normalizeNullableText(mapped.criterionCode) ?? "").toUpperCase();
+    const blockCode = (normalizeNullableText(mapped.blockCode) ?? "").toUpperCase();
     const year = parseNullableNumber(mapped.year);
     const numericValue = parseNullableNumber(mapped.numericValue);
     const textValue = normalizeNullableText(mapped.textValue);
     const remarks = normalizeNullableText(mapped.remarks);
     const errors: string[] = [];
 
-    const rowHasValues = !!criterionCode || year !== null || numericValue !== null || !!textValue || !!remarks;
+    const rowHasValues = !!blockCode || year !== null || numericValue !== null || !!textValue || !!remarks;
     if (!rowHasValues) {
       continue;
     }
 
-    if (!criterionCode) {
-      errors.push("Missing criterion code.");
+    if (!blockCode) {
+      errors.push("Missing block code.");
     }
 
     if (year === null || !Number.isInteger(year)) {
@@ -132,7 +132,7 @@ export function parseWorkspaceImportFile(
 
     rows.push({
       rowIndex: index + 1,
-      criterionCode,
+      blockCode,
       year,
       numericValue,
       textValue,

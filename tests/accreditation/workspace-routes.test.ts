@@ -12,6 +12,14 @@ const previewAssessmentWorkspaceReuseMock = vi.fn();
 const applyAssessmentWorkspaceReuseMock = vi.fn();
 const getAssessmentWorkspaceSubmissionManifestMock = vi.fn();
 const deleteAssessmentWorkspaceEvidenceVersionMock = vi.fn();
+const listTenantSourceMetricsMock = vi.fn();
+const createTenantSourceMetricMock = vi.fn();
+const upsertTenantSourceMetricObservationsMock = vi.fn();
+const listBlockEntryProjectionSourcesMock = vi.fn();
+const previewBlockEntryProjectionMock = vi.fn();
+const applyBlockEntryProjectionMock = vi.fn();
+const refreshBlockEntryProjectionMock = vi.fn();
+const detachBlockEntryProjectionMock = vi.fn();
 
 vi.mock("next-auth", () => ({
   default: vi.fn(() => ({})),
@@ -29,6 +37,14 @@ vi.mock("@/lib/accreditation/workspace-service", () => ({
   applyAssessmentWorkspaceReuse: applyAssessmentWorkspaceReuseMock,
   getAssessmentWorkspaceSubmissionManifest: getAssessmentWorkspaceSubmissionManifestMock,
   deleteAssessmentWorkspaceEvidenceVersion: deleteAssessmentWorkspaceEvidenceVersionMock,
+  listTenantSourceMetrics: listTenantSourceMetricsMock,
+  createTenantSourceMetric: createTenantSourceMetricMock,
+  upsertTenantSourceMetricObservations: upsertTenantSourceMetricObservationsMock,
+  listBlockEntryProjectionSources: listBlockEntryProjectionSourcesMock,
+  previewBlockEntryProjection: previewBlockEntryProjectionMock,
+  applyBlockEntryProjection: applyBlockEntryProjectionMock,
+  refreshBlockEntryProjection: refreshBlockEntryProjectionMock,
+  detachBlockEntryProjection: detachBlockEntryProjectionMock,
 }));
 
 function tenantSession(role: "TENANT_OWNER" | "TENANT_ADMIN" | "TENANT_USER" = "TENANT_ADMIN") {
@@ -89,7 +105,7 @@ describe("accreditation workspace routes", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          assignments: [{ sectionCriterionId: "section-1", userId: "user-2", role: "REVIEWER" }],
+          assignments: [{ sectionBlockId: "section-1", userId: "user-2", role: "REVIEWER" }],
         }),
       }),
       { params: Promise.resolve({ id: "workspace-1" }) },
@@ -99,7 +115,7 @@ describe("accreditation workspace routes", () => {
       "workspace-1",
       "tenant-1",
       {
-        assignments: [{ sectionCriterionId: "section-1", userId: "user-2", role: "REVIEWER" }],
+        assignments: [{ sectionBlockId: "section-1", userId: "user-2", role: "REVIEWER" }],
       },
       "user-1",
       "TENANT_OWNER",
@@ -178,7 +194,7 @@ describe("accreditation workspace routes", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           scope: "SECTION",
-          sectionCriterionId: "section-1",
+          sectionBlockId: "section-1",
           title: "Need a recheck",
           body: "Please verify this count.",
           mentionedUserIds: ["user-2", "user-3"],
@@ -245,7 +261,7 @@ describe("accreditation workspace routes", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           sourceWorkspaceId: "workspace-source",
-          sectionCriterionIds: ["section-1"],
+          sectionBlockIds: ["section-1"],
         }),
       }),
       { params: Promise.resolve({ id: "workspace-target" }) },
@@ -256,7 +272,7 @@ describe("accreditation workspace routes", () => {
       "tenant-1",
       {
         sourceWorkspaceId: "workspace-source",
-        sectionCriterionIds: ["section-1"],
+        sectionBlockIds: ["section-1"],
       },
       "user-1",
       "TENANT_OWNER",
@@ -330,6 +346,208 @@ describe("accreditation workspace routes", () => {
       "version-1",
       "tenant-1",
       { reason: "Wrong draft uploaded." },
+      "user-1",
+      "TENANT_OWNER",
+    );
+  });
+
+  test("source metric and projection routes forward params, bodies, and session context", async () => {
+    getServerSessionMock.mockResolvedValue(tenantSession("TENANT_OWNER"));
+    listTenantSourceMetricsMock.mockResolvedValue({
+      status: "success",
+      sourceMetrics: [],
+    });
+    createTenantSourceMetricMock.mockResolvedValue({
+      status: "success",
+      sourceMetric: { id: "metric-1" },
+    });
+    upsertTenantSourceMetricObservationsMock.mockResolvedValue({
+      status: "success",
+      observations: [],
+    });
+    listBlockEntryProjectionSourcesMock.mockResolvedValue({
+      status: "success",
+      sources: { sourceMetrics: [], sourceEntries: [], activeProjections: [] },
+    });
+    previewBlockEntryProjectionMock.mockResolvedValue({
+      status: "success",
+      preview: { matches: [] },
+    });
+    applyBlockEntryProjectionMock.mockResolvedValue({
+      status: "success",
+      recipe: { id: "recipe-1" },
+      appliedCount: 1,
+      removedCount: 0,
+    });
+    refreshBlockEntryProjectionMock.mockResolvedValue({
+      status: "success",
+      appliedCount: 1,
+      removedCount: 0,
+    });
+    detachBlockEntryProjectionMock.mockResolvedValue({
+      status: "success",
+      detachedCount: 1,
+      touchedYears: [2024],
+    });
+
+    const sourceMetricsRoute = await import(
+      "@/app/api/tenant/accreditation/source-metrics/route"
+    );
+    const sourceMetricObservationsRoute = await import(
+      "@/app/api/tenant/accreditation/source-metrics/[id]/observations/route"
+    );
+    const projectionSourcesRoute = await import(
+      "@/app/api/tenant/accreditation/entries/[id]/projections/sources/route"
+    );
+    const projectionPreviewRoute = await import(
+      "@/app/api/tenant/accreditation/entries/[id]/projections/preview/route"
+    );
+    const projectionApplyRoute = await import(
+      "@/app/api/tenant/accreditation/entries/[id]/projections/apply/route"
+    );
+    const projectionRefreshRoute = await import(
+      "@/app/api/tenant/accreditation/projections/[id]/refresh/route"
+    );
+    const projectionDetachRoute = await import(
+      "@/app/api/tenant/accreditation/projections/[id]/detach/route"
+    );
+
+    const listResponse = await sourceMetricsRoute.GET();
+    expect(listResponse.status).toBe(200);
+    expect(listTenantSourceMetricsMock).toHaveBeenCalledWith(
+      "tenant-1",
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const createResponse = await sourceMetricsRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          code: "FACULTY_COUNT",
+          name: "Faculty Count",
+          valueType: "NUMBER",
+        }),
+      }),
+    );
+    expect(createResponse.status).toBe(200);
+    expect(createTenantSourceMetricMock).toHaveBeenCalledWith(
+      "tenant-1",
+      {
+        code: "FACULTY_COUNT",
+        name: "Faculty Count",
+        valueType: "NUMBER",
+      },
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const observationResponse = await sourceMetricObservationsRoute.PUT(
+      new Request("http://localhost", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          observations: [{ observedYear: 2024, numberValue: 93 }],
+        }),
+      }),
+      { params: Promise.resolve({ id: "metric-1" }) },
+    );
+    expect(observationResponse.status).toBe(200);
+    expect(upsertTenantSourceMetricObservationsMock).toHaveBeenCalledWith(
+      "metric-1",
+      "tenant-1",
+      {
+        observations: [{ observedYear: 2024, numberValue: 93 }],
+      },
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const reusableSourcesResponse = await projectionSourcesRoute.GET(
+      new Request("http://localhost"),
+      { params: Promise.resolve({ id: "entry-1" }) },
+    );
+    expect(reusableSourcesResponse.status).toBe(200);
+    expect(listBlockEntryProjectionSourcesMock).toHaveBeenCalledWith(
+      "entry-1",
+      "tenant-1",
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const previewResponse = await projectionPreviewRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sourceMetricId: "metric-1",
+          filters: { years: [2024] },
+          targetPath: "actualValue",
+        }),
+      }),
+      { params: Promise.resolve({ id: "entry-1" }) },
+    );
+    expect(previewResponse.status).toBe(200);
+    expect(previewBlockEntryProjectionMock).toHaveBeenCalledWith(
+      "entry-1",
+      "tenant-1",
+      {
+        sourceMetricId: "metric-1",
+        filters: { years: [2024] },
+        targetPath: "actualValue",
+      },
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const applyResponse = await projectionApplyRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sourceWorkspaceId: "workspace-source",
+          sourceEntryId: "entry-source",
+          filters: { years: [2024] },
+          targetPath: "actualValue",
+        }),
+      }),
+      { params: Promise.resolve({ id: "entry-1" }) },
+    );
+    expect(applyResponse.status).toBe(200);
+    expect(applyBlockEntryProjectionMock).toHaveBeenCalledWith(
+      "entry-1",
+      "tenant-1",
+      {
+        sourceWorkspaceId: "workspace-source",
+        sourceEntryId: "entry-source",
+        filters: { years: [2024] },
+        targetPath: "actualValue",
+      },
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const refreshResponse = await projectionRefreshRoute.POST(
+      new Request("http://localhost", { method: "POST" }),
+      { params: Promise.resolve({ id: "recipe-1" }) },
+    );
+    expect(refreshResponse.status).toBe(200);
+    expect(refreshBlockEntryProjectionMock).toHaveBeenCalledWith(
+      "recipe-1",
+      "tenant-1",
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const detachResponse = await projectionDetachRoute.POST(
+      new Request("http://localhost", { method: "POST" }),
+      { params: Promise.resolve({ id: "recipe-1" }) },
+    );
+    expect(detachResponse.status).toBe(200);
+    expect(detachBlockEntryProjectionMock).toHaveBeenCalledWith(
+      "recipe-1",
+      "tenant-1",
       "user-1",
       "TENANT_OWNER",
     );

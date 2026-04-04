@@ -69,13 +69,14 @@ type WorkspaceDetail = {
   } | null;
   entries: Array<{
     id: string;
-    criterionCode: string;
-    criterionTitle: string;
+    blockId: string;
+    blockCode: string;
+    blockTitle: string;
     status: string;
     computedScore: number | null;
     manualOverride: number | null;
     finalScore: number | null;
-    yearData: Array<{
+    responses: Array<{
       year: number;
       actualValue: number | null;
       textValue: string | null;
@@ -551,7 +552,7 @@ export function WorkspaceManager() {
                     <table className="w-full min-w-[38rem] text-sm">
                       <thead className="text-left text-xs uppercase tracking-[0.16em] text-slate-400">
                         <tr>
-                          <th className="pb-3">Criterion</th>
+                          <th className="pb-3">Block</th>
                           <th className="pb-3">Status</th>
                           <th className="pb-3">Score</th>
                           <th className="pb-3">Years</th>
@@ -561,15 +562,15 @@ export function WorkspaceManager() {
                         {detail.entries.map((entry) => (
                           <tr key={entry.id}>
                             <td className="py-3 pr-3">
-                              <div className="font-medium text-slate-900">{entry.criterionCode}</div>
-                              <div className="text-xs text-slate-500">{entry.criterionTitle}</div>
+                              <div className="font-medium text-slate-900">{entry.blockCode}</div>
+                              <div className="text-xs text-slate-500">{entry.blockTitle}</div>
                             </td>
                             <td className="py-3 pr-3 text-slate-600">{entry.status}</td>
                             <td className="py-3 pr-3 text-slate-600">{entry.finalScore ?? "—"}</td>
                             <td className="py-3 text-slate-600">
-                              {entry.yearData.length > 0
-                                ? entry.yearData
-                                    .map((yearData) => `${yearData.year}:${yearData.actualValue ?? yearData.textValue ?? "—"}`)
+                              {entry.responses.length > 0
+                                ? entry.responses
+                                    .map((response) => `${response.year}:${response.actualValue ?? response.textValue ?? "—"}`)
                                     .join(", ")
                                 : "No data"}
                             </td>
@@ -634,3 +635,4 @@ export function WorkspaceManager() {
     </div>
   );
 }
+

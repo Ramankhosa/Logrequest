@@ -1,10 +1,10 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { updateSuperadminCriterion } from "@/lib/accreditation/service";
+import { publishSuperadminVersionBlocks } from "@/lib/accreditation/block-template-service";
 
-export async function PATCH(
-  request: Request,
+export async function POST(
+  _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getServerSession(authOptions);
@@ -12,14 +12,7 @@ export async function PATCH(
     return NextResponse.json({ status: "error", message: "Superadmin access required." }, { status: 403 });
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ status: "error", message: "Invalid request body." }, { status: 400 });
-  }
-
   const { id } = await params;
-  const result = await updateSuperadminCriterion(id, body);
+  const result = await publishSuperadminVersionBlocks(id, session.user.id);
   return NextResponse.json(result, { status: result.status === "success" ? 200 : 400 });
 }

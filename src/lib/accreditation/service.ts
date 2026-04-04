@@ -1,5 +1,7 @@
 import {
   AccreditationScope,
+  AccreditationTemplateLifecycleStatus,
+  CriterionBlockType,
   CriterionDataType,
   Prisma,
   Role,
@@ -29,6 +31,7 @@ const versionInputSchema = z.object({
   conversionFormula: z.string().trim().max(200).nullable().optional(),
   effectiveFrom: z.coerce.date().nullable().optional(),
   effectiveTo: z.coerce.date().nullable().optional(),
+  lifecycleStatus: z.nativeEnum(AccreditationTemplateLifecycleStatus).optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -41,7 +44,7 @@ const profileInputSchema = z.object({
 
 const criterionInputSchema = z.object({
   parentId: z.string().trim().min(1).nullable().optional(),
-  criterionCode: z.string().trim().min(1).max(80),
+  blockCode: z.string().trim().min(1).max(80),
   title: z.string().trim().min(2).max(300),
   description: z.string().trim().max(4000).nullable().optional(),
   dataType: z.nativeEnum(CriterionDataType).default(CriterionDataType.QUANTITATIVE),
@@ -57,26 +60,44 @@ const criterionInputSchema = z.object({
 const profileWeightsInputSchema = z.object({
   weights: z.array(
     z.object({
-      criterionId: z.string().trim().min(1),
+      blockId: z.string().trim().min(1).optional(),
       maxScore: z.number().nonnegative(),
       weightPercent: z.number().nonnegative().nullable().optional(),
+    }).superRefine((value, ctx) => {
+      if (!value.blockId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Each weight override must target a block.",
+        });
+      }
     }),
   ),
 });
 
 const accreditationLinkInputSchema = z.object({
-  criterionId: z.string().trim().min(1),
+  blockId: z.string().trim().min(1).optional(),
   notes: z.string().trim().max(1000).nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (!value.blockId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Select a block to link.",
+    });
+  }
 });
 
 const MAX_CRITERION_DEPTH = 2;
 
-type ProfileWeightInput = z.infer<typeof profileWeightsInputSchema>["weights"][number];
+type ProfileWeightInput = {
+  blockId: string;
+  maxScore: number;
+  weightPercent?: number | null;
+};
 
 type CriterionRow = {
   id: string;
   parentId: string | null;
-  criterionCode: string;
+  blockCode: string;
   title: string;
   description: string | null;
   dataType: CriterionDataType;
@@ -106,8 +127,32 @@ function normalizeNullableString(value: string | null | undefined) {
   return normalized ? normalized : null;
 }
 
+function normalizeBlockReference(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    const normalized = normalizeNullableString(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
 function isPrismaErrorWithCode(error: unknown, code: string) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === code;
+}
+
+function resolveCriterionBlockType(
+  dataType: CriterionDataType,
+  isLeaf: boolean,
+) {
+  if (!isLeaf) {
+    return CriterionBlockType.GROUP;
+  }
+
+  return dataType === CriterionDataType.QUALITATIVE
+    ? CriterionBlockType.QUALITATIVE
+    : CriterionBlockType.METRIC;
 }
 
 function buildCriterionTopology(nodes: CriterionTopologyNode[]) {
@@ -128,41 +173,41 @@ function buildCriterionTopology(nodes: CriterionTopologyNode[]) {
 }
 
 function resolveCriterionActualDepth(
-  criterionId: string,
+  blockId: string,
   topology: ReturnType<typeof buildCriterionTopology>,
   cache = new Map<string, number>(),
   trail = new Set<string>(),
 ): number | null {
-  const cached = cache.get(criterionId);
+  const cached = cache.get(blockId);
   if (cached !== undefined) {
     return cached;
   }
 
-  if (trail.has(criterionId)) {
+  if (trail.has(blockId)) {
     return null;
   }
 
-  const node = topology.byId.get(criterionId);
+  const node = topology.byId.get(blockId);
   if (!node || !node.parentId) {
-    cache.set(criterionId, 0);
+    cache.set(blockId, 0);
     return 0;
   }
 
   const parent = topology.byId.get(node.parentId);
   if (!parent) {
-    cache.set(criterionId, 0);
+    cache.set(blockId, 0);
     return 0;
   }
 
   const nextTrail = new Set(trail);
-  nextTrail.add(criterionId);
+  nextTrail.add(blockId);
   const parentDepth = resolveCriterionActualDepth(parent.id, topology, cache, nextTrail);
   if (parentDepth === null) {
     return null;
   }
 
   const depth = parentDepth + 1;
-  cache.set(criterionId, depth);
+  cache.set(blockId, depth);
   return depth;
 }
 
@@ -200,13 +245,13 @@ async function validateProfileWeightCriteria(versionId: string, weights: Profile
 
   const seenCriterionIds = new Set<string>();
   for (const weight of weights) {
-    if (seenCriterionIds.has(weight.criterionId)) {
+    if (seenCriterionIds.has(weight.blockId)) {
       return "Duplicate criterion weight overrides are not allowed.";
     }
-    seenCriterionIds.add(weight.criterionId);
+    seenCriterionIds.add(weight.blockId);
   }
 
-  const criteria = await prisma.accreditationCriterion.findMany({
+  const criteria = await prisma.criterionBlock.findMany({
     where: {
       id: {
         in: [...seenCriterionIds],
@@ -280,7 +325,7 @@ function buildCriterionTree(rows: Omit<CriterionRow, "children">[]): CriterionRo
   }
 
   const sortRecursive = (nodes: CriterionRow[]) => {
-    nodes.sort((a, b) => a.sortOrder - b.sortOrder || a.criterionCode.localeCompare(b.criterionCode));
+    nodes.sort((a, b) => a.sortOrder - b.sortOrder || a.blockCode.localeCompare(b.blockCode));
     for (const node of nodes) {
       sortRecursive(node.children);
     }
@@ -352,10 +397,10 @@ async function getEditableProfileForTenant(tenantId: string, profileId: string) 
   });
 }
 
-async function getEditableCriterionForTenant(tenantId: string, criterionId: string) {
-  return prisma.accreditationCriterion.findFirst({
+async function getEditableCriterionForTenant(tenantId: string, blockId: string) {
+  return prisma.criterionBlock.findFirst({
     where: {
-      id: criterionId,
+      id: blockId,
       version: {
         body: {
           tenantId,
@@ -371,7 +416,7 @@ async function resolveCriterionDepth(versionId: string, parentId: string | null)
     return { depth: 0 };
   }
 
-  const parent = await prisma.accreditationCriterion.findUnique({
+  const parent = await prisma.criterionBlock.findUnique({
     where: { id: parentId },
     select: { id: true, versionId: true, depth: true, isLeaf: true },
   });
@@ -606,13 +651,14 @@ export async function listTenantBodyVersions(tenantId: string, bodyId: string) {
   return { status: "success" as const, versions };
 }
 
-async function createVersion(bodyId: string, input: unknown) {
+async function createVersion(bodyId: string, input: unknown, actorUserId?: string) {
   const parsed = versionInputSchema.safeParse(input);
   if (!parsed.success) {
     return { status: "error" as const, message: parsed.error.issues[0]?.message ?? "Invalid version input." };
   }
 
   try {
+    const lifecycleStatus = parsed.data.lifecycleStatus ?? AccreditationTemplateLifecycleStatus.PUBLISHED;
     const version = await prisma.accreditationBodyVersion.create({
       data: {
         bodyId,
@@ -623,6 +669,11 @@ async function createVersion(bodyId: string, input: unknown) {
         conversionFormula: normalizeNullableString(parsed.data.conversionFormula),
         effectiveFrom: parsed.data.effectiveFrom ?? null,
         effectiveTo: parsed.data.effectiveTo ?? null,
+        lifecycleStatus,
+        publishedAt:
+          lifecycleStatus === AccreditationTemplateLifecycleStatus.PUBLISHED ? new Date() : null,
+        publishedByUserId:
+          lifecycleStatus === AccreditationTemplateLifecycleStatus.PUBLISHED ? actorUserId ?? null : null,
         isActive: parsed.data.isActive ?? true,
       },
     });
@@ -636,7 +687,7 @@ async function createVersion(bodyId: string, input: unknown) {
   }
 }
 
-export async function createSuperadminBodyVersion(bodyId: string, input: unknown) {
+export async function createSuperadminBodyVersion(bodyId: string, input: unknown, actorUserId?: string) {
   const body = await prisma.accreditationBody.findFirst({
     where: { id: bodyId, scope: AccreditationScope.GLOBAL },
   });
@@ -644,7 +695,7 @@ export async function createSuperadminBodyVersion(bodyId: string, input: unknown
     return { status: "error" as const, message: "Accreditation body not found." };
   }
 
-  return createVersion(bodyId, input);
+  return createVersion(bodyId, input, actorUserId);
 }
 
 export async function createTenantBodyVersion(
@@ -664,7 +715,7 @@ export async function createTenantBodyVersion(
     return { status: "error" as const, message: "Accreditation body not found." };
   }
 
-  return createVersion(bodyId, input);
+  return createVersion(bodyId, input, actorUserId);
 }
 
 async function updateVersion(versionId: string, input: unknown) {
@@ -774,11 +825,11 @@ export async function listSuperadminVersionProfiles(versionId: string) {
       _count: { select: { weightOverrides: true } },
       weightOverrides: {
         select: {
-          criterionId: true,
+          blockId: true,
           maxScore: true,
           weightPercent: true,
         },
-        orderBy: [{ criterionId: "asc" }],
+        orderBy: [{ blockId: "asc" }],
       },
     },
     orderBy: [{ isDefault: "desc" }, { profileCode: "asc" }],
@@ -809,11 +860,11 @@ export async function listTenantVersionProfiles(tenantId: string, versionId: str
       _count: { select: { weightOverrides: true } },
       weightOverrides: {
         select: {
-          criterionId: true,
+          blockId: true,
           maxScore: true,
           weightPercent: true,
         },
-        orderBy: [{ criterionId: "asc" }],
+        orderBy: [{ blockId: "asc" }],
       },
     },
     orderBy: [{ isDefault: "desc" }, { profileCode: "asc" }],
@@ -858,18 +909,24 @@ export async function setSuperadminProfileWeights(profileId: string, input: unkn
     return { status: "error" as const, message: "Profile not found." };
   }
 
-  const weightsError = await validateProfileWeightCriteria(profile.versionId, parsed.data.weights);
+  const normalizedWeights: ProfileWeightInput[] = parsed.data.weights.map((weight) => ({
+    blockId: normalizeBlockReference(weight.blockId)!,
+    maxScore: weight.maxScore,
+    weightPercent: weight.weightPercent ?? null,
+  }));
+
+  const weightsError = await validateProfileWeightCriteria(profile.versionId, normalizedWeights);
   if (weightsError) {
     return { status: "error" as const, message: weightsError };
   }
 
   await prisma.$transaction(async (tx) => {
     await tx.accreditationProfileWeight.deleteMany({ where: { profileId } });
-    if (parsed.data.weights.length > 0) {
+    if (normalizedWeights.length > 0) {
       await tx.accreditationProfileWeight.createMany({
-        data: parsed.data.weights.map((weight) => ({
+        data: normalizedWeights.map((weight) => ({
           profileId,
-          criterionId: weight.criterionId,
+          blockId: weight.blockId,
           maxScore: weight.maxScore,
           weightPercent: weight.weightPercent ?? null,
         })),
@@ -911,14 +968,20 @@ async function createCriterion(versionId: string, input: unknown) {
   }
 
   try {
-    const criterion = await prisma.accreditationCriterion.create({
+    const blockType = resolveCriterionBlockType(parsed.data.dataType, parsed.data.isLeaf);
+    const block = await prisma.criterionBlock.create({
       data: {
         versionId,
         parentId: parsed.data.parentId ?? null,
-        criterionCode: parsed.data.criterionCode.trim(),
+        blockCode: parsed.data.blockCode.trim(),
+        lineageKey: parsed.data.blockCode.trim(),
+        blockType,
+        isLeaf: parsed.data.isLeaf,
+        isSectionRoot: parentResolution.depth === 0,
         title: parsed.data.title.trim(),
         description: normalizeNullableString(parsed.data.description),
         dataType: parsed.data.dataType,
+        yearAggregation: "AVERAGE",
         maxScore: parsed.data.maxScore ?? null,
         sortOrder: parsed.data.sortOrder,
         depth: parentResolution.depth,
@@ -927,74 +990,28 @@ async function createCriterion(versionId: string, input: unknown) {
           parsed.data.validationRules === undefined
             ? Prisma.JsonNull
             : (parsed.data.validationRules as Prisma.InputJsonValue),
+        evidenceSchema:
+          parsed.data.expectedEvidence === undefined
+            ? Prisma.JsonNull
+            : (parsed.data.expectedEvidence as Prisma.InputJsonValue),
         expectedEvidence:
           parsed.data.expectedEvidence === undefined
             ? Prisma.JsonNull
             : (parsed.data.expectedEvidence as Prisma.InputJsonValue),
-        isLeaf: parsed.data.isLeaf,
         isActive: parsed.data.isActive ?? true,
       },
     });
 
-    return { status: "success" as const, message: "Criterion created.", criterion };
+    return { status: "success" as const, message: "Block created.", block };
   } catch (error) {
     return {
       status: "error" as const,
-      message: error instanceof Error ? error.message : "Failed to create criterion.",
+      message: error instanceof Error ? error.message : "Failed to create block.",
     };
   }
 }
 
-async function listCriteriaTree(versionId: string) {
-  const criteria = await prisma.accreditationCriterion.findMany({
-    where: { versionId },
-    orderBy: [{ depth: "asc" }, { sortOrder: "asc" }, { criterionCode: "asc" }],
-  });
-
-  return buildCriterionTree(
-    criteria.map((criterion) => ({
-      id: criterion.id,
-      parentId: criterion.parentId,
-      criterionCode: criterion.criterionCode,
-      title: criterion.title,
-      description: criterion.description,
-      dataType: criterion.dataType,
-      maxScore: criterion.maxScore,
-      sortOrder: criterion.sortOrder,
-      depth: criterion.depth,
-      unitOfMeasure: criterion.unitOfMeasure,
-      validationRules: criterion.validationRules as Prisma.JsonValue | null,
-      expectedEvidence: criterion.expectedEvidence as Prisma.JsonValue | null,
-      isLeaf: criterion.isLeaf,
-      isActive: criterion.isActive,
-    })),
-  );
-}
-
-export async function listSuperadminVersionCriteria(versionId: string) {
-  const version = await prisma.accreditationBodyVersion.findFirst({
-    where: { id: versionId, body: { scope: AccreditationScope.GLOBAL } },
-  });
-  if (!version) {
-    return { status: "error" as const, message: "Version not found." };
-  }
-  return { status: "success" as const, criteria: await listCriteriaTree(versionId) };
-}
-
-export async function listTenantVersionCriteria(tenantId: string, versionId: string) {
-  const serviceError = await ensureTenantAccreditationReadAccess(tenantId);
-  if (serviceError) {
-    return { status: "error" as const, message: serviceError };
-  }
-
-  const version = await getAccessibleVersionForTenant(tenantId, versionId);
-  if (!version) {
-    return { status: "error" as const, message: "Version not found." };
-  }
-  return { status: "success" as const, criteria: await listCriteriaTree(versionId) };
-}
-
-export async function createSuperadminVersionCriterion(versionId: string, input: unknown) {
+export async function createSuperadminVersionBlock(versionId: string, input: unknown) {
   const version = await prisma.accreditationBodyVersion.findFirst({
     where: { id: versionId, body: { scope: AccreditationScope.GLOBAL } },
   });
@@ -1004,7 +1021,7 @@ export async function createSuperadminVersionCriterion(versionId: string, input:
   return createCriterion(versionId, input);
 }
 
-export async function createTenantVersionCriterion(
+export async function createTenantVersionBlock(
   tenantId: string,
   versionId: string,
   input: unknown,
@@ -1023,15 +1040,15 @@ export async function createTenantVersionCriterion(
   return createCriterion(versionId, input);
 }
 
-async function updateCriterion(criterionId: string, input: unknown) {
+async function updateCriterion(blockId: string, input: unknown) {
   const parsed = criterionInputSchema.partial().safeParse(input);
   if (!parsed.success) {
     return { status: "error" as const, message: parsed.error.issues[0]?.message ?? "Invalid criterion input." };
   }
 
-  const existing = await prisma.accreditationCriterion.findUnique({
-    where: { id: criterionId },
-    select: { id: true, versionId: true },
+  const existing = await prisma.criterionBlock.findUnique({
+    where: { id: blockId },
+    select: { id: true, versionId: true, dataType: true, isLeaf: true },
   });
   if (!existing) {
     return { status: "error" as const, message: "Criterion not found." };
@@ -1041,7 +1058,7 @@ async function updateCriterion(criterionId: string, input: unknown) {
     | ReturnType<typeof buildCriterionTopology>
     | undefined;
   if (parsed.data.parentId !== undefined || parsed.data.isLeaf === true) {
-    const versionCriteria = await prisma.accreditationCriterion.findMany({
+    const versionCriteria = await prisma.criterionBlock.findMany({
       where: { versionId: existing.versionId },
       select: {
         id: true,
@@ -1053,7 +1070,7 @@ async function updateCriterion(criterionId: string, input: unknown) {
   }
 
   if (parsed.data.isLeaf === true) {
-    const childCount = topology?.childrenByParent.get(criterionId)?.length ?? 0;
+    const childCount = topology?.childrenByParent.get(blockId)?.length ?? 0;
     if (childCount > 0) {
       return { status: "error" as const, message: "Criteria with child nodes cannot be marked as leaf criteria." };
     }
@@ -1066,11 +1083,11 @@ async function updateCriterion(criterionId: string, input: unknown) {
       return { status: "error" as const, message: "Unable to validate the accreditation criteria hierarchy." };
     }
 
-    if (parsed.data.parentId === criterionId) {
+    if (parsed.data.parentId === blockId) {
       return { status: "error" as const, message: "A criterion cannot be its own parent." };
     }
 
-    const subtree = collectCriterionRelativeDepths(criterionId, topology);
+    const subtree = collectCriterionRelativeDepths(blockId, topology);
     if ("error" in subtree) {
       return { status: "error" as const, message: subtree.error };
     }
@@ -1106,40 +1123,60 @@ async function updateCriterion(criterionId: string, input: unknown) {
 
     const nextDepth = depth;
     descendantDepthUpdates = [...subtree.relativeDepths.entries()]
-      .filter(([nodeId]) => nodeId !== criterionId)
+      .filter(([nodeId]) => nodeId !== blockId)
       .map(([nodeId, relativeDepth]) => ({
         id: nodeId,
         depth: nextDepth + relativeDepth,
       }));
   }
 
+  const nextIsLeaf = parsed.data.isLeaf ?? existing.isLeaf;
+  const nextDataType = parsed.data.dataType ?? existing.dataType;
   const updateData = {
     ...(parsed.data.parentId !== undefined ? { parentId: parsed.data.parentId ?? null } : {}),
-    ...(parsed.data.criterionCode !== undefined ? { criterionCode: parsed.data.criterionCode.trim() } : {}),
+    ...(parsed.data.blockCode !== undefined
+      ? {
+          blockCode: parsed.data.blockCode.trim(),
+          lineageKey: parsed.data.blockCode.trim(),
+        }
+      : {}),
     ...(parsed.data.title !== undefined ? { title: parsed.data.title.trim() } : {}),
     ...(parsed.data.description !== undefined ? { description: normalizeNullableString(parsed.data.description) } : {}),
     ...(parsed.data.dataType !== undefined ? { dataType: parsed.data.dataType } : {}),
     ...(parsed.data.maxScore !== undefined ? { maxScore: parsed.data.maxScore ?? null } : {}),
     ...(parsed.data.sortOrder !== undefined ? { sortOrder: parsed.data.sortOrder } : {}),
-    ...(depth !== undefined ? { depth } : {}),
+    ...(depth !== undefined ? { depth, isSectionRoot: depth === 0 } : {}),
     ...(parsed.data.unitOfMeasure !== undefined ? { unitOfMeasure: normalizeNullableString(parsed.data.unitOfMeasure) } : {}),
     ...(parsed.data.validationRules !== undefined ? { validationRules: parsed.data.validationRules as Prisma.InputJsonValue } : {}),
-    ...(parsed.data.expectedEvidence !== undefined ? { expectedEvidence: parsed.data.expectedEvidence as Prisma.InputJsonValue } : {}),
-    ...(parsed.data.isLeaf !== undefined ? { isLeaf: parsed.data.isLeaf } : {}),
+    ...(parsed.data.expectedEvidence !== undefined
+      ? {
+          expectedEvidence: parsed.data.expectedEvidence as Prisma.InputJsonValue,
+          evidenceSchema: parsed.data.expectedEvidence as Prisma.InputJsonValue,
+        }
+      : {}),
+    ...(parsed.data.isLeaf !== undefined
+      ? {
+          isLeaf: parsed.data.isLeaf,
+          blockType: resolveCriterionBlockType(nextDataType, parsed.data.isLeaf),
+        }
+      : {}),
+    ...(parsed.data.dataType !== undefined && parsed.data.isLeaf === undefined
+      ? { blockType: resolveCriterionBlockType(parsed.data.dataType, nextIsLeaf) }
+      : {}),
     ...(parsed.data.isActive !== undefined ? { isActive: parsed.data.isActive } : {}),
-  } satisfies Prisma.AccreditationCriterionUpdateInput;
+  } satisfies Prisma.CriterionBlockUpdateInput;
 
   try {
-    const criterion =
+    const block =
       parsed.data.parentId !== undefined
         ? await prisma.$transaction(async (tx) => {
-            const updatedCriterion = await tx.accreditationCriterion.update({
-              where: { id: criterionId },
+            const updatedCriterion = await tx.criterionBlock.update({
+              where: { id: blockId },
               data: updateData,
             });
 
             for (const descendant of descendantDepthUpdates) {
-              await tx.accreditationCriterion.update({
+              await tx.criterionBlock.update({
                 where: { id: descendant.id },
                 data: { depth: descendant.depth },
               });
@@ -1147,38 +1184,38 @@ async function updateCriterion(criterionId: string, input: unknown) {
 
             return updatedCriterion;
           })
-        : await prisma.accreditationCriterion.update({
-            where: { id: criterionId },
+        : await prisma.criterionBlock.update({
+            where: { id: blockId },
             data: updateData,
           });
 
-    return { status: "success" as const, message: "Criterion updated.", criterion };
+    return { status: "success" as const, message: "Block updated.", block };
   } catch (error) {
     if (isPrismaErrorWithCode(error, "P2002")) {
-      return { status: "error" as const, message: "Criterion code already exists in this accreditation version." };
+      return { status: "error" as const, message: "Block code already exists in this accreditation version." };
     }
 
     return {
       status: "error" as const,
-      message: error instanceof Error ? error.message : "Failed to update criterion.",
+      message: error instanceof Error ? error.message : "Failed to update block.",
     };
   }
 }
 
-export async function updateSuperadminCriterion(criterionId: string, input: unknown) {
-  const criterion = await prisma.accreditationCriterion.findFirst({
-    where: { id: criterionId, version: { body: { scope: AccreditationScope.GLOBAL } } },
+export async function updateSuperadminBlock(blockId: string, input: unknown) {
+  const criterion = await prisma.criterionBlock.findFirst({
+    where: { id: blockId, version: { body: { scope: AccreditationScope.GLOBAL } } },
     select: { id: true },
   });
   if (!criterion) {
     return { status: "error" as const, message: "Criterion not found." };
   }
-  return updateCriterion(criterionId, input);
+  return updateCriterion(blockId, input);
 }
 
-export async function updateTenantCriterion(
+export async function updateTenantBlock(
   tenantId: string,
-  criterionId: string,
+  blockId: string,
   input: unknown,
   actorUserId: string,
   actorRole: Role,
@@ -1188,11 +1225,11 @@ export async function updateTenantCriterion(
     return { status: "error" as const, message: permissionError };
   }
 
-  const criterion = await getEditableCriterionForTenant(tenantId, criterionId);
+  const criterion = await getEditableCriterionForTenant(tenantId, blockId);
   if (!criterion) {
     return { status: "error" as const, message: "Criterion not found." };
   }
-  return updateCriterion(criterionId, input);
+  return updateCriterion(blockId, input);
 }
 
 export async function setTenantProfileWeights(
@@ -1211,24 +1248,29 @@ export async function setTenantProfileWeights(
   if (!parsed.success) {
     return { status: "error" as const, message: parsed.error.issues[0]?.message ?? "Invalid weight overrides." };
   }
+  const normalizedWeights: ProfileWeightInput[] = parsed.data.weights.map((weight) => ({
+    blockId: normalizeBlockReference(weight.blockId, weight.blockId)!,
+    maxScore: weight.maxScore,
+    weightPercent: weight.weightPercent ?? null,
+  }));
 
   const profile = await getEditableProfileForTenant(tenantId, profileId);
   if (!profile) {
     return { status: "error" as const, message: "Profile not found." };
   }
 
-  const weightsError = await validateProfileWeightCriteria(profile.versionId, parsed.data.weights);
+  const weightsError = await validateProfileWeightCriteria(profile.versionId, normalizedWeights);
   if (weightsError) {
     return { status: "error" as const, message: weightsError };
   }
 
   await prisma.$transaction(async (tx) => {
     await tx.accreditationProfileWeight.deleteMany({ where: { profileId } });
-    if (parsed.data.weights.length > 0) {
+    if (normalizedWeights.length > 0) {
       await tx.accreditationProfileWeight.createMany({
-        data: parsed.data.weights.map((weight) => ({
+        data: normalizedWeights.map((weight) => ({
           profileId,
-          criterionId: weight.criterionId,
+          blockId: weight.blockId,
           maxScore: weight.maxScore,
           weightPercent: weight.weightPercent ?? null,
         })),
@@ -1253,10 +1295,10 @@ export async function listAccreditationLinksForKpi(tenantId: string, kpiId: stri
     return { status: "error" as const, message: "KPI not found." };
   }
 
-  const links = await prisma.kpiAccreditationCriterionLink.findMany({
+  const links = await prisma.kpiAccreditationBlockLink.findMany({
     where: { tenantId, kpiDefinitionId: kpiId },
     include: {
-      criterion: {
+      block: {
         include: {
           version: {
             include: {
@@ -1266,7 +1308,7 @@ export async function listAccreditationLinksForKpi(tenantId: string, kpiId: stri
         },
       },
     },
-    orderBy: [{ criterion: { criterionCode: "asc" } }],
+    orderBy: [{ block: { blockCode: "asc" } }],
   });
 
   return {
@@ -1274,15 +1316,15 @@ export async function listAccreditationLinksForKpi(tenantId: string, kpiId: stri
     links: links.map((link) => ({
       id: link.id,
       notes: link.notes,
-      criterionId: link.criterionId,
-      criterionCode: link.criterion.criterionCode,
-      criterionTitle: link.criterion.title,
-      versionId: link.criterion.versionId,
-      versionCode: link.criterion.version.versionCode,
-      bodyId: link.criterion.version.bodyId,
-      bodyCode: link.criterion.version.body.code,
-      bodyName: link.criterion.version.body.name,
-      scope: link.criterion.version.body.scope,
+      blockId: link.blockId,
+      blockCode: link.block.blockCode,
+      blockTitle: link.block.title,
+      versionId: link.block.versionId,
+      versionCode: link.block.version.versionCode,
+      bodyId: link.block.version.bodyId,
+      bodyCode: link.block.version.body.code,
+      bodyName: link.block.version.body.name,
+      scope: link.block.version.body.scope,
     })),
   };
 }
@@ -1303,15 +1345,19 @@ export async function createAccreditationLink(
   if (!parsed.success) {
     return { status: "error" as const, message: parsed.error.issues[0]?.message ?? "Invalid KPI link input." };
   }
+  const targetBlockId = normalizeBlockReference(parsed.data.blockId, parsed.data.blockId);
+  if (!targetBlockId) {
+    return { status: "error" as const, message: "Select a block to link." };
+  }
 
-  const [kpi, criterion] = await Promise.all([
+  const [kpi, block] = await Promise.all([
     prisma.kpiDefinition.findFirst({
       where: { id: kpiId, kraDefinition: { tenantId } },
       select: { id: true },
     }),
-    prisma.accreditationCriterion.findFirst({
+    prisma.criterionBlock.findFirst({
       where: {
-        id: parsed.data.criterionId,
+        id: targetBlockId,
         isActive: true,
         isLeaf: true,
         version: {
@@ -1332,31 +1378,31 @@ export async function createAccreditationLink(
   if (!kpi) {
     return { status: "error" as const, message: "KPI not found." };
   }
-  if (!criterion) {
-    return { status: "error" as const, message: "Criterion not found or cannot be linked." };
+  if (!block) {
+    return { status: "error" as const, message: "Block not found or cannot be linked." };
   }
 
-  const existingLink = await prisma.kpiAccreditationCriterionLink.findFirst({
+  const existingLink = await prisma.kpiAccreditationBlockLink.findFirst({
     where: {
       tenantId,
       kpiDefinitionId: kpiId,
-      criterionId: parsed.data.criterionId,
+      blockId: targetBlockId,
     },
     select: { id: true },
   });
   if (existingLink) {
     return {
       status: "error" as const,
-      message: "This KPI is already linked to the selected accreditation criterion.",
+      message: "This KPI is already linked to the selected accreditation block.",
     };
   }
 
   try {
-    const link = await prisma.kpiAccreditationCriterionLink.create({
+    const link = await prisma.kpiAccreditationBlockLink.create({
       data: {
         tenantId,
         kpiDefinitionId: kpiId,
-        criterionId: parsed.data.criterionId,
+        blockId: targetBlockId,
         notes: normalizeNullableString(parsed.data.notes),
         createdByUserId: actorUserId,
       },
@@ -1367,7 +1413,7 @@ export async function createAccreditationLink(
     if (isPrismaErrorWithCode(error, "P2002")) {
       return {
         status: "error" as const,
-        message: "This KPI is already linked to the selected accreditation criterion.",
+        message: "This KPI is already linked to the selected accreditation block.",
       };
     }
 
@@ -1389,7 +1435,7 @@ export async function deleteAccreditationLink(
     return { status: "error" as const, message: permissionError };
   }
 
-  const link = await prisma.kpiAccreditationCriterionLink.findFirst({
+  const link = await prisma.kpiAccreditationBlockLink.findFirst({
     where: { id: linkId, tenantId },
     select: { id: true },
   });
@@ -1397,19 +1443,19 @@ export async function deleteAccreditationLink(
     return { status: "error" as const, message: "KPI accreditation link not found." };
   }
 
-  await prisma.kpiAccreditationCriterionLink.delete({ where: { id: linkId } });
+  await prisma.kpiAccreditationBlockLink.delete({ where: { id: linkId } });
   return { status: "success" as const, message: "KPI accreditation link removed." };
 }
 
-export async function listKpisForCriterion(tenantId: string, criterionId: string) {
+export async function listKpisForBlock(tenantId: string, blockId: string) {
   const serviceError = await ensureTenantAccreditationReadAccess(tenantId);
   if (serviceError) {
     return { status: "error" as const, message: serviceError };
   }
 
-  const criterion = await prisma.accreditationCriterion.findFirst({
+  const block = await prisma.criterionBlock.findFirst({
     where: {
-      id: criterionId,
+      id: blockId,
       version: {
         body: {
           OR: [
@@ -1421,12 +1467,12 @@ export async function listKpisForCriterion(tenantId: string, criterionId: string
     },
     select: { id: true },
   });
-  if (!criterion) {
-    return { status: "error" as const, message: "Criterion not found." };
+  if (!block) {
+    return { status: "error" as const, message: "Block not found." };
   }
 
-  const links = await prisma.kpiAccreditationCriterionLink.findMany({
-    where: { tenantId, criterionId },
+  const links = await prisma.kpiAccreditationBlockLink.findMany({
+    where: { tenantId, blockId },
     include: {
       kpiDefinition: {
         include: {
@@ -1445,6 +1491,7 @@ export async function listKpisForCriterion(tenantId: string, criterionId: string
     status: "success" as const,
     kpis: links.map((link) => ({
       linkId: link.id,
+      blockId: link.blockId,
       kpiId: link.kpiDefinitionId,
       title: link.kpiDefinition.title,
       kraTitle: link.kpiDefinition.kraDefinition.title,
@@ -1470,7 +1517,7 @@ export async function listTenantAccreditationKpiOptions(tenantId: string) {
       },
       _count: {
         select: {
-          accreditationCriterionLinks: true,
+          accreditationBlockLinks: true,
         },
       },
     },
@@ -1484,7 +1531,7 @@ export async function listTenantAccreditationKpiOptions(tenantId: string) {
       title: kpi.title,
       kraTitle: kpi.kraDefinition.title,
       periodName: kpi.kraDefinition.period.name,
-      accreditationLinkCount: kpi._count.accreditationCriterionLinks,
+      accreditationLinkCount: kpi._count.accreditationBlockLinks,
     })),
   };
 }

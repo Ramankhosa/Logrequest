@@ -37,6 +37,6 @@ export async function POST(
   }
 
   const { id } = await params;
-  const result = await createSuperadminBodyVersion(id, body);
+  const result = await createSuperadminBodyVersion(id, body, session.user.id);
   return NextResponse.json(result, { status: result.status === "success" ? 201 : 400 });
 }

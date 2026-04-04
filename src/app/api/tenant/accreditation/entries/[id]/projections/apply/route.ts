@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { setCriterionEntryYearData } from "@/lib/accreditation/workspace-service";
+import { applyBlockEntryProjection } from "@/lib/accreditation/workspace-service";
 import {
   getTenantAccreditationApiSession,
   parseJsonBody,
   tenantApiAccessDeniedResponse,
-} from "../../../workspace-route-helpers";
+} from "../../../../workspace-route-helpers";
 
-export async function PUT(
+export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -21,7 +21,7 @@ export async function PUT(
   }
 
   const { id } = await params;
-  const result = await setCriterionEntryYearData(
+  const result = await applyBlockEntryProjection(
     id,
     session.tenantId,
     parsed.body,

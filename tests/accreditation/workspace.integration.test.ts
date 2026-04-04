@@ -1,8 +1,9 @@
 import {
   AssessmentWorkspaceStatus,
   CriterionDataType,
-  CriterionEntryStatus,
+  BlockEntryStatus,
   CriterionYearAggregation,
+  ProjectionStorageMode,
   TenantServiceCode,
   WorkspaceCollaboratorRole,
 } from "@prisma/client";
@@ -11,7 +12,7 @@ import { prisma } from "@/lib/prisma";
 import {
   createTenantAccreditationBody,
   createTenantBodyVersion,
-  createTenantVersionCriterion,
+  createTenantVersionBlock,
   createTenantVersionProfile,
 } from "@/lib/accreditation/service";
 import {
@@ -21,6 +22,7 @@ import {
   addAssessmentWorkspaceDiscussionMessage,
   approveAssessmentWorkspaceSectionReview,
   applyAssessmentWorkspaceReuse,
+  applyBlockEntryProjection,
   bulkAssignAssessmentWorkspaceSections,
   checkAssessmentWorkspaceDrift,
   checkAssessmentWorkspaceReadiness,
@@ -28,11 +30,13 @@ import {
   compareAssessmentWorkspaceSnapshots,
   confirmAssessmentWorkspaceSectionReview,
   computeAssessmentWorkspaceScores,
+  createTenantSourceMetric,
   createAssessmentWorkspace,
   createAssessmentWorkspaceDiscussionThread,
   createAssessmentWorkspaceEvidence,
   deleteAssessmentWorkspaceEvidence,
   deleteAssessmentWorkspaceEvidenceVersion,
+  detachBlockEntryProjection,
   freezeAssessmentWorkspace,
   getAssessmentWorkspaceActivitySinceLastVisit,
   getAssessmentWorkspaceDataGaps,
@@ -40,22 +44,26 @@ import {
   getAssessmentWorkspace,
   importAssessmentWorkspaceData,
   initializeAssessmentWorkspaceEntries,
-  listCriterionEntryChangeLog,
+  listBlockEntryChangeLog,
   listAssessmentWorkspaceEntries,
   listAssessmentWorkspaceSections,
   listAssessmentWorkspaceSnapshots,
+  listBlockEntryProjectionSources,
   previewAssessmentWorkspaceReuse,
+  previewBlockEntryProjection,
+  refreshBlockEntryProjection,
   reassignAssessmentWorkspaceSection,
   removeAssessmentWorkspaceCollaborator,
   requestChangesAssessmentWorkspaceSectionReview,
-  setCriterionEntryManualOverride,
-  setCriterionEntryYearData,
+  setBlockEntryManualOverride,
+  setBlockEntryResponse,
   submitAssessmentWorkspaceSectionReview,
   takeAssessmentWorkspaceSnapshot,
   unfreezeAssessmentWorkspace,
+  upsertTenantSourceMetricObservations,
   updateAssessmentWorkspaceStatus,
   updateAssessmentWorkspaceMilestone,
-  updateCriterionEntryStatus,
+  updateBlockEntryStatus,
   linkAssessmentWorkspaceEvidence,
 } from "@/lib/accreditation/workspace-service";
 import {
@@ -78,7 +86,7 @@ async function withIsolatedDb(run: (tracker: DbTracker) => Promise<void>) {
 }
 
 type CriterionSpec = {
-  criterionCode: string;
+  blockCode: string;
   title: string;
   dataType?: CriterionDataType;
   maxScore?: number | null;
@@ -163,11 +171,11 @@ async function createWorkspaceFixture(input: {
   const criteriaByCode = new Map<string, { id: string; title: string }>();
 
   for (const criterionSpec of input.criteria) {
-    const criterionResult = await createTenantVersionCriterion(
+    const criterionResult = await createTenantVersionBlock(
       context.tenant.id,
       context.version.id,
       {
-        criterionCode: criterionSpec.criterionCode,
+        blockCode: criterionSpec.blockCode,
         title: criterionSpec.title,
         dataType: criterionSpec.dataType ?? CriterionDataType.QUANTITATIVE,
         maxScore: criterionSpec.maxScore ?? 100,
@@ -185,8 +193,8 @@ async function createWorkspaceFixture(input: {
     }
 
     if (criterionSpec.yearAggregation || criterionSpec.yearAggregationConfig) {
-      await prisma.accreditationCriterion.update({
-        where: { id: criterionResult.criterion.id },
+      await prisma.criterionBlock.update({
+        where: { id: criterionResult.block.id },
         data: {
           ...(criterionSpec.yearAggregation
             ? { yearAggregation: criterionSpec.yearAggregation }
@@ -198,8 +206,8 @@ async function createWorkspaceFixture(input: {
       });
     }
 
-    criteriaByCode.set(criterionSpec.criterionCode, {
-      id: criterionResult.criterion.id,
+    criteriaByCode.set(criterionSpec.blockCode, {
+      id: criterionResult.block.id,
       title: criterionSpec.title,
     });
   }
@@ -223,20 +231,20 @@ async function createWorkspaceFixture(input: {
   }
 
   const workspaceId = (workspaceResult.workspace as { id: string }).id;
-  const entryRows = await prisma.criterionEntry.findMany({
+  const entryRows = await prisma.blockEntry.findMany({
     where: { workspaceId },
     include: {
-      criterion: {
+      block: {
         select: {
-          criterionCode: true,
+          blockCode: true,
         },
       },
-      yearData: {
+      responses: {
         orderBy: { year: "asc" },
       },
     },
   });
-  const entriesByCode = new Map(entryRows.map((entry) => [entry.criterion.criterionCode, entry]));
+  const entriesByCode = new Map(entryRows.map((entry) => [entry.block.blockCode, entry]));
 
   return {
     ...context,
@@ -296,12 +304,12 @@ describe("accreditation workspace core filing", () => {
         title: "NAAC Cycle 4",
         criteria: [
           {
-            criterionCode: "CR1",
+            blockCode: "CR1",
             title: "Research Output",
             maxScore: 40,
           },
           {
-            criterionCode: "CR2",
+            blockCode: "CR2",
             title: "Quality Initiatives",
             dataType: CriterionDataType.QUALITATIVE,
             maxScore: 60,
@@ -358,12 +366,12 @@ describe("accreditation workspace core filing", () => {
         tracker,
         criteria: [
           {
-            criterionCode: "CR1",
+            blockCode: "CR1",
             title: "Research Output",
             maxScore: 40,
           },
           {
-            criterionCode: "CR2",
+            blockCode: "CR2",
             title: "Quality Initiatives",
             dataType: CriterionDataType.QUALITATIVE,
             validationRules: { maxLength: 1000 },
@@ -379,7 +387,7 @@ describe("accreditation workspace core filing", () => {
         throw new Error("Expected workspace entries were not created.");
       }
 
-      const outOfRange = await setCriterionEntryYearData(
+      const outOfRange = await setBlockEntryResponse(
         quantitativeEntry.id,
         fixture.tenant.id,
         {
@@ -392,7 +400,7 @@ describe("accreditation workspace core filing", () => {
       expect(outOfRange).toMatchObject({ status: "error" });
       expect(outOfRange.message).toContain("outside the workspace period");
 
-      const missingNarrative = await setCriterionEntryYearData(
+      const missingNarrative = await setBlockEntryResponse(
         qualitativeEntry.id,
         fixture.tenant.id,
         {
@@ -405,7 +413,7 @@ describe("accreditation workspace core filing", () => {
       expect(missingNarrative).toMatchObject({ status: "error" });
       expect(missingNarrative.message).toContain("requires narrative text");
 
-      const qualitativeSaved = await setCriterionEntryYearData(
+      const qualitativeSaved = await setBlockEntryResponse(
         qualitativeEntry.id,
         fixture.tenant.id,
         {
@@ -419,7 +427,7 @@ describe("accreditation workspace core filing", () => {
       );
       expect(qualitativeSaved).toMatchObject({ status: "success" });
 
-      const quantitativeSaved = await setCriterionEntryYearData(
+      const quantitativeSaved = await setBlockEntryResponse(
         quantitativeEntry.id,
         fixture.tenant.id,
         {
@@ -435,7 +443,7 @@ describe("accreditation workspace core filing", () => {
         throw new Error(quantitativeSaved.message);
       }
 
-      const currentYearData = await prisma.criterionYearData.findUniqueOrThrow({
+      const currentYearData = await prisma.blockEntryYearValue.findUniqueOrThrow({
         where: {
           entryId_year: {
             entryId: quantitativeEntry.id,
@@ -444,7 +452,7 @@ describe("accreditation workspace core filing", () => {
         },
       });
 
-      const staleUpdate = await setCriterionEntryYearData(
+      const staleUpdate = await setBlockEntryResponse(
         quantitativeEntry.id,
         fixture.tenant.id,
         {
@@ -458,7 +466,7 @@ describe("accreditation workspace core filing", () => {
       expect(staleUpdate).toMatchObject({ status: "error" });
       expect(staleUpdate.message).toContain("modified");
 
-      const changeLog = await listCriterionEntryChangeLog(
+      const changeLog = await listBlockEntryChangeLog(
         qualitativeEntry.id,
         fixture.tenant.id,
         fixture.actor.id,
@@ -492,7 +500,7 @@ describe("accreditation workspace core filing", () => {
         periodEnd: new Date("2026-12-31T00:00:00.000Z"),
         criteria: [
           {
-            criterionCode: "CR1",
+            blockCode: "CR1",
             title: "Weighted Research Trend",
             maxScore: 100,
             yearAggregation: CriterionYearAggregation.WEIGHTED_RECENT,
@@ -511,7 +519,7 @@ describe("accreditation workspace core filing", () => {
         [2025, 20],
         [2026, 30],
       ] as const) {
-        const saved = await setCriterionEntryYearData(
+        const saved = await setBlockEntryResponse(
           entry.id,
           fixture.tenant.id,
           { year, numericValue },
@@ -532,7 +540,7 @@ describe("accreditation workspace core filing", () => {
         throw new Error(scoring.message);
       }
 
-      const refreshedEntry = await prisma.criterionEntry.findUniqueOrThrow({
+      const refreshedEntry = await prisma.blockEntry.findUniqueOrThrow({
         where: { id: entry.id },
         select: {
           computedScore: true,
@@ -551,7 +559,7 @@ describe("accreditation workspace core filing", () => {
         tracker,
         criteria: [
           {
-            criterionCode: "CR1",
+            blockCode: "CR1",
             title: "Annual Research Report",
             maxScore: 100,
             expectedEvidence: [{ docType: "REPORT", required: true }],
@@ -606,7 +614,7 @@ describe("accreditation workspace core filing", () => {
         throw new Error("Entry was not created.");
       }
 
-      const yearSaved = await setCriterionEntryYearData(
+      const yearSaved = await setBlockEntryResponse(
         entry.id,
         fixture.tenant.id,
         {
@@ -618,11 +626,11 @@ describe("accreditation workspace core filing", () => {
       );
       expect(yearSaved).toMatchObject({ status: "success" });
 
-      const invalidJump = await updateCriterionEntryStatus(
+      const invalidJump = await updateBlockEntryStatus(
         entry.id,
         fixture.tenant.id,
         {
-          status: CriterionEntryStatus.APPROVED,
+          status: BlockEntryStatus.APPROVED,
         },
         fixture.actor.id,
         "TENANT_OWNER",
@@ -631,11 +639,11 @@ describe("accreditation workspace core filing", () => {
       expect(invalidJump.message).toContain("cannot transition");
 
       for (const status of [
-        CriterionEntryStatus.COMPLETE,
-        CriterionEntryStatus.UNDER_REVIEW,
-        CriterionEntryStatus.APPROVED,
+        BlockEntryStatus.COMPLETE,
+        BlockEntryStatus.UNDER_REVIEW,
+        BlockEntryStatus.APPROVED,
       ]) {
-        const updated = await updateCriterionEntryStatus(
+        const updated = await updateBlockEntryStatus(
           entry.id,
           fixture.tenant.id,
           { status },
@@ -797,18 +805,18 @@ describe("accreditation workspace core filing", () => {
       );
       expect(unfrozen).toMatchObject({ status: "success" });
 
-      const reopenedAttempt = await updateCriterionEntryStatus(
+      const reopenedAttempt = await updateBlockEntryStatus(
         entry.id,
         fixture.tenant.id,
         {
-          status: CriterionEntryStatus.IN_PROGRESS,
+          status: BlockEntryStatus.IN_PROGRESS,
         },
         fixture.actor.id,
         "TENANT_OWNER",
       );
       expect(reopenedAttempt).toMatchObject({ status: "success" });
 
-      const latestYearData = await prisma.criterionYearData.findUniqueOrThrow({
+      const latestYearData = await prisma.blockEntryYearValue.findUniqueOrThrow({
         where: {
           entryId_year: {
             entryId: entry.id,
@@ -816,7 +824,7 @@ describe("accreditation workspace core filing", () => {
           },
         },
       });
-      const updatedYearData = await setCriterionEntryYearData(
+      const updatedYearData = await setBlockEntryResponse(
         entry.id,
         fixture.tenant.id,
         {
@@ -877,7 +885,7 @@ describe("accreditation workspace core filing", () => {
       expect(comparison.comparison.deltas).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            criterionCode: "CR1",
+            blockCode: "CR1",
           }),
         ]),
       );
@@ -896,7 +904,7 @@ describe("accreditation workspace core filing", () => {
       expect(drift.drift.deltas).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            criterionCode: "CR1",
+            blockCode: "CR1",
           }),
         ]),
       );
@@ -909,12 +917,12 @@ describe("accreditation workspace core filing", () => {
         tracker,
         criteria: [
           {
-            criterionCode: "CR1",
+            blockCode: "CR1",
             title: "Research Output",
             maxScore: 40,
           },
           {
-            criterionCode: "CR2",
+            blockCode: "CR2",
             title: "Quality Narrative",
             dataType: CriterionDataType.QUALITATIVE,
             maxScore: 60,
@@ -928,7 +936,7 @@ describe("accreditation workspace core filing", () => {
         throw new Error("Entry was not created.");
       }
 
-      const overrideRejected = await setCriterionEntryManualOverride(
+      const overrideRejected = await setBlockEntryManualOverride(
         entry.id,
         fixture.tenant.id,
         {
@@ -940,7 +948,7 @@ describe("accreditation workspace core filing", () => {
       expect(overrideRejected).toMatchObject({ status: "error" });
       expect(overrideRejected.message).toContain("effective maximum score");
 
-      const forceWithoutReason = await setCriterionEntryManualOverride(
+      const forceWithoutReason = await setBlockEntryManualOverride(
         entry.id,
         fixture.tenant.id,
         {
@@ -953,7 +961,7 @@ describe("accreditation workspace core filing", () => {
       expect(forceWithoutReason).toMatchObject({ status: "error" });
       expect(forceWithoutReason.message).toContain("require a reason");
 
-      const forcedOverride = await setCriterionEntryManualOverride(
+      const forcedOverride = await setBlockEntryManualOverride(
         entry.id,
         fixture.tenant.id,
         {
@@ -973,7 +981,7 @@ describe("accreditation workspace core filing", () => {
           fileName: "workspace-import.csv",
           buffer: Buffer.from(
             [
-              "criterionCode,year,numericValue,textValue,remarks",
+              "blockCode,year,numericValue,textValue,remarks",
               "CR1,2026,18,,Imported numeric row",
               "CR2,2026,,Narrative evidence collected,Imported text row",
               "MISSING,2026,10,,Unknown criterion",
@@ -1032,7 +1040,7 @@ describe("accreditation workspace core filing", () => {
       );
       expect(viewerEntries).toMatchObject({ status: "success" });
 
-      const viewerEditBlocked = await setCriterionEntryYearData(
+      const viewerEditBlocked = await setBlockEntryResponse(
         entry.id,
         fixture.tenant.id,
         {
@@ -1062,7 +1070,7 @@ describe("accreditation workspace core filing", () => {
       }
 
       const cloneWorkspaceId = (cloned.workspace as { id: string }).id;
-      const clonedRows = await prisma.criterionYearData.findMany({
+      const clonedRows = await prisma.blockEntryYearValue.findMany({
         where: {
           entry: {
             workspaceId: cloneWorkspaceId,
@@ -1104,18 +1112,18 @@ describe("accreditation workspace core filing", () => {
         title: "Collaboration Workspace",
         criteria: [
           {
-            criterionCode: "3",
+            blockCode: "3",
             title: "Research and Innovation",
             maxScore: 100,
           },
         ],
       });
 
-      const sectionCriterionId = fixture.criteriaByCode.get("3")?.id;
+      const sectionBlockId = fixture.criteriaByCode.get("3")?.id;
       const entry = fixture.entriesByCode.get("3");
-      expect(sectionCriterionId).toBeDefined();
+      expect(sectionBlockId).toBeDefined();
       expect(entry).toBeDefined();
-      if (!sectionCriterionId || !entry) {
+      if (!sectionBlockId || !entry) {
         throw new Error("Section fixture was not created.");
       }
 
@@ -1171,7 +1179,7 @@ describe("accreditation workspace core filing", () => {
         {
           assignments: [
             {
-              sectionCriterionId,
+              sectionBlockId,
               userId: viewer.user.id,
               role: "REVIEWER",
             },
@@ -1185,23 +1193,23 @@ describe("accreditation workspace core filing", () => {
 
       const assignments = [
         {
-          sectionCriterionId,
+          sectionBlockId,
           userId: responsible.user.id,
           role: "SECTION_LEAD" as const,
           deadline: new Date("2025-12-31T00:00:00.000Z"),
         },
         {
-          sectionCriterionId,
+          sectionBlockId,
           userId: reviewerOne.user.id,
           role: "REVIEWER" as const,
         },
         {
-          sectionCriterionId,
+          sectionBlockId,
           userId: reviewerTwo.user.id,
           role: "REVIEWER" as const,
         },
         {
-          sectionCriterionId,
+          sectionBlockId,
           userId: approver.user.id,
           role: "APPROVER" as const,
         },
@@ -1228,7 +1236,7 @@ describe("accreditation workspace core filing", () => {
       const assignmentCount = await prisma.workspaceSectionAssignment.count({
         where: {
           workspaceId: fixture.workspaceId,
-          sectionCriterionId,
+          sectionBlockId,
         },
       });
       expect(assignmentCount).toBe(4);
@@ -1246,7 +1254,7 @@ describe("accreditation workspace core filing", () => {
       expect(sectionsForResponsible.sections).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            sectionCriterionId,
+            sectionBlockId,
             overdueAssignments: 1,
             currentUserRoles: expect.arrayContaining(["SECTION_LEAD"]),
           }),
@@ -1256,14 +1264,14 @@ describe("accreditation workspace core filing", () => {
       const submitTooEarly = await submitAssessmentWorkspaceSectionReview(
         fixture.workspaceId,
         fixture.tenant.id,
-        { sectionCriterionId },
+        { sectionBlockId },
         responsible.user.id,
         "TENANT_USER",
       );
       expect(submitTooEarly).toMatchObject({ status: "error" });
       expect(submitTooEarly.message).toContain("must be approved");
 
-      const yearDataEntered = await setCriterionEntryYearData(
+      const yearDataEntered = await setBlockEntryResponse(
         entry.id,
         fixture.tenant.id,
         {
@@ -1275,33 +1283,33 @@ describe("accreditation workspace core filing", () => {
       );
       expect(yearDataEntered).toMatchObject({ status: "success" });
 
-      const completedEntry = await updateCriterionEntryStatus(
+      const completedEntry = await updateBlockEntryStatus(
         entry.id,
         fixture.tenant.id,
         {
-          status: CriterionEntryStatus.COMPLETE,
+          status: BlockEntryStatus.COMPLETE,
         },
         responsible.user.id,
         "TENANT_USER",
       );
       expect(completedEntry).toMatchObject({ status: "success" });
 
-      const underReviewEntry = await updateCriterionEntryStatus(
+      const underReviewEntry = await updateBlockEntryStatus(
         entry.id,
         fixture.tenant.id,
         {
-          status: CriterionEntryStatus.UNDER_REVIEW,
+          status: BlockEntryStatus.UNDER_REVIEW,
         },
         reviewerOne.user.id,
         "TENANT_USER",
       );
       expect(underReviewEntry).toMatchObject({ status: "success" });
 
-      const approvedEntry = await updateCriterionEntryStatus(
+      const approvedEntry = await updateBlockEntryStatus(
         entry.id,
         fixture.tenant.id,
         {
-          status: CriterionEntryStatus.APPROVED,
+          status: BlockEntryStatus.APPROVED,
         },
         approver.user.id,
         "TENANT_USER",
@@ -1311,7 +1319,7 @@ describe("accreditation workspace core filing", () => {
       const submitted = await submitAssessmentWorkspaceSectionReview(
         fixture.workspaceId,
         fixture.tenant.id,
-        { sectionCriterionId },
+        { sectionBlockId },
         responsible.user.id,
         "TENANT_USER",
       );
@@ -1320,7 +1328,7 @@ describe("accreditation workspace core filing", () => {
       const changesWithoutComment = await requestChangesAssessmentWorkspaceSectionReview(
         fixture.workspaceId,
         fixture.tenant.id,
-        { sectionCriterionId },
+        { sectionBlockId },
         reviewerOne.user.id,
         "TENANT_USER",
       );
@@ -1330,7 +1338,7 @@ describe("accreditation workspace core filing", () => {
       const reviewerOneConfirmed = await confirmAssessmentWorkspaceSectionReview(
         fixture.workspaceId,
         fixture.tenant.id,
-        { sectionCriterionId },
+        { sectionBlockId },
         reviewerOne.user.id,
         "TENANT_USER",
       );
@@ -1339,7 +1347,7 @@ describe("accreditation workspace core filing", () => {
       const approveTooEarly = await approveAssessmentWorkspaceSectionReview(
         fixture.workspaceId,
         fixture.tenant.id,
-        { sectionCriterionId },
+        { sectionBlockId },
         approver.user.id,
         "TENANT_USER",
       );
@@ -1349,7 +1357,7 @@ describe("accreditation workspace core filing", () => {
       const reviewerTwoConfirmed = await confirmAssessmentWorkspaceSectionReview(
         fixture.workspaceId,
         fixture.tenant.id,
-        { sectionCriterionId },
+        { sectionBlockId },
         reviewerTwo.user.id,
         "TENANT_USER",
       );
@@ -1358,7 +1366,7 @@ describe("accreditation workspace core filing", () => {
       const sectionApproved = await approveAssessmentWorkspaceSectionReview(
         fixture.workspaceId,
         fixture.tenant.id,
-        { sectionCriterionId },
+        { sectionBlockId },
         approver.user.id,
         "TENANT_USER",
       );
@@ -1369,7 +1377,7 @@ describe("accreditation workspace core filing", () => {
         fixture.tenant.id,
         {
           scope: "SECTION",
-          sectionCriterionId,
+          sectionBlockId,
           title: "Scopus count review",
           body: "Please recheck the Scopus count before final submission.",
           mentionedUserIds: [reviewerTwo.user.id],
@@ -1404,7 +1412,7 @@ describe("accreditation workspace core filing", () => {
       });
       expect(mentionNotification).toBeTruthy();
 
-      const invalidatingEdit = await setCriterionEntryYearData(
+      const invalidatingEdit = await setBlockEntryResponse(
         entry.id,
         fixture.tenant.id,
         {
@@ -1430,7 +1438,7 @@ describe("accreditation workspace core filing", () => {
       expect(sectionsAfterInvalidation.sections).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            sectionCriterionId,
+            sectionBlockId,
             status: "IN_PROGRESS",
           }),
         ]),
@@ -1460,7 +1468,7 @@ describe("accreditation workspace core filing", () => {
         fixture.workspaceId,
         fixture.tenant.id,
         {
-          sectionCriterionId,
+          sectionBlockId,
           fromUserId: reviewerOne.user.id,
           toUserId: replacementReviewer.user.id,
           role: "REVIEWER",
@@ -1476,7 +1484,7 @@ describe("accreditation workspace core filing", () => {
         expect.objectContaining({
           entries: expect.arrayContaining([
             expect.objectContaining({
-              criterionCode: "3",
+              blockCode: "3",
             }),
           ]),
           openThreads: expect.arrayContaining([
@@ -1498,7 +1506,7 @@ describe("accreditation workspace core filing", () => {
         periodEnd: new Date("2026-12-31T00:00:00.000Z"),
         criteria: [
           {
-            criterionCode: "5",
+            blockCode: "5",
             title: "Student Support",
             maxScore: 100,
           },
@@ -1506,10 +1514,10 @@ describe("accreditation workspace core filing", () => {
       });
 
       const entry = fixture.entriesByCode.get("5");
-      const sectionCriterionId = fixture.criteriaByCode.get("5")?.id;
+      const sectionBlockId = fixture.criteriaByCode.get("5")?.id;
       expect(entry).toBeDefined();
-      expect(sectionCriterionId).toBeDefined();
-      if (!entry || !sectionCriterionId) {
+      expect(sectionBlockId).toBeDefined();
+      if (!entry || !sectionBlockId) {
         throw new Error("Manifest fixture was not created.");
       }
 
@@ -1544,7 +1552,7 @@ describe("accreditation workspace core filing", () => {
       expect(initialGaps.gaps).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            criterionCode: "5",
+            blockCode: "5",
             missingYears: [2025, 2026],
           }),
         ]),
@@ -1568,16 +1576,16 @@ describe("accreditation workspace core filing", () => {
       }
 
       const sourceWorkspaceId = (sourceWorkspaceResult.workspace as { id: string }).id;
-      const sourceEntry = await prisma.criterionEntry.findFirstOrThrow({
+      const sourceEntry = await prisma.blockEntry.findFirstOrThrow({
         where: {
           workspaceId: sourceWorkspaceId,
-          criterion: {
-            criterionCode: "5",
+          block: {
+            blockCode: "5",
           },
         },
       });
 
-      const sourceYearData = await setCriterionEntryYearData(
+      const sourceYearData = await setBlockEntryResponse(
         sourceEntry.id,
         fixture.tenant.id,
         {
@@ -1605,7 +1613,7 @@ describe("accreditation workspace core filing", () => {
         fixture.tenant.id,
         {
           sourceWorkspaceId,
-          sectionCriterionIds: [sectionCriterionId],
+          sectionBlockIds: [sectionBlockId],
         },
         fixture.actor.id,
         "TENANT_OWNER",
@@ -1617,7 +1625,7 @@ describe("accreditation workspace core filing", () => {
       expect(preview.preview.willCopy).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            criterionCode: "5",
+            blockCode: "5",
             years: [2025],
           }),
         ]),
@@ -1628,14 +1636,14 @@ describe("accreditation workspace core filing", () => {
         fixture.tenant.id,
         {
           sourceWorkspaceId,
-          sectionCriterionIds: [sectionCriterionId],
+          sectionBlockIds: [sectionBlockId],
         },
         fixture.actor.id,
         "TENANT_OWNER",
       );
       expect(appliedReuse).toMatchObject({ status: "success", copiedRows: 1 });
 
-      const reusedRows = await prisma.criterionYearData.findMany({
+      const reusedRows = await prisma.blockEntryYearValue.findMany({
         where: {
           entryId: entry.id,
         },
@@ -1728,7 +1736,7 @@ describe("accreditation workspace core filing", () => {
       );
       expect(deletedVersion).toMatchObject({ status: "success" });
 
-      const yearDataEntered = await setCriterionEntryYearData(
+      const yearDataEntered = await setBlockEntryResponse(
         entry.id,
         fixture.tenant.id,
         {
@@ -1740,33 +1748,33 @@ describe("accreditation workspace core filing", () => {
       );
       expect(yearDataEntered).toMatchObject({ status: "success" });
 
-      const entryCompleted = await updateCriterionEntryStatus(
+      const entryCompleted = await updateBlockEntryStatus(
         entry.id,
         fixture.tenant.id,
         {
-          status: CriterionEntryStatus.COMPLETE,
+          status: BlockEntryStatus.COMPLETE,
         },
         fixture.actor.id,
         "TENANT_OWNER",
       );
       expect(entryCompleted).toMatchObject({ status: "success" });
 
-      const entryUnderReview = await updateCriterionEntryStatus(
+      const entryUnderReview = await updateBlockEntryStatus(
         entry.id,
         fixture.tenant.id,
         {
-          status: CriterionEntryStatus.UNDER_REVIEW,
+          status: BlockEntryStatus.UNDER_REVIEW,
         },
         fixture.actor.id,
         "TENANT_OWNER",
       );
       expect(entryUnderReview).toMatchObject({ status: "success" });
 
-      const entryApproved = await updateCriterionEntryStatus(
+      const entryApproved = await updateBlockEntryStatus(
         entry.id,
         fixture.tenant.id,
         {
-          status: CriterionEntryStatus.APPROVED,
+          status: BlockEntryStatus.APPROVED,
         },
         fixture.actor.id,
         "TENANT_OWNER",
@@ -1789,7 +1797,7 @@ describe("accreditation workspace core filing", () => {
       );
       expect(activityBeforeChanges).toMatchObject({ status: "success" });
 
-      const postVisitEdit = await setCriterionEntryYearData(
+      const postVisitEdit = await setBlockEntryResponse(
         entry.id,
         fixture.tenant.id,
         {
@@ -1862,7 +1870,7 @@ describe("accreditation workspace core filing", () => {
       expect(manifest.manifest.entries).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            criterionCode: "5",
+            blockCode: "5",
             evidence: expect.arrayContaining([
               expect.objectContaining({
                 finalVersions: expect.arrayContaining([
@@ -1877,6 +1885,627 @@ describe("accreditation workspace core filing", () => {
         ]),
       );
       expect(manifest.manifest.lastFreezeLog).toBeTruthy();
+    });
+  });
+});
+
+describe("accreditation workspace projections", () => {
+  test("imports source metric slices, refreshes them, and detaches live links", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkspaceFixture({
+        tracker,
+        criteria: [
+          {
+            blockCode: "3.2.2",
+            title: "Publications per Teacher",
+            maxScore: 20,
+          },
+        ],
+        periodStart: new Date("2024-01-01T00:00:00.000Z"),
+        periodEnd: new Date("2025-12-31T00:00:00.000Z"),
+      });
+
+      const entry = fixture.entriesByCode.get("3.2.2");
+      expect(entry).toBeDefined();
+      if (!entry) {
+        throw new Error("Projection fixture entry was not created.");
+      }
+
+      const sourceMetric = await createTenantSourceMetric(
+        fixture.tenant.id,
+        {
+          code: "FACULTY_COUNT",
+          name: "Faculty Count",
+          valueType: "NUMBER",
+          allowedDimensions: {
+            department: "Department",
+          },
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(sourceMetric).toMatchObject({ status: "success" });
+      if (sourceMetric.status !== "success") {
+        throw new Error(sourceMetric.message);
+      }
+
+      const savedObservations = await upsertTenantSourceMetricObservations(
+        sourceMetric.sourceMetric.id,
+        fixture.tenant.id,
+        {
+          observations: [
+            {
+              observedYear: 2024,
+              dimensions: { department: "CSE" },
+              numberValue: 93,
+            },
+            {
+              observedYear: 2025,
+              dimensions: { department: "CSE" },
+              numberValue: 99,
+            },
+          ],
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(savedObservations).toMatchObject({ status: "success" });
+
+      const reusableSources = await listBlockEntryProjectionSources(
+        entry.id,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(reusableSources).toMatchObject({ status: "success" });
+      if (reusableSources.status !== "success") {
+        throw new Error(reusableSources.message);
+      }
+      expect(reusableSources.sources.sourceMetrics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: sourceMetric.sourceMetric.id,
+            code: "FACULTY_COUNT",
+          }),
+        ]),
+      );
+
+      const preview = await previewBlockEntryProjection(
+        entry.id,
+        fixture.tenant.id,
+        {
+          sourceMetricId: sourceMetric.sourceMetric.id,
+          filters: {
+            years: [2024],
+            dimensions: {
+              department: "CSE",
+            },
+          },
+          targetPath: "actualValue",
+          storageMode: ProjectionStorageMode.LIVE_REFERENCE,
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(preview).toMatchObject({ status: "success" });
+      if (preview.status !== "success") {
+        throw new Error(preview.message);
+      }
+      expect(preview.preview.matches).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            targetYear: 2024,
+            materializedNumberValue: 93,
+          }),
+        ]),
+      );
+
+      const applied = await applyBlockEntryProjection(
+        entry.id,
+        fixture.tenant.id,
+        {
+          sourceMetricId: sourceMetric.sourceMetric.id,
+          filters: {
+            years: [2024],
+            dimensions: {
+              department: "CSE",
+            },
+          },
+          targetPath: "actualValue",
+          storageMode: ProjectionStorageMode.LIVE_REFERENCE,
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(applied).toMatchObject({ status: "success", appliedCount: 1 });
+      if (applied.status !== "success") {
+        throw new Error(applied.message);
+      }
+
+      const projectedYearData = await prisma.blockEntryYearValue.findUnique({
+        where: {
+          entryId_year: {
+            entryId: entry.id,
+            year: 2024,
+          },
+        },
+      });
+      expect(projectedYearData).toMatchObject({
+        actualValue: 93,
+        dataSource: "PROJECTED",
+        sourceRef: applied.recipe.id,
+      });
+
+      const liveEditBlocked = await setBlockEntryResponse(
+        entry.id,
+        fixture.tenant.id,
+        {
+          year: 2024,
+          numericValue: 111,
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(liveEditBlocked).toMatchObject({
+        status: "error",
+        message: expect.stringContaining("live projection"),
+      });
+
+      const updatedObservations = await upsertTenantSourceMetricObservations(
+        sourceMetric.sourceMetric.id,
+        fixture.tenant.id,
+        {
+          observations: [
+            {
+              observedYear: 2024,
+              dimensions: { department: "CSE" },
+              numberValue: 101,
+            },
+          ],
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(updatedObservations).toMatchObject({ status: "success" });
+
+      const refreshed = await refreshBlockEntryProjection(
+        applied.recipe.id,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(refreshed).toMatchObject({ status: "success", appliedCount: 1 });
+
+      const refreshedYearData = await prisma.blockEntryYearValue.findUnique({
+        where: {
+          entryId_year: {
+            entryId: entry.id,
+            year: 2024,
+          },
+        },
+      });
+      expect(refreshedYearData).toMatchObject({
+        actualValue: 101,
+        dataSource: "PROJECTED",
+        sourceRef: applied.recipe.id,
+      });
+
+      const detached = await detachBlockEntryProjection(
+        applied.recipe.id,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(detached).toMatchObject({ status: "success", detachedCount: 1 });
+
+      const detachedYearData = await prisma.blockEntryYearValue.findUnique({
+        where: {
+          entryId_year: {
+            entryId: entry.id,
+            year: 2024,
+          },
+        },
+      });
+      expect(detachedYearData).toMatchObject({
+        actualValue: 101,
+        dataSource: "MANUAL",
+        sourceRef: null,
+      });
+
+      const manualEditAfterDetach = await setBlockEntryResponse(
+        entry.id,
+        fixture.tenant.id,
+        {
+          year: 2024,
+          numericValue: 104,
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(manualEditAfterDetach).toMatchObject({ status: "success" });
+    });
+  });
+
+  test("imports filtered relational table data across accreditation workspaces", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const context = await createEnabledTenantAccreditationContext(tracker);
+
+      const naacBody = await createTenantAccreditationBody(
+        context.tenant.id,
+        {
+          code: `NAAC_${Date.now()}`,
+          name: "NAAC Framework",
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(naacBody).toMatchObject({ status: "success" });
+      if (naacBody.status !== "success") {
+        throw new Error(naacBody.message);
+      }
+
+      const naacVersion = await createTenantBodyVersion(
+        context.tenant.id,
+        naacBody.body.id,
+        {
+          versionCode: `NAAC_2025_${Date.now()}`,
+          versionName: "NAAC 2025",
+          scoreBase: 100,
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(naacVersion).toMatchObject({ status: "success" });
+      if (naacVersion.status !== "success") {
+        throw new Error(naacVersion.message);
+      }
+
+      const naacProfile = await createTenantVersionProfile(
+        context.tenant.id,
+        naacVersion.version.id,
+        {
+          profileCode: "NAAC_UNIVERSITY",
+          profileName: "NAAC University",
+          isDefault: true,
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(naacProfile).toMatchObject({ status: "success" });
+      if (naacProfile.status !== "success") {
+        throw new Error(naacProfile.message);
+      }
+
+      const naacCriterion = await createTenantVersionBlock(
+        context.tenant.id,
+        naacVersion.version.id,
+        {
+          blockCode: "3.2.2",
+          title: "Publications per teacher",
+          dataType: CriterionDataType.QUANTITATIVE,
+          maxScore: 20,
+          isLeaf: true,
+          sortOrder: 0,
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(naacCriterion).toMatchObject({ status: "success" });
+      if (naacCriterion.status !== "success") {
+        throw new Error(naacCriterion.message);
+      }
+
+      const nirfBody = await createTenantAccreditationBody(
+        context.tenant.id,
+        {
+          code: `NIRF_${Date.now()}`,
+          name: "NIRF Framework",
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(nirfBody).toMatchObject({ status: "success" });
+      if (nirfBody.status !== "success") {
+        throw new Error(nirfBody.message);
+      }
+
+      const nirfVersion = await createTenantBodyVersion(
+        context.tenant.id,
+        nirfBody.body.id,
+        {
+          versionCode: `NIRF_2025_${Date.now()}`,
+          versionName: "NIRF 2025",
+          scoreBase: 100,
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(nirfVersion).toMatchObject({ status: "success" });
+      if (nirfVersion.status !== "success") {
+        throw new Error(nirfVersion.message);
+      }
+
+      const nirfProfile = await createTenantVersionProfile(
+        context.tenant.id,
+        nirfVersion.version.id,
+        {
+          profileCode: "NIRF_ENGINEERING",
+          profileName: "NIRF Engineering",
+          isDefault: true,
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(nirfProfile).toMatchObject({ status: "success" });
+      if (nirfProfile.status !== "success") {
+        throw new Error(nirfProfile.message);
+      }
+
+      const nirfCriterion = await createTenantVersionBlock(
+        context.tenant.id,
+        nirfVersion.version.id,
+        {
+          blockCode: "RPC-1",
+          title: "Publications",
+          dataType: CriterionDataType.QUANTITATIVE,
+          maxScore: 20,
+          isLeaf: true,
+          sortOrder: 0,
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(nirfCriterion).toMatchObject({ status: "success" });
+      if (nirfCriterion.status !== "success") {
+        throw new Error(nirfCriterion.message);
+      }
+
+      const naacWorkspace = await createAssessmentWorkspace(
+        context.tenant.id,
+        {
+          versionId: naacVersion.version.id,
+          profileId: naacProfile.profile.id,
+          title: "NAAC 2025 Workspace",
+          periodStart: new Date("2024-01-01T00:00:00.000Z"),
+          periodEnd: new Date("2024-12-31T00:00:00.000Z"),
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(naacWorkspace).toMatchObject({ status: "success" });
+      if (naacWorkspace.status !== "success") {
+        throw new Error(naacWorkspace.message);
+      }
+
+      const nirfWorkspace = await createAssessmentWorkspace(
+        context.tenant.id,
+        {
+          versionId: nirfVersion.version.id,
+          profileId: nirfProfile.profile.id,
+          title: "NIRF 2025 Workspace",
+          periodStart: new Date("2024-01-01T00:00:00.000Z"),
+          periodEnd: new Date("2024-12-31T00:00:00.000Z"),
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(nirfWorkspace).toMatchObject({ status: "success" });
+      if (nirfWorkspace.status !== "success") {
+        throw new Error(nirfWorkspace.message);
+      }
+
+      const sourceEntry = await prisma.blockEntry.findFirstOrThrow({
+        where: {
+          workspaceId: (naacWorkspace.workspace as { id: string }).id,
+          blockId: naacCriterion.block.id,
+        },
+      });
+      const targetEntry = await prisma.blockEntry.findFirstOrThrow({
+        where: {
+          workspaceId: (nirfWorkspace.workspace as { id: string }).id,
+          blockId: nirfCriterion.block.id,
+        },
+      });
+
+      const tableInstance = await prisma.blockEntryTableInstance.create({
+        data: {
+          entryId: sourceEntry.id,
+          year: 2024,
+          scopeKey: "YEAR:2024",
+          fieldKey: "publication_list",
+          fieldLabel: "Publication List",
+          createdByUserId: context.actor.id,
+        },
+      });
+
+      const cseRowOne = await prisma.blockEntryTableRow.create({
+        data: {
+          instanceId: tableInstance.id,
+          rowIndex: 0,
+          rowKey: "pub-1",
+          dimensions: { batch: "CSE", department: "CSE" },
+          dimensionFingerprint: "{\"batch\":\"CSE\",\"department\":\"CSE\"}",
+        },
+      });
+      const cseRowTwo = await prisma.blockEntryTableRow.create({
+        data: {
+          instanceId: tableInstance.id,
+          rowIndex: 1,
+          rowKey: "pub-2",
+          dimensions: { batch: "CSE", department: "CSE" },
+          dimensionFingerprint: "{\"batch\":\"CSE\",\"department\":\"CSE\"}",
+        },
+      });
+      const eceRow = await prisma.blockEntryTableRow.create({
+        data: {
+          instanceId: tableInstance.id,
+          rowIndex: 2,
+          rowKey: "pub-3",
+          dimensions: { batch: "ECE", department: "ECE" },
+          dimensionFingerprint: "{\"batch\":\"ECE\",\"department\":\"ECE\"}",
+        },
+      });
+
+      await prisma.blockEntryTableCell.createMany({
+        data: [
+          { rowId: cseRowOne.id, columnKey: "title", textValue: "Paper A" },
+          { rowId: cseRowTwo.id, columnKey: "title", textValue: "Paper B" },
+          { rowId: eceRow.id, columnKey: "title", textValue: "Paper C" },
+        ],
+      });
+      await prisma.blockEntryTableInstance.update({
+        where: { id: tableInstance.id },
+        data: { rowCount: 3 },
+      });
+
+      const preview = await previewBlockEntryProjection(
+        targetEntry.id,
+        context.tenant.id,
+        {
+          sourceWorkspaceId: (naacWorkspace.workspace as { id: string }).id,
+          sourceEntryId: sourceEntry.id,
+          sourceTableFieldKey: "publication_list",
+          filters: {
+            years: [2024],
+            dimensions: {
+              batch: "CSE",
+            },
+          },
+          transform: {
+            mode: "COUNT",
+          },
+          targetPath: "actualValue",
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(preview).toMatchObject({ status: "success" });
+      if (preview.status !== "success") {
+        throw new Error(preview.message);
+      }
+      expect(preview.preview.matches).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            targetYear: 2024,
+            materializedNumberValue: 2,
+          }),
+        ]),
+      );
+
+      const applied = await applyBlockEntryProjection(
+        targetEntry.id,
+        context.tenant.id,
+        {
+          sourceWorkspaceId: (naacWorkspace.workspace as { id: string }).id,
+          sourceEntryId: sourceEntry.id,
+          sourceTableFieldKey: "publication_list",
+          filters: {
+            years: [2024],
+            dimensions: {
+              batch: "CSE",
+            },
+          },
+          transform: {
+            mode: "COUNT",
+          },
+          targetPath: "actualValue",
+        },
+        context.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(applied).toMatchObject({ status: "success", appliedCount: 1 });
+
+      const importedYearData = await prisma.blockEntryYearValue.findUnique({
+        where: {
+          entryId_year: {
+            entryId: targetEntry.id,
+            year: 2024,
+          },
+        },
+      });
+      expect(importedYearData).toMatchObject({
+        actualValue: 2,
+        dataSource: "PROJECTED",
+      });
+    });
+  });
+
+  test("rejects live projection cycles between criterion entries", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkspaceFixture({
+        tracker,
+        criteria: [
+          {
+            blockCode: "3.1.1",
+            title: "Metric A",
+            maxScore: 10,
+          },
+          {
+            blockCode: "3.1.2",
+            title: "Metric B",
+            maxScore: 10,
+          },
+        ],
+        periodStart: new Date("2024-01-01T00:00:00.000Z"),
+        periodEnd: new Date("2024-12-31T00:00:00.000Z"),
+      });
+
+      const entryA = fixture.entriesByCode.get("3.1.1");
+      const entryB = fixture.entriesByCode.get("3.1.2");
+      expect(entryA).toBeDefined();
+      expect(entryB).toBeDefined();
+      if (!entryA || !entryB) {
+        throw new Error("Cycle fixture entries were not created.");
+      }
+
+      const sourceData = await setBlockEntryResponse(
+        entryA.id,
+        fixture.tenant.id,
+        {
+          year: 2024,
+          numericValue: 12,
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(sourceData).toMatchObject({ status: "success" });
+
+      const firstProjection = await applyBlockEntryProjection(
+        entryB.id,
+        fixture.tenant.id,
+        {
+          sourceWorkspaceId: fixture.workspaceId,
+          sourceEntryId: entryA.id,
+          filters: {
+            years: [2024],
+          },
+          targetPath: "actualValue",
+          storageMode: ProjectionStorageMode.LIVE_REFERENCE,
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(firstProjection).toMatchObject({ status: "success" });
+
+      const cyclePreview = await previewBlockEntryProjection(
+        entryA.id,
+        fixture.tenant.id,
+        {
+          sourceWorkspaceId: fixture.workspaceId,
+          sourceEntryId: entryB.id,
+          filters: {
+            years: [2024],
+          },
+          targetPath: "actualValue",
+          storageMode: ProjectionStorageMode.LIVE_REFERENCE,
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(cyclePreview).toMatchObject({
+        status: "error",
+        message: expect.stringContaining("cycle"),
+      });
     });
   });
 });

@@ -3566,10 +3566,10 @@ const ACCREDITATION_FRAMEWORK_SEEDS = [
     ],
     weights: {
       UNIVERSITY: [
-        { criterionCode: "CR1.1", maxScore: 20, weightPercent: 22 },
-        { criterionCode: "CR1.2", maxScore: 15, weightPercent: 18 },
-        { criterionCode: "CR2.1", maxScore: 30, weightPercent: 32 },
-        { criterionCode: "CR2.2", maxScore: 25, weightPercent: 28 },
+        { blockCode: "CR1.1", maxScore: 20, weightPercent: 22 },
+        { blockCode: "CR1.2", maxScore: 15, weightPercent: 18 },
+        { blockCode: "CR2.1", maxScore: 30, weightPercent: 32 },
+        { blockCode: "CR2.2", maxScore: 25, weightPercent: 28 },
       ],
     },
     gradeBands: [
@@ -3614,11 +3614,11 @@ const ACCREDITATION_FRAMEWORK_SEEDS = [
     ],
     weights: {
       ENGINEERING: [
-        { criterionCode: "TLR-1", maxScore: 20, weightPercent: 20 },
-        { criterionCode: "TLR-2", maxScore: 20, weightPercent: 20 },
-        { criterionCode: "RPC-1", maxScore: 30, weightPercent: 30 },
-        { criterionCode: "RPC-2", maxScore: 15, weightPercent: 15 },
-        { criterionCode: "GO-1", maxScore: 15, weightPercent: 15 },
+        { blockCode: "TLR-1", maxScore: 20, weightPercent: 20 },
+        { blockCode: "TLR-2", maxScore: 20, weightPercent: 20 },
+        { blockCode: "RPC-1", maxScore: 30, weightPercent: 30 },
+        { blockCode: "RPC-2", maxScore: 15, weightPercent: 15 },
+        { blockCode: "GO-1", maxScore: 15, weightPercent: 15 },
       ],
     },
     gradeBands: [
@@ -3735,17 +3735,21 @@ async function ensureAccreditationSeeds({ superadmin, tenant }) {
       profileMap.set(profileSeed.code, profile);
     }
 
-    const criterionMap = new Map();
+    const blockMap = new Map();
     for (const criterionSeed of framework.criteria.filter((criterion) => !criterion.parentCode)) {
-      const criterion = await prisma.accreditationCriterion.upsert({
+      const block = await prisma.criterionBlock.upsert({
         where: {
-          versionId_criterionCode: {
+          versionId_blockCode: {
             versionId: version.id,
-            criterionCode: criterionSeed.code,
+            blockCode: criterionSeed.code,
           },
         },
         update: {
           parentId: null,
+          blockCode: criterionSeed.code,
+          lineageKey: criterionSeed.code,
+          blockType: criterionSeed.isLeaf ? "METRIC" : "GROUP",
+          isSectionRoot: true,
           title: criterionSeed.title,
           dataType: CriterionDataType.QUANTITATIVE,
           maxScore: criterionSeed.maxScore ?? null,
@@ -3757,7 +3761,10 @@ async function ensureAccreditationSeeds({ superadmin, tenant }) {
         create: {
           versionId: version.id,
           parentId: null,
-          criterionCode: criterionSeed.code,
+          blockCode: criterionSeed.code,
+          lineageKey: criterionSeed.code,
+          blockType: criterionSeed.isLeaf ? "METRIC" : "GROUP",
+          isSectionRoot: true,
           title: criterionSeed.title,
           dataType: CriterionDataType.QUANTITATIVE,
           maxScore: criterionSeed.maxScore ?? null,
@@ -3767,21 +3774,25 @@ async function ensureAccreditationSeeds({ superadmin, tenant }) {
           isActive: true,
         },
       });
-      criterionMap.set(criterionSeed.code, criterion);
+      blockMap.set(criterionSeed.code, block);
     }
 
     for (const criterionSeed of framework.criteria.filter((criterion) => criterion.parentCode)) {
-      const parent = criterionMap.get(criterionSeed.parentCode);
+      const parent = blockMap.get(criterionSeed.parentCode);
       const depth = parent ? parent.depth + 1 : 0;
-      const criterion = await prisma.accreditationCriterion.upsert({
+      const block = await prisma.criterionBlock.upsert({
         where: {
-          versionId_criterionCode: {
+          versionId_blockCode: {
             versionId: version.id,
-            criterionCode: criterionSeed.code,
+            blockCode: criterionSeed.code,
           },
         },
         update: {
           parentId: parent?.id ?? null,
+          blockCode: criterionSeed.code,
+          lineageKey: criterionSeed.code,
+          blockType: criterionSeed.isLeaf ? "METRIC" : "GROUP",
+          isSectionRoot: depth === 0,
           title: criterionSeed.title,
           dataType: CriterionDataType.QUANTITATIVE,
           maxScore: criterionSeed.maxScore ?? null,
@@ -3793,7 +3804,10 @@ async function ensureAccreditationSeeds({ superadmin, tenant }) {
         create: {
           versionId: version.id,
           parentId: parent?.id ?? null,
-          criterionCode: criterionSeed.code,
+          blockCode: criterionSeed.code,
+          lineageKey: criterionSeed.code,
+          blockType: criterionSeed.isLeaf ? "METRIC" : "GROUP",
+          isSectionRoot: depth === 0,
           title: criterionSeed.title,
           dataType: CriterionDataType.QUANTITATIVE,
           maxScore: criterionSeed.maxScore ?? null,
@@ -3803,7 +3817,7 @@ async function ensureAccreditationSeeds({ superadmin, tenant }) {
           isActive: true,
         },
       });
-      criterionMap.set(criterionSeed.code, criterion);
+      blockMap.set(criterionSeed.code, block);
     }
 
     for (const [profileCode, weights] of Object.entries(framework.weights)) {
@@ -3818,7 +3832,7 @@ async function ensureAccreditationSeeds({ superadmin, tenant }) {
         await prisma.accreditationProfileWeight.createMany({
           data: weights.map((weight) => ({
             profileId: profile.id,
-            criterionId: criterionMap.get(weight.criterionCode).id,
+            blockId: blockMap.get(weight.blockCode).id,
             maxScore: weight.maxScore,
             weightPercent: weight.weightPercent,
           })),

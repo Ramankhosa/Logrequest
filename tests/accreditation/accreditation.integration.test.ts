@@ -5,13 +5,13 @@ import {
   createAccreditationLink,
   createTenantAccreditationBody,
   createTenantBodyVersion,
-  createTenantVersionCriterion,
+  createTenantVersionBlock,
   createTenantVersionProfile,
   listAccreditationLinksForKpi,
-  listKpisForCriterion,
+  listKpisForBlock,
   listTenantAccreditationBodies,
   setTenantProfileWeights,
-  updateTenantCriterion,
+  updateTenantBlock,
 } from "@/lib/accreditation/service";
 import {
   cleanupTrackedData,
@@ -219,11 +219,11 @@ describe("accreditation add-on module", () => {
         startingUnitId: structure.unit.id,
       });
 
-      const groupCriterion = await createTenantVersionCriterion(
+      const groupCriterion = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          criterionCode: "CR1",
+          blockCode: "CR1",
           title: "Research and Accreditation",
           isLeaf: false,
           sortOrder: 1,
@@ -236,12 +236,12 @@ describe("accreditation add-on module", () => {
         throw new Error(groupCriterion.message);
       }
 
-      const leafCriterionOne = await createTenantVersionCriterion(
+      const leafCriterionOne = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          parentId: groupCriterion.criterion.id,
-          criterionCode: "CR1.1",
+          parentId: groupCriterion.block.id,
+          blockCode: "CR1.1",
           title: "Indexed Publications",
           isLeaf: true,
           maxScore: 30,
@@ -255,12 +255,12 @@ describe("accreditation add-on module", () => {
         throw new Error(leafCriterionOne.message);
       }
 
-      const leafCriterionTwo = await createTenantVersionCriterion(
+      const leafCriterionTwo = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          parentId: groupCriterion.criterion.id,
-          criterionCode: "CR1.2",
+          parentId: groupCriterion.block.id,
+          blockCode: "CR1.2",
           title: "Action Items Closed",
           isLeaf: true,
           maxScore: 20,
@@ -278,7 +278,7 @@ describe("accreditation add-on module", () => {
         tenant.id,
         kpiOne.id,
         {
-          criterionId: groupCriterion.criterion.id,
+          blockId: groupCriterion.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -291,7 +291,7 @@ describe("accreditation add-on module", () => {
         tenant.id,
         kpiOne.id,
         {
-          criterionId: leafCriterionOne.criterion.id,
+          blockId: leafCriterionOne.block.id,
           notes: "Primary evidence source",
         },
         actor.id,
@@ -303,7 +303,7 @@ describe("accreditation add-on module", () => {
         tenant.id,
         kpiOne.id,
         {
-          criterionId: leafCriterionTwo.criterion.id,
+          blockId: leafCriterionTwo.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -314,7 +314,7 @@ describe("accreditation add-on module", () => {
         tenant.id,
         kpiTwo.id,
         {
-          criterionId: leafCriterionOne.criterion.id,
+          blockId: leafCriterionOne.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -325,7 +325,7 @@ describe("accreditation add-on module", () => {
         tenant.id,
         kpiOne.id,
         {
-          criterionId: leafCriterionOne.criterion.id,
+          blockId: leafCriterionOne.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -338,9 +338,9 @@ describe("accreditation add-on module", () => {
       expect(linkedCriteriaForKpi).toMatchObject({ status: "success" });
       expect(linkedCriteriaForKpi.links).toHaveLength(2);
 
-      const linkedKpisForCriterion = await listKpisForCriterion(
+      const linkedKpisForCriterion = await listKpisForBlock(
         tenant.id,
-        leafCriterionOne.criterion.id,
+        leafCriterionOne.block.id,
       );
       expect(linkedKpisForCriterion).toMatchObject({ status: "success" });
       expect(linkedKpisForCriterion.kpis).toHaveLength(2);
@@ -409,11 +409,11 @@ describe("accreditation add-on module", () => {
     await withIsolatedDb(async (tracker) => {
       const { tenant, actor, version } = await createEnabledTenantAccreditationContext(tracker);
 
-      const rootCriterion = await createTenantVersionCriterion(
+      const rootCriterion = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          criterionCode: "CR1",
+          blockCode: "CR1",
           title: "Root Criterion",
           isLeaf: false,
           sortOrder: 1,
@@ -426,12 +426,12 @@ describe("accreditation add-on module", () => {
         throw new Error(rootCriterion.message);
       }
 
-      const branchCriterion = await createTenantVersionCriterion(
+      const branchCriterion = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          parentId: rootCriterion.criterion.id,
-          criterionCode: "CR1.1",
+          parentId: rootCriterion.block.id,
+          blockCode: "CR1.1",
           title: "Branch Criterion",
           isLeaf: false,
           sortOrder: 1,
@@ -444,12 +444,12 @@ describe("accreditation add-on module", () => {
         throw new Error(branchCriterion.message);
       }
 
-      const leafCriterion = await createTenantVersionCriterion(
+      const leafCriterion = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          parentId: branchCriterion.criterion.id,
-          criterionCode: "CR1.1.1",
+          parentId: branchCriterion.block.id,
+          blockCode: "CR1.1.1",
           title: "Leaf Criterion",
           isLeaf: true,
           sortOrder: 1,
@@ -462,11 +462,11 @@ describe("accreditation add-on module", () => {
         throw new Error(leafCriterion.message);
       }
 
-      const extraRoot = await createTenantVersionCriterion(
+      const extraRoot = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          criterionCode: "CR2",
+          blockCode: "CR2",
           title: "Extra Root",
           isLeaf: false,
           sortOrder: 2,
@@ -479,12 +479,12 @@ describe("accreditation add-on module", () => {
         throw new Error(extraRoot.message);
       }
 
-      const extraBranch = await createTenantVersionCriterion(
+      const extraBranch = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          parentId: extraRoot.criterion.id,
-          criterionCode: "CR2.1",
+          parentId: extraRoot.block.id,
+          blockCode: "CR2.1",
           title: "Extra Branch",
           isLeaf: false,
           sortOrder: 1,
@@ -497,12 +497,12 @@ describe("accreditation add-on module", () => {
         throw new Error(extraBranch.message);
       }
 
-      const childUnderLeaf = await createTenantVersionCriterion(
+      const childUnderLeaf = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          parentId: leafCriterion.criterion.id,
-          criterionCode: "CR1.1.1.A",
+          parentId: leafCriterion.block.id,
+          blockCode: "CR1.1.1.A",
           title: "Illegal Child",
           isLeaf: true,
           sortOrder: 1,
@@ -513,11 +513,11 @@ describe("accreditation add-on module", () => {
       expect(childUnderLeaf).toMatchObject({ status: "error" });
       expect(childUnderLeaf.message).toContain("Leaf criteria");
 
-      const selfParent = await updateTenantCriterion(
+      const selfParent = await updateTenantBlock(
         tenant.id,
-        branchCriterion.criterion.id,
+        branchCriterion.block.id,
         {
-          parentId: branchCriterion.criterion.id,
+          parentId: branchCriterion.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -525,11 +525,11 @@ describe("accreditation add-on module", () => {
       expect(selfParent).toMatchObject({ status: "error" });
       expect(selfParent.message).toContain("own parent");
 
-      const cycleMove = await updateTenantCriterion(
+      const cycleMove = await updateTenantBlock(
         tenant.id,
-        rootCriterion.criterion.id,
+        rootCriterion.block.id,
         {
-          parentId: branchCriterion.criterion.id,
+          parentId: branchCriterion.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -537,9 +537,9 @@ describe("accreditation add-on module", () => {
       expect(cycleMove).toMatchObject({ status: "error" });
       expect(cycleMove.message).toContain("descendants");
 
-      const invalidLeafUpdate = await updateTenantCriterion(
+      const invalidLeafUpdate = await updateTenantBlock(
         tenant.id,
-        rootCriterion.criterion.id,
+        rootCriterion.block.id,
         {
           isLeaf: true,
         },
@@ -549,11 +549,11 @@ describe("accreditation add-on module", () => {
       expect(invalidLeafUpdate).toMatchObject({ status: "error" });
       expect(invalidLeafUpdate.message).toContain("child nodes");
 
-      const depthOverflow = await updateTenantCriterion(
+      const depthOverflow = await updateTenantBlock(
         tenant.id,
-        branchCriterion.criterion.id,
+        branchCriterion.block.id,
         {
-          parentId: extraBranch.criterion.id,
+          parentId: extraBranch.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -561,9 +561,9 @@ describe("accreditation add-on module", () => {
       expect(depthOverflow).toMatchObject({ status: "error" });
       expect(depthOverflow.message).toContain("maximum depth");
 
-      const validMove = await updateTenantCriterion(
+      const validMove = await updateTenantBlock(
         tenant.id,
-        branchCriterion.criterion.id,
+        branchCriterion.block.id,
         {
           parentId: null,
         },
@@ -572,13 +572,13 @@ describe("accreditation add-on module", () => {
       );
       expect(validMove).toMatchObject({ status: "success" });
 
-      const refreshedCriteria = await prisma.accreditationCriterion.findMany({
+      const refreshedCriteria = await prisma.criterionBlock.findMany({
         where: {
           id: {
             in: [
-              rootCriterion.criterion.id,
-              branchCriterion.criterion.id,
-              leafCriterion.criterion.id,
+              rootCriterion.block.id,
+              branchCriterion.block.id,
+              leafCriterion.block.id,
             ],
           },
         },
@@ -592,18 +592,18 @@ describe("accreditation add-on module", () => {
       expect(refreshedCriteria).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            id: rootCriterion.criterion.id,
+            id: rootCriterion.block.id,
             parentId: null,
             depth: 0,
           }),
           expect.objectContaining({
-            id: branchCriterion.criterion.id,
+            id: branchCriterion.block.id,
             parentId: null,
             depth: 0,
           }),
           expect.objectContaining({
-            id: leafCriterion.criterion.id,
-            parentId: branchCriterion.criterion.id,
+            id: leafCriterion.block.id,
+            parentId: branchCriterion.block.id,
             depth: 1,
           }),
         ]),
@@ -616,11 +616,11 @@ describe("accreditation add-on module", () => {
       const { tenant, actor, body, version, profile } =
         await createEnabledTenantAccreditationContext(tracker);
 
-      const versionOneCriterion = await createTenantVersionCriterion(
+      const versionOneCriterion = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          criterionCode: "CR1",
+          blockCode: "CR1",
           title: "Version One Criterion",
           isLeaf: true,
           sortOrder: 1,
@@ -649,11 +649,11 @@ describe("accreditation add-on module", () => {
         throw new Error(secondVersion.message);
       }
 
-      const secondVersionCriterion = await createTenantVersionCriterion(
+      const secondVersionCriterion = await createTenantVersionBlock(
         tenant.id,
         secondVersion.version.id,
         {
-          criterionCode: "CR2",
+          blockCode: "CR2",
           title: "Version Two Criterion",
           isLeaf: true,
           sortOrder: 1,
@@ -672,7 +672,7 @@ describe("accreditation add-on module", () => {
         {
           weights: [
             {
-              criterionId: secondVersionCriterion.criterion.id,
+              blockId: secondVersionCriterion.block.id,
               maxScore: 10,
             },
           ],
@@ -689,11 +689,11 @@ describe("accreditation add-on module", () => {
         {
           weights: [
             {
-              criterionId: versionOneCriterion.criterion.id,
+              blockId: versionOneCriterion.block.id,
               maxScore: 20,
             },
             {
-              criterionId: versionOneCriterion.criterion.id,
+              blockId: versionOneCriterion.block.id,
               maxScore: 25,
             },
           ],
@@ -710,7 +710,7 @@ describe("accreditation add-on module", () => {
         {
           weights: [
             {
-              criterionId: versionOneCriterion.criterion.id,
+              blockId: versionOneCriterion.block.id,
               maxScore: 20,
               weightPercent: 40,
             },
@@ -724,7 +724,7 @@ describe("accreditation add-on module", () => {
       const storedWeights = await prisma.accreditationProfileWeight.findMany({
         where: { profileId: profile.id },
         select: {
-          criterionId: true,
+          blockId: true,
           maxScore: true,
           weightPercent: true,
         },
@@ -732,7 +732,7 @@ describe("accreditation add-on module", () => {
 
       expect(storedWeights).toEqual([
         {
-          criterionId: versionOneCriterion.criterion.id,
+          blockId: versionOneCriterion.block.id,
           maxScore: 20,
           weightPercent: 40,
         },
@@ -754,11 +754,11 @@ describe("accreditation add-on module", () => {
         startingUnitId: structure.unit.id,
       });
 
-      const leafCriterion = await createTenantVersionCriterion(
+      const leafCriterion = await createTenantVersionBlock(
         tenant.id,
         version.id,
         {
-          criterionCode: "CR1",
+          blockCode: "CR1",
           title: "Linked Criterion",
           isLeaf: true,
           sortOrder: 1,
@@ -775,7 +775,7 @@ describe("accreditation add-on module", () => {
         tenant.id,
         kpiOne.id,
         {
-          criterionId: leafCriterion.criterion.id,
+          blockId: leafCriterion.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -786,7 +786,7 @@ describe("accreditation add-on module", () => {
         tenant.id,
         kpiOne.id,
         {
-          criterionId: leafCriterion.criterion.id,
+          blockId: leafCriterion.block.id,
         },
         actor.id,
         "TENANT_OWNER",
@@ -803,7 +803,7 @@ describe("accreditation add-on module", () => {
         tenant.id,
         kpiTwo.id,
         {
-          criterionId: leafCriterion.criterion.id,
+          blockId: leafCriterion.block.id,
         },
         actor.id,
         "TENANT_OWNER",

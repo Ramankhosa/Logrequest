@@ -181,7 +181,7 @@ export async function cleanupTrackedData(tracker: DbTracker) {
         },
       },
     });
-    await prisma.kpiAccreditationCriterionLink.deleteMany({
+    await prisma.kpiAccreditationBlockLink.deleteMany({
       where: {
         tenantId: {
           in: tenantIds,
@@ -203,7 +203,7 @@ export async function cleanupTrackedData(tracker: DbTracker) {
     });
     await prisma.accreditationScoringSlab.deleteMany({
       where: {
-        criterion: {
+        block: {
           version: {
             body: {
               tenantId: {
@@ -236,7 +236,7 @@ export async function cleanupTrackedData(tracker: DbTracker) {
         },
       },
     });
-    await prisma.accreditationCriterion.deleteMany({
+    await prisma.criterionBlock.deleteMany({
       where: {
         version: {
           body: {

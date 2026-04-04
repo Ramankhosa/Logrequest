@@ -20,10 +20,31 @@ type VersionRow = {
   versionName: string;
   scoreBase: number;
   isActive: boolean;
+  lifecycleStatus: "DRAFT" | "VALIDATED" | "PUBLISHED" | "SUPERSEDED" | "ARCHIVED";
+  blockCount?: number;
+};
+
+type BlockNode = {
+  id: string;
+  parentId: string | null;
+  blockCode: string;
+  blockType: "GROUP" | "METRIC" | "QUALITATIVE" | "COMPOSITE";
+  title: string;
+  description?: string | null;
+  depth: number;
+  isActive: boolean;
+  maxScore?: number | null;
+  unitOfMeasure?: string | null;
+  scoringRule?: unknown;
+  validationRules?: unknown;
+  evidenceSchema?: unknown;
+  dependencyRules?: unknown;
+  isLeaf?: boolean;
+  children: BlockNode[];
 };
 
 type ProfileWeightRow = {
-  criterionId: string;
+  blockId?: string;
   maxScore: number;
   weightPercent: number | null;
 };
@@ -40,7 +61,7 @@ type ProfileRow = {
 type CriterionNode = {
   id: string;
   parentId: string | null;
-  criterionCode: string;
+  blockCode: string;
   title: string;
   depth: number;
   isLeaf: boolean;
@@ -58,9 +79,9 @@ type KpiOption = {
 
 type LinkRow = {
   id: string;
-  criterionId: string;
-  criterionCode: string;
-  criterionTitle: string;
+  blockId: string;
+  blockCode: string;
+  blockTitle: string;
   bodyCode: string;
   versionCode: string;
   notes: string | null;
@@ -68,6 +89,7 @@ type LinkRow = {
 
 type CriterionKpiRow = {
   linkId: string;
+  blockId?: string;
   kpiId: string;
   title: string;
   kraTitle: string;
@@ -88,6 +110,31 @@ function flattenCriteria(nodes: CriterionNode[]): CriterionNode[] {
   };
   walk(nodes);
   return flat;
+}
+
+function flattenBlocks(nodes: BlockNode[]): BlockNode[] {
+  const flat: BlockNode[] = [];
+  const walk = (items: BlockNode[]) => {
+    for (const item of items) {
+      flat.push(item);
+      walk(item.children);
+    }
+  };
+  walk(nodes);
+  return flat;
+}
+
+function mapBlocksToCriteria(nodes: BlockNode[]): CriterionNode[] {
+  return nodes.map((block) => ({
+    id: block.id,
+    parentId: block.parentId,
+    blockCode: block.blockCode,
+    title: block.title,
+    depth: block.depth,
+    isLeaf: block.isLeaf ?? (block.blockType === "METRIC" || block.blockType === "QUALITATIVE"),
+    isActive: block.isActive,
+    children: mapBlocksToCriteria(block.children),
+  }));
 }
 
 function toNullableNumber(value: FormDataEntryValue | null): number | null {
@@ -125,9 +172,11 @@ export function AccreditationManager({
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<ProfileRow[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [blocks, setBlocks] = useState<BlockNode[]>([]);
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [criteria, setCriteria] = useState<CriterionNode[]>([]);
   const [selectedCriterionId, setSelectedCriterionId] = useState<string | null>(null);
-  const [criterionKpis, setCriterionKpis] = useState<CriterionKpiRow[]>([]);
+  const [blockKpis, setBlockKpis] = useState<CriterionKpiRow[]>([]);
   const [kpis, setKpis] = useState<KpiOption[]>([]);
   const [selectedKpiId, setSelectedKpiId] = useState<string | null>(initialKpiId ?? null);
   const [links, setLinks] = useState<LinkRow[]>([]);
@@ -136,6 +185,13 @@ export function AccreditationManager({
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
   const canEditSelectedBody = scope === "superadmin" || selectedBody?.scope === "TENANT";
+  const canEditSelectedVersionBlocks =
+    canEditSelectedBody &&
+    (selectedVersion?.lifecycleStatus === "DRAFT" ||
+      selectedVersion?.lifecycleStatus === "VALIDATED");
+  const flatBlocks = useMemo(() => flattenBlocks(blocks), [blocks]);
+  const selectedBlock = flatBlocks.find((block) => block.id === selectedBlockId) ?? null;
+  const canEditRuntimeCriteria = false;
   const flatCriteria = useMemo(() => flattenCriteria(criteria), [criteria]);
   const leafCriteria = useMemo(
     () => flatCriteria.filter((criterion) => criterion.isLeaf),
@@ -187,19 +243,21 @@ export function AccreditationManager({
     setProfiles(data.profiles ?? []);
   }
 
-  async function fetchCriteria(versionId: string) {
-    const response = await fetch(`${basePath}/versions/${versionId}/criteria`, {
+  async function fetchBlocks(versionId: string) {
+    const response = await fetch(`${basePath}/versions/${versionId}/blocks`, {
       cache: "no-store",
     });
     const data = (await response.json()) as {
       status: "success" | "error";
       message?: string;
-      criteria?: CriterionNode[];
+      blocks?: BlockNode[];
     };
     if (!response.ok || data.status !== "success") {
-      throw new Error(data.message ?? "Failed to load accreditation criteria.");
+      throw new Error(data.message ?? "Failed to load template blocks.");
     }
-    setCriteria(data.criteria ?? []);
+    const nextBlocks = data.blocks ?? [];
+    setBlocks(nextBlocks);
+    setCriteria(mapBlocksToCriteria(nextBlocks));
   }
 
   async function fetchKpis() {
@@ -240,12 +298,12 @@ export function AccreditationManager({
     setLinks(data.links ?? []);
   }
 
-  async function fetchCriterionKpis(criterionId: string) {
+  async function fetchBlockKpis(blockId: string) {
     if (scope !== "tenant") {
       return;
     }
 
-    const response = await fetch(`/api/tenant/accreditation/criteria/${criterionId}/kpis`, {
+    const response = await fetch(`/api/tenant/accreditation/blocks/${blockId}/kpis`, {
       cache: "no-store",
     });
     const data = (await response.json()) as {
@@ -256,7 +314,7 @@ export function AccreditationManager({
     if (!response.ok || data.status !== "success") {
       throw new Error(data.message ?? "Failed to load linked KPIs.");
     }
-    setCriterionKpis(data.kpis ?? []);
+    setBlockKpis(data.kpis ?? []);
   }
 
   useEffect(() => {
@@ -339,12 +397,17 @@ export function AccreditationManager({
     if (!selectedVersionId) {
       setProfiles([]);
       setSelectedProfileId(null);
+      setBlocks([]);
+      setSelectedBlockId(null);
       setCriteria([]);
       setSelectedCriterionId(null);
       return;
     }
 
-    void Promise.all([fetchProfiles(selectedVersionId), fetchCriteria(selectedVersionId)]).catch(
+    void Promise.all([
+      fetchProfiles(selectedVersionId),
+      fetchBlocks(selectedVersionId),
+    ]).catch(
       (error) => {
         setMessage({
           type: "error",
@@ -355,6 +418,8 @@ export function AccreditationManager({
         });
         setProfiles([]);
         setSelectedProfileId(null);
+        setBlocks([]);
+        setSelectedBlockId(null);
         setCriteria([]);
         setSelectedCriterionId(null);
       },
@@ -371,6 +436,17 @@ export function AccreditationManager({
       setSelectedProfileId(profiles[0]?.id ?? null);
     }
   }, [profiles, selectedProfileId]);
+
+  useEffect(() => {
+    if (!selectedBlockId && flatBlocks.length > 0) {
+      setSelectedBlockId(flatBlocks[0]!.id);
+      return;
+    }
+
+    if (selectedBlockId && !flatBlocks.some((block) => block.id === selectedBlockId)) {
+      setSelectedBlockId(flatBlocks[0]?.id ?? null);
+    }
+  }, [flatBlocks, selectedBlockId]);
 
   useEffect(() => {
     if (!selectedCriterionId && flatCriteria.length > 0) {
@@ -418,16 +494,16 @@ export function AccreditationManager({
 
   useEffect(() => {
     if (scope !== "tenant" || !selectedCriterionId) {
-      setCriterionKpis([]);
+      setBlockKpis([]);
       return;
     }
 
-    void fetchCriterionKpis(selectedCriterionId).catch((error) => {
+    void fetchBlockKpis(selectedCriterionId).catch((error) => {
       setMessage({
         type: "error",
         text: error instanceof Error ? error.message : "Failed to load linked KPIs.",
       });
-      setCriterionKpis([]);
+      setBlockKpis([]);
     });
   }, [scope, selectedCriterionId]);
 
@@ -469,10 +545,10 @@ export function AccreditationManager({
   }
 
   const selectedProfileWeightMap = new Map(
-    (selectedProfile?.weightOverrides ?? []).map((weight) => [
-      weight.criterionId,
-      weight,
-    ]),
+    (selectedProfile?.weightOverrides ?? []).flatMap((weight) => {
+      const key = weight.blockId;
+      return key ? [[key, weight] as const] : [];
+    }),
   );
 
   return (
@@ -604,7 +680,7 @@ export function AccreditationManager({
                 Selected body: <strong>{selectedBody.code}</strong> ({selectedBody.scope})
               </div>
 
-              {canEditSelectedBody ? (
+              {canEditRuntimeCriteria ? (
                 <form
                   className="grid gap-3 md:grid-cols-2"
                   onSubmit={async (event) => {
@@ -614,6 +690,8 @@ export function AccreditationManager({
                       versionCode: String(form.get("versionCode") ?? ""),
                       versionName: String(form.get("versionName") ?? ""),
                       scoreBase: toNumber(form.get("scoreBase"), 100),
+                      lifecycleStatus:
+                        form.get("createAsDraft") === "on" ? "DRAFT" : "PUBLISHED",
                     });
                     event.currentTarget.reset();
                     await fetchVersions(selectedBody.id);
@@ -635,6 +713,14 @@ export function AccreditationManager({
                     placeholder="Score base"
                     className={`${inputClassName} md:col-span-2`}
                   />
+                  <label className="flex items-center gap-2 text-sm text-slate-600 md:col-span-2">
+                    <input
+                      name="createAsDraft"
+                      type="checkbox"
+                      className="h-4 w-4 rounded"
+                    />
+                    Create as an admin-only draft template
+                  </label>
                   <button
                     type="submit"
                     disabled={submitting}
@@ -667,7 +753,11 @@ export function AccreditationManager({
                               : "text-slate-500"
                           }`}
                         >
-                          {version.versionName} · base {version.scoreBase}
+                          {version.versionName} · base {version.scoreBase} ·{" "}
+                          {version.lifecycleStatus}
+                          {typeof version.blockCount === "number"
+                            ? ` · ${version.blockCount} block(s)`
+                            : ""}
                         </div>
                       </div>
                       {canEditSelectedBody && selectedVersionId === version.id ? (
@@ -693,6 +783,40 @@ export function AccreditationManager({
                   </div>
                 ) : null}
               </div>
+
+              {scope === "tenant" &&
+              selectedBody.scope === "GLOBAL" &&
+              selectedVersion?.lifecycleStatus === "PUBLISHED" ? (
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={async () => {
+                    if (!selectedVersion) {
+                      return;
+                    }
+
+                    const data = (await submitJson(
+                      `${basePath}/versions/${selectedVersion.id}/fork`,
+                      "POST",
+                    )) as {
+                      body?: { id: string };
+                      version?: { id: string };
+                    };
+
+                    await fetchBodies();
+                    if (data.body?.id) {
+                      setSelectedBodyId(data.body.id);
+                      await fetchVersions(data.body.id);
+                    }
+                    if (data.version?.id) {
+                      setSelectedVersionId(data.version.id);
+                    }
+                  }}
+                  className="rounded-full border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900 disabled:opacity-60"
+                >
+                  Fork This Global Template Into Tenant Draft
+                </button>
+              ) : null}
             </>
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
@@ -825,12 +949,17 @@ export function AccreditationManager({
                             }
 
                             return {
-                              criterionId: criterion.id,
+                              blockId: criterion.id,
                               maxScore,
                               weightPercent,
                             };
                           })
-                          .filter((row): row is ProfileWeightRow => row !== null);
+                          .filter(
+                            (
+                              row,
+                            ): row is { blockId: string; maxScore: number; weightPercent: number | null } =>
+                              row !== null,
+                          );
 
                         await submitJson(
                           `${basePath}/profiles/${selectedProfile.id}/weights`,
@@ -850,7 +979,7 @@ export function AccreditationManager({
                             >
                               <div>
                                 <div className="text-sm font-semibold text-slate-900">
-                                  {criterion.criterionCode} · {criterion.title}
+                                  {criterion.blockCode} · {criterion.title}
                                 </div>
                                 <div className="text-xs text-slate-500">
                                   Depth {criterion.depth + 1} · leaf criterion
@@ -894,7 +1023,7 @@ export function AccreditationManager({
                             className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700"
                           >
                             <div className="font-semibold">
-                              {criterion.criterionCode} · {criterion.title}
+                              {criterion.blockCode} · {criterion.title}
                             </div>
                             <div className="mt-1 text-xs text-slate-500">
                               Max score: {weight?.maxScore ?? "Not set"} · Weight %:{" "}
@@ -922,6 +1051,12 @@ export function AccreditationManager({
               Build a nested criteria structure and mark measurable leaf criteria for KPI
               linkage.
             </p>
+            {flatBlocks.length > 0 ? (
+              <p className="mt-2 text-xs text-slate-500">
+                This version is block-authored. The criteria tree below is the compiled published
+                runtime view.
+              </p>
+            ) : null}
           </div>
 
           {selectedVersion ? (
@@ -932,17 +1067,17 @@ export function AccreditationManager({
                   onSubmit={async (event) => {
                     event.preventDefault();
                     const form = new FormData(event.currentTarget);
-                    await submitJson(`${basePath}/versions/${selectedVersion.id}/criteria`, "POST", {
+                    await submitJson(`${basePath}/versions/${selectedVersion.id}/blocks`, "POST", {
                       parentId: String(form.get("parentId") ?? "") || null,
-                      criterionCode: String(form.get("criterionCode") ?? ""),
+                      blockCode: String(form.get("blockCode") ?? ""),
                       title: String(form.get("title") ?? ""),
+                      blockType: form.get("isLeaf") === "on" ? "METRIC" : "GROUP",
                       maxScore: toNullableNumber(form.get("maxScore")),
                       sortOrder: toNumber(form.get("sortOrder"), 0),
-                      isLeaf: form.get("isLeaf") === "on",
                       unitOfMeasure: String(form.get("unitOfMeasure") ?? "") || null,
                     });
                     event.currentTarget.reset();
-                    await fetchCriteria(selectedVersion.id);
+                    await fetchBlocks(selectedVersion.id);
                   }}
                 >
                   <select name="parentId" className={inputClassName} defaultValue="">
@@ -950,13 +1085,13 @@ export function AccreditationManager({
                     {flatCriteria.map((criterion) => (
                       <option key={criterion.id} value={criterion.id}>
                         {"  ".repeat(criterion.depth)}
-                        {criterion.criterionCode} · {criterion.title}
+                        {criterion.blockCode} · {criterion.title}
                       </option>
                     ))}
                   </select>
                   <input
-                    name="criterionCode"
-                    placeholder="Criterion code"
+                    name="blockCode"
+                    placeholder="Block code"
                     className={inputClassName}
                   />
                   <input name="title" placeholder="Criterion title" className={inputClassName} />
@@ -1008,7 +1143,7 @@ export function AccreditationManager({
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="text-sm font-semibold">
-                          {criterion.criterionCode} · {criterion.title}
+                          {criterion.blockCode} · {criterion.title}
                         </div>
                         <div
                           className={`mt-1 text-xs ${
@@ -1021,15 +1156,15 @@ export function AccreditationManager({
                           {criterion.depth + 1}
                         </div>
                       </div>
-                      {canEditSelectedBody && selectedCriterionId === criterion.id ? (
-                        <span
-                          onClick={async (event) => {
-                            event.stopPropagation();
-                            await submitJson(`${basePath}/criteria/${criterion.id}`, "PATCH", {
-                              isActive: !criterion.isActive,
-                            });
-                            await fetchCriteria(selectedVersion.id);
-                          }}
+                      {canEditRuntimeCriteria && selectedCriterionId === criterion.id ? (
+                          <span
+                            onClick={async (event) => {
+                              event.stopPropagation();
+                              await submitJson(`${basePath}/blocks/${criterion.id}`, "PATCH", {
+                                isActive: !criterion.isActive,
+                              });
+                              await fetchBlocks(selectedVersion.id);
+                            }}
                           className="rounded-full border border-current px-3 py-1 text-xs"
                         >
                           {criterion.isActive ? "Archive" : "Restore"}
@@ -1052,16 +1187,16 @@ export function AccreditationManager({
                       KPI reverse lookup
                     </h3>
                     <p className="text-xs text-slate-500">
-                      KPIs currently linked to {selectedCriterion.criterionCode}.
+                      KPIs currently linked to published block {selectedCriterion.blockCode}.
                     </p>
                   </div>
-                  {criterionKpis.length === 0 ? (
+                  {blockKpis.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
                       No KPI links for this criterion yet.
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      {criterionKpis.map((kpi) => (
+                      {blockKpis.map((kpi) => (
                         <div
                           key={kpi.linkId}
                           className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700"
@@ -1084,6 +1219,331 @@ export function AccreditationManager({
           )}
         </section>
       </div>
+
+      <section className="space-y-4 rounded-3xl border border-slate-200 bg-white/80 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Template Blocks</h2>
+            <p className="text-sm text-slate-500">
+              Admin-only authoring foundation for published templates. Workspace users never
+              see these blocks directly.
+            </p>
+          </div>
+          {selectedVersion ? (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {selectedVersion.versionCode} · {selectedVersion.lifecycleStatus}
+            </div>
+          ) : null}
+        </div>
+
+        {selectedVersion ? (
+          <>
+            {canEditSelectedVersionBlocks ? (
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={async () => {
+                    await submitJson(`${basePath}/versions/${selectedVersion.id}/validate`, "POST");
+                    await fetchVersions(selectedBodyId!);
+                    await fetchBlocks(selectedVersion.id);
+                  }}
+                  className="rounded-full border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-900 disabled:opacity-60"
+                >
+                  Validate Draft
+                </button>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={async () => {
+                    await submitJson(`${basePath}/versions/${selectedVersion.id}/publish`, "POST");
+                    await Promise.all([
+                      fetchVersions(selectedBodyId!),
+                      fetchBlocks(selectedVersion.id),
+                    ]);
+                  }}
+                  className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  Publish Template
+                </button>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                {selectedVersion.lifecycleStatus === "PUBLISHED"
+                  ? "Published templates are immutable. Fork or create a new draft to make changes."
+                  : "Block authoring is only available on tenant-owned or superadmin-owned draft templates."}
+              </div>
+            )}
+
+            <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+              <div className="space-y-4">
+                {canEditSelectedVersionBlocks ? (
+                  <form
+                    className="grid gap-3 md:grid-cols-2"
+                    onSubmit={async (event) => {
+                      event.preventDefault();
+                      const form = new FormData(event.currentTarget);
+                      await submitJson(`${basePath}/versions/${selectedVersion.id}/blocks`, "POST", {
+                        parentId: String(form.get("parentId") ?? "") || null,
+                        blockCode: String(form.get("blockCode") ?? ""),
+                        title: String(form.get("title") ?? ""),
+                        blockType: String(form.get("blockType") ?? "METRIC"),
+                        maxScore: toNullableNumber(form.get("maxScore")),
+                        sortOrder: toNumber(form.get("sortOrder"), 0),
+                        unitOfMeasure: String(form.get("unitOfMeasure") ?? "") || null,
+                        scoringRule: String(form.get("scoringRule") ?? "") || null,
+                        validationRules: String(form.get("validationRules") ?? "") || null,
+                        evidenceSchema: String(form.get("evidenceSchema") ?? "") || null,
+                        dependencyRules: String(form.get("dependencyRules") ?? "") || null,
+                      });
+                      event.currentTarget.reset();
+                      await fetchBlocks(selectedVersion.id);
+                    }}
+                  >
+                    <select name="parentId" className={inputClassName} defaultValue="">
+                      <option value="">Root block</option>
+                      {flatBlocks.map((block) => (
+                        <option key={block.id} value={block.id}>
+                          {"  ".repeat(block.depth)}
+                          {block.blockCode} · {block.title}
+                        </option>
+                      ))}
+                    </select>
+                    <input name="blockCode" placeholder="Block code" className={inputClassName} />
+                    <input name="title" placeholder="Block title" className={inputClassName} />
+                    <select name="blockType" className={inputClassName} defaultValue="METRIC">
+                      <option value="GROUP">GROUP</option>
+                      <option value="METRIC">METRIC</option>
+                      <option value="QUALITATIVE">QUALITATIVE</option>
+                      <option value="COMPOSITE">COMPOSITE</option>
+                    </select>
+                    <input
+                      name="maxScore"
+                      type="number"
+                      step="0.01"
+                      placeholder="Max score"
+                      className={inputClassName}
+                    />
+                    <input
+                      name="sortOrder"
+                      type="number"
+                      placeholder="Sort order"
+                      className={inputClassName}
+                    />
+                    <input
+                      name="unitOfMeasure"
+                      placeholder="Unit of measure"
+                      className={`${inputClassName} md:col-span-2`}
+                    />
+                    <textarea
+                      name="scoringRule"
+                      placeholder='Scoring rule JSON, e.g. {"type":"SLAB","slabs":[...]}'
+                      className={`${inputClassName} min-h-24 md:col-span-2`}
+                    />
+                    <textarea
+                      name="validationRules"
+                      placeholder="Validation rules JSON"
+                      className={`${inputClassName} min-h-24`}
+                    />
+                    <textarea
+                      name="evidenceSchema"
+                      placeholder="Evidence schema JSON"
+                      className={`${inputClassName} min-h-24`}
+                    />
+                    <textarea
+                      name="dependencyRules"
+                      placeholder='Dependency rules JSON, e.g. [{"targetBlockCode":"1.1"}]'
+                      className={`${inputClassName} min-h-24 md:col-span-2`}
+                    />
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 md:col-span-2"
+                    >
+                      Create block
+                    </button>
+                  </form>
+                ) : null}
+
+                <div className="space-y-2">
+                  {flatBlocks.map((block) => (
+                    <button
+                      key={block.id}
+                      type="button"
+                      onClick={() => setSelectedBlockId(block.id)}
+                      className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                        selectedBlockId === block.id
+                          ? "border-slate-900 bg-slate-950 text-white"
+                          : "border-slate-200 bg-slate-50 text-slate-800 hover:border-slate-300"
+                      }`}
+                      style={{ paddingLeft: `${block.depth * 18 + 16}px` }}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold">
+                            {block.blockCode} · {block.title}
+                          </div>
+                          <div
+                            className={`mt-1 text-xs ${
+                              selectedBlockId === block.id ? "text-slate-300" : "text-slate-500"
+                            }`}
+                          >
+                            {block.blockType} · level {block.depth + 1}
+                          </div>
+                        </div>
+                        {canEditSelectedVersionBlocks && selectedBlockId === block.id ? (
+                          <span
+                            onClick={async (event) => {
+                              event.stopPropagation();
+                              await submitJson(`${basePath}/blocks/${block.id}`, "PATCH", {
+                                isActive: !block.isActive,
+                              });
+                              await fetchBlocks(selectedVersion.id);
+                            }}
+                            className="rounded-full border border-current px-3 py-1 text-xs"
+                          >
+                            {block.isActive ? "Archive" : "Restore"}
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+                  ))}
+                  {flatBlocks.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+                      No blocks defined for this template version yet.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">Selected block</h3>
+                  <p className="text-xs text-slate-500">
+                    Edit the currently selected block or inspect its JSON-backed scoring and
+                    dependency configuration.
+                  </p>
+                </div>
+
+                {selectedBlock ? (
+                  <>
+                    {canEditSelectedVersionBlocks ? (
+                      <form
+                        className="space-y-3"
+                        onSubmit={async (event) => {
+                          event.preventDefault();
+                          const form = new FormData(event.currentTarget);
+                          await submitJson(`${basePath}/blocks/${selectedBlock.id}`, "PATCH", {
+                            title: String(form.get("title") ?? ""),
+                            description: String(form.get("description") ?? "") || null,
+                            maxScore: toNullableNumber(form.get("maxScore")),
+                            unitOfMeasure: String(form.get("unitOfMeasure") ?? "") || null,
+                            scoringRule: String(form.get("scoringRule") ?? "") || null,
+                            validationRules: String(form.get("validationRules") ?? "") || null,
+                            evidenceSchema: String(form.get("evidenceSchema") ?? "") || null,
+                            dependencyRules: String(form.get("dependencyRules") ?? "") || null,
+                          });
+                          await fetchBlocks(selectedVersion.id);
+                        }}
+                      >
+                        <input
+                          name="title"
+                          defaultValue={selectedBlock.title}
+                          className={inputClassName}
+                        />
+                        <textarea
+                          name="description"
+                          defaultValue={selectedBlock.description ?? ""}
+                          placeholder="Description"
+                          className={`${inputClassName} min-h-24`}
+                        />
+                        <input
+                          name="maxScore"
+                          type="number"
+                          step="0.01"
+                          defaultValue={selectedBlock.maxScore ?? ""}
+                          placeholder="Max score"
+                          className={inputClassName}
+                        />
+                        <input
+                          name="unitOfMeasure"
+                          defaultValue={selectedBlock.unitOfMeasure ?? ""}
+                          placeholder="Unit of measure"
+                          className={inputClassName}
+                        />
+                        <textarea
+                          name="scoringRule"
+                          defaultValue={
+                            selectedBlock.scoringRule
+                              ? JSON.stringify(selectedBlock.scoringRule, null, 2)
+                              : ""
+                          }
+                          placeholder="Scoring rule JSON"
+                          className={`${inputClassName} min-h-28`}
+                        />
+                        <textarea
+                          name="validationRules"
+                          defaultValue={
+                            selectedBlock.validationRules
+                              ? JSON.stringify(selectedBlock.validationRules, null, 2)
+                              : ""
+                          }
+                          placeholder="Validation rules JSON"
+                          className={`${inputClassName} min-h-24`}
+                        />
+                        <textarea
+                          name="evidenceSchema"
+                          defaultValue={
+                            selectedBlock.evidenceSchema
+                              ? JSON.stringify(selectedBlock.evidenceSchema, null, 2)
+                              : ""
+                          }
+                          placeholder="Evidence schema JSON"
+                          className={`${inputClassName} min-h-24`}
+                        />
+                        <textarea
+                          name="dependencyRules"
+                          defaultValue={
+                            selectedBlock.dependencyRules
+                              ? JSON.stringify(selectedBlock.dependencyRules, null, 2)
+                              : ""
+                          }
+                          placeholder="Dependency rules JSON"
+                          className={`${inputClassName} min-h-24`}
+                        />
+                        <button
+                          type="submit"
+                          disabled={submitting}
+                          className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                        >
+                          Save selected block
+                        </button>
+                      </form>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="text-sm font-semibold text-slate-900">
+                          {selectedBlock.blockCode} · {selectedBlock.title}
+                        </div>
+                        <pre className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-700">
+                          {JSON.stringify(selectedBlock, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                    Select a block to inspect or edit it.
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+            Select a version to manage template blocks.
+          </div>
+        )}
+      </section>
 
       {scope === "tenant" ? (
         <section className="space-y-4 rounded-3xl border border-slate-200 bg-white/80 p-5">
@@ -1119,7 +1579,7 @@ export function AccreditationManager({
                 <div>
                   <h3 className="text-sm font-semibold text-slate-900">Create link</h3>
                   <p className="text-xs text-slate-500">
-                    Only active leaf criteria can be linked to KPIs.
+                    Only active measurable leaf blocks can be linked to KPIs.
                   </p>
                 </div>
 
@@ -1129,28 +1589,28 @@ export function AccreditationManager({
                     event.preventDefault();
                     const form = new FormData(event.currentTarget);
                     await submitJson(`/api/tenant/accreditation/kpis/${selectedKpiId}/links`, "POST", {
-                      criterionId: String(form.get("criterionId") ?? ""),
+                      blockId: String(form.get("blockId") ?? ""),
                       notes: String(form.get("notes") ?? "") || null,
                     });
                     event.currentTarget.reset();
                     await Promise.all([
                       fetchLinks(selectedKpiId),
                       fetchKpis(),
-                      selectedCriterionId ? fetchCriterionKpis(selectedCriterionId) : Promise.resolve(),
+                      selectedCriterionId ? fetchBlockKpis(selectedCriterionId) : Promise.resolve(),
                     ]);
                   }}
                 >
                   <select
-                    name="criterionId"
+                    name="blockId"
                     defaultValue={selectedCriterion?.isLeaf ? selectedCriterion.id : ""}
                     className={inputClassName}
                   >
-                    <option value="">Select leaf criterion</option>
+                    <option value="">Select leaf block</option>
                     {leafCriteria
                       .filter((criterion) => criterion.isActive)
                       .map((criterion) => (
                         <option key={criterion.id} value={criterion.id}>
-                          {criterion.criterionCode} · {criterion.title}
+                          {criterion.blockCode} · {criterion.title}
                         </option>
                       ))}
                   </select>
@@ -1190,7 +1650,7 @@ export function AccreditationManager({
                       >
                         <div>
                           <div className="text-sm font-semibold text-slate-900">
-                            {link.criterionCode} · {link.criterionTitle}
+                            {link.blockCode} · {link.blockTitle}
                           </div>
                           <div className="mt-1 text-xs text-slate-500">
                             {link.bodyCode} · {link.versionCode}
@@ -1207,7 +1667,7 @@ export function AccreditationManager({
                             await Promise.all([
                               fetchLinks(selectedKpiId),
                               fetchKpis(),
-                              selectedCriterionId ? fetchCriterionKpis(selectedCriterionId) : Promise.resolve(),
+                              selectedCriterionId ? fetchBlockKpis(selectedCriterionId) : Promise.resolve(),
                             ]);
                           }}
                           className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700 disabled:opacity-60"

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listCriterionEntryChangeLog } from "@/lib/accreditation/workspace-service";
+import { listBlockEntryChangeLog } from "@/lib/accreditation/workspace-service";
 import {
   getTenantAccreditationApiSession,
   tenantApiAccessDeniedResponse,
@@ -15,7 +15,7 @@ export async function GET(
   }
 
   const { id } = await params;
-  const result = await listCriterionEntryChangeLog(
+  const result = await listBlockEntryChangeLog(
     id,
     session.tenantId,
     session.userId,

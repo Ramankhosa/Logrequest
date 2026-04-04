@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { setBlockEntryManualOverride } from "@/lib/accreditation/workspace-service";
+import { detachBlockEntryProjection } from "@/lib/accreditation/workspace-service";
 import {
   getTenantAccreditationApiSession,
-  parseJsonBody,
   tenantApiAccessDeniedResponse,
 } from "../../../workspace-route-helpers";
 
-export async function PATCH(
-  request: Request,
+export async function POST(
+  _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getTenantAccreditationApiSession();
@@ -15,16 +14,10 @@ export async function PATCH(
     return tenantApiAccessDeniedResponse();
   }
 
-  const parsed = await parseJsonBody(request);
-  if (!parsed.ok) {
-    return NextResponse.json({ status: "error", message: "Invalid request body." }, { status: 400 });
-  }
-
   const { id } = await params;
-  const result = await setBlockEntryManualOverride(
+  const result = await detachBlockEntryProjection(
     id,
     session.tenantId,
-    parsed.body,
     session.userId,
     session.role,
   );
