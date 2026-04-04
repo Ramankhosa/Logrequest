@@ -77,9 +77,12 @@ type WorkspaceDetail = {
     manualOverride: number | null;
     finalScore: number | null;
     responses: Array<{
-      year: number;
-      actualValue: number | null;
-      textValue: string | null;
+      scopeKey: string;
+      year: number | null;
+      responseData: {
+        value?: number | null;
+        narrative?: string | null;
+      };
     }>;
   }>;
   snapshots: Array<{
@@ -570,7 +573,10 @@ export function WorkspaceManager() {
                             <td className="py-3 text-slate-600">
                               {entry.responses.length > 0
                                 ? entry.responses
-                                    .map((response) => `${response.year}:${response.actualValue ?? response.textValue ?? "—"}`)
+                                    .map(
+                                      (response) =>
+                                        `${response.year ?? response.scopeKey}:${response.responseData?.value ?? response.responseData?.narrative ?? "—"}`,
+                                    )
                                     .join(", ")
                                 : "No data"}
                             </td>

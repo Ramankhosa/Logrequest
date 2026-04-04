@@ -227,6 +227,12 @@ enum CriterionYearAggregation {
   WEIGHTED_RECENT
 }
 
+enum AccreditationScoreConversionType {
+  NONE
+  LINEAR_FACTOR
+  LINEAR_RATIO
+}
+
 enum AccreditationTemplateLifecycleStatus {
   DRAFT
   VALIDATED
@@ -335,6 +341,7 @@ enum ProjectionSourceKind {
   WORKSPACE_ENTRY
   SOURCE_METRIC
   ENTRY_TABLE
+  INSTITUTIONAL_DATA_BANK
 }
 
 enum ProjectionStorageMode {
@@ -1077,7 +1084,8 @@ model AccreditationBodyVersion {
   engineVersion     Int                              @default(1)
   scoreBase         Float
   convertedScaleMax Float?
-  conversionFormula String?
+  conversionType    AccreditationScoreConversionType @default(NONE)
+  conversionFactor  Float?
   effectiveFrom     DateTime?
   effectiveTo       DateTime?
   lifecycleStatus   AccreditationTemplateLifecycleStatus @default(PUBLISHED)
@@ -1296,6 +1304,10 @@ model BlockEntry {
   manualOverride       Float?
   manualOverrideForced Boolean                @default(false)
   finalScore           Float?
+  executionStatus      String?
+  lastComputedAt       DateTime?
+  executionMeta        Json?
+  lastExecutionHash    String?
   remarks              String?
   lastUpdatedByUserId  String?
   lastUpdatedAt        DateTime?
@@ -1303,7 +1315,7 @@ model BlockEntry {
   updatedAt            DateTime               @updatedAt
   workspace            AssessmentWorkspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   block                CriterionBlock         @relation(fields: [blockId], references: [id], onDelete: Restrict)
-  responses            BlockEntryYearValue[]
+  responses            BlockEntryResponse[]
   evidenceLinks        EvidenceEntryLink[]
   changeLog            BlockEntryChange[]
   discussionThreads    WorkspaceDiscussionThread[]
@@ -1317,27 +1329,34 @@ model BlockEntry {
   @@index([workspaceId, status])
 }
 
-model BlockEntryYearValue {
+model BlockEntryResponse {
   id              String                  @id @default(cuid())
   entryId         String
-  year            Int
-  actualValue     Float?
-  textValue       String?
-  dataSource      BlockEntryValueSource     @default(MANUAL)
+  scopeKey        String                  @default("DEFAULT")
+  year            Int?
+  responseData    Json
+  responseMetadata Json?
+  computedOutput  Json?
+  computedScore   Float?
+  dataSource      BlockEntryValueSource   @default(MANUAL)
   sourceRef       String?
   remarks         String?
+  enteredByUserId String?
+  enteredAt       DateTime?
   updatedByUserId String?
   createdAt       DateTime                @default(now())
   updatedAt       DateTime                @updatedAt
-  entry           BlockEntry                @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  entry           BlockEntry              @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  tableInstances  BlockEntryTableInstance[]
 
-  @@unique([entryId, year])
-  @@index([entryId])
+  @@unique([entryId, scopeKey])
+  @@index([entryId, year])
 }
 
 model BlockEntryTableInstance {
   id                   String                 @id @default(cuid())
   entryId              String
+  responseId           String
   year                 Int?
   scopeKey             String
   fieldKey             String
@@ -1347,11 +1366,13 @@ model BlockEntryTableInstance {
   createdAt            DateTime               @default(now())
   updatedAt            DateTime               @updatedAt
   entry                BlockEntry             @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  response             BlockEntryResponse     @relation(fields: [responseId], references: [id], onDelete: Cascade)
   rows                 BlockEntryTableRow[]
   sourceProjectionRecipes BlockProjectionRecipe[] @relation("ProjectionSourceTable")
 
-  @@unique([entryId, scopeKey, fieldKey])
+  @@unique([responseId, fieldKey])
   @@index([entryId, year])
+  @@index([responseId])
 }
 
 model BlockEntryTableRow {
@@ -1682,7 +1703,7 @@ model SourceMetricObservation {
   id                   String               @id @default(cuid())
   metricId             String
   observedYear         Int?
-  scopeKey             String               @default("STATIC")
+  scopeKey             String               @default("DEFAULT")
   dimensions           Json?
   dimensionFingerprint String               @default("__NONE__")
   numberValue          Float?
@@ -1712,12 +1733,14 @@ model BlockProjectionRecipe {
   sourceEntryId          String?
   sourceMetricId         String?
   sourceTableInstanceId  String?
+  sourceExternalRecordId String?
+  sourceExternalPath     String?
   sourceTableFieldKey    String?
   sourcePath             String?
   filters                Json?
   transform              Json?
   storageMode            ProjectionStorageMode    @default(COPY)
-  targetPath             String                   @default("actualValue")
+  targetPath             String                   @default("response.value")
   isActive               Boolean                  @default(true)
   lastSourceRevisionHash String?
   createdByUserId        String

@@ -1,4 +1,5 @@
 import {
+  AccreditationScoreConversionType,
   AccreditationScope,
   AccreditationTemplateLifecycleStatus,
   CriterionBlockType,
@@ -28,11 +29,28 @@ const versionInputSchema = z.object({
   versionName: z.string().trim().min(2).max(200),
   scoreBase: z.number().positive(),
   convertedScaleMax: z.number().positive().nullable().optional(),
-  conversionFormula: z.string().trim().max(200).nullable().optional(),
+  conversionType: z.nativeEnum(AccreditationScoreConversionType).nullable().optional(),
+  conversionFactor: z.number().positive().nullable().optional(),
   effectiveFrom: z.coerce.date().nullable().optional(),
   effectiveTo: z.coerce.date().nullable().optional(),
   lifecycleStatus: z.nativeEnum(AccreditationTemplateLifecycleStatus).optional(),
   isActive: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (value.conversionType === AccreditationScoreConversionType.LINEAR_FACTOR && value.conversionFactor == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "conversionFactor is required when conversionType is LINEAR_FACTOR.",
+      path: ["conversionFactor"],
+    });
+  }
+
+  if (value.conversionType === AccreditationScoreConversionType.LINEAR_RATIO && value.convertedScaleMax == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "convertedScaleMax is required when conversionType is LINEAR_RATIO.",
+      path: ["convertedScaleMax"],
+    });
+  }
 });
 
 const profileInputSchema = z.object({
@@ -659,6 +677,13 @@ async function createVersion(bodyId: string, input: unknown, actorUserId?: strin
 
   try {
     const lifecycleStatus = parsed.data.lifecycleStatus ?? AccreditationTemplateLifecycleStatus.PUBLISHED;
+    const conversionType =
+      parsed.data.conversionType ??
+      (parsed.data.conversionFactor != null
+        ? AccreditationScoreConversionType.LINEAR_FACTOR
+        : parsed.data.convertedScaleMax != null
+          ? AccreditationScoreConversionType.LINEAR_RATIO
+          : AccreditationScoreConversionType.NONE);
     const version = await prisma.accreditationBodyVersion.create({
       data: {
         bodyId,
@@ -666,7 +691,8 @@ async function createVersion(bodyId: string, input: unknown, actorUserId?: strin
         versionName: parsed.data.versionName.trim(),
         scoreBase: parsed.data.scoreBase,
         convertedScaleMax: parsed.data.convertedScaleMax ?? null,
-        conversionFormula: normalizeNullableString(parsed.data.conversionFormula),
+        conversionType,
+        conversionFactor: parsed.data.conversionFactor ?? null,
         effectiveFrom: parsed.data.effectiveFrom ?? null,
         effectiveTo: parsed.data.effectiveTo ?? null,
         lifecycleStatus,
@@ -724,6 +750,19 @@ async function updateVersion(versionId: string, input: unknown) {
     return { status: "error" as const, message: parsed.error.issues[0]?.message ?? "Invalid version input." };
   }
 
+  const resolvedConversionType =
+    parsed.data.conversionType !== undefined
+      ? parsed.data.conversionType
+      : parsed.data.conversionFactor !== undefined
+        ? parsed.data.conversionFactor == null
+          ? AccreditationScoreConversionType.NONE
+          : AccreditationScoreConversionType.LINEAR_FACTOR
+        : parsed.data.convertedScaleMax !== undefined
+          ? parsed.data.convertedScaleMax == null
+            ? AccreditationScoreConversionType.NONE
+            : AccreditationScoreConversionType.LINEAR_RATIO
+          : undefined;
+
   const updated = await prisma.accreditationBodyVersion.update({
     where: { id: versionId },
     data: {
@@ -731,7 +770,8 @@ async function updateVersion(versionId: string, input: unknown) {
       ...(parsed.data.versionName !== undefined ? { versionName: parsed.data.versionName.trim() } : {}),
       ...(parsed.data.scoreBase !== undefined ? { scoreBase: parsed.data.scoreBase } : {}),
       ...(parsed.data.convertedScaleMax !== undefined ? { convertedScaleMax: parsed.data.convertedScaleMax ?? null } : {}),
-      ...(parsed.data.conversionFormula !== undefined ? { conversionFormula: normalizeNullableString(parsed.data.conversionFormula) } : {}),
+      ...(resolvedConversionType !== undefined ? { conversionType: resolvedConversionType ?? AccreditationScoreConversionType.NONE } : {}),
+      ...(parsed.data.conversionFactor !== undefined ? { conversionFactor: parsed.data.conversionFactor ?? null } : {}),
       ...(parsed.data.effectiveFrom !== undefined ? { effectiveFrom: parsed.data.effectiveFrom ?? null } : {}),
       ...(parsed.data.effectiveTo !== undefined ? { effectiveTo: parsed.data.effectiveTo ?? null } : {}),
       ...(parsed.data.isActive !== undefined ? { isActive: parsed.data.isActive } : {}),

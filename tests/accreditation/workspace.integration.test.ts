@@ -94,6 +94,10 @@ type CriterionSpec = {
   validationRules?: unknown;
   yearAggregation?: CriterionYearAggregation;
   yearAggregationConfig?: unknown;
+  inputSchema?: unknown;
+  calculationRule?: unknown;
+  scoringRule?: unknown;
+  dependencyRules?: unknown;
 };
 
 async function createEnabledTenantAccreditationContext(tracker: DbTracker) {
@@ -201,6 +205,31 @@ async function createWorkspaceFixture(input: {
             : {}),
           ...(criterionSpec.yearAggregationConfig !== undefined
             ? { yearAggregationConfig: criterionSpec.yearAggregationConfig as never }
+            : {}),
+        },
+      });
+    }
+
+    if (
+      criterionSpec.inputSchema !== undefined ||
+      criterionSpec.calculationRule !== undefined ||
+      criterionSpec.scoringRule !== undefined ||
+      criterionSpec.dependencyRules !== undefined
+    ) {
+      await prisma.criterionBlock.update({
+        where: { id: criterionResult.block.id },
+        data: {
+          ...(criterionSpec.inputSchema !== undefined
+            ? { inputSchema: criterionSpec.inputSchema as never }
+            : {}),
+          ...(criterionSpec.calculationRule !== undefined
+            ? { calculationRule: criterionSpec.calculationRule as never }
+            : {}),
+          ...(criterionSpec.scoringRule !== undefined
+            ? { scoringRule: criterionSpec.scoringRule as never }
+            : {}),
+          ...(criterionSpec.dependencyRules !== undefined
+            ? { dependencyRules: criterionSpec.dependencyRules as never }
             : {}),
         },
       });
@@ -443,11 +472,11 @@ describe("accreditation workspace core filing", () => {
         throw new Error(quantitativeSaved.message);
       }
 
-      const currentYearData = await prisma.blockEntryYearValue.findUniqueOrThrow({
+      const currentYearData = await prisma.blockEntryResponse.findUniqueOrThrow({
         where: {
-          entryId_year: {
+          entryId_scopeKey: {
             entryId: quantitativeEntry.id,
-            year: 2026,
+            scopeKey: "YEAR:2026",
           },
         },
       });
@@ -478,7 +507,7 @@ describe("accreditation workspace core filing", () => {
       }
 
       const textChange = changeLog.changes.find(
-        (change: (typeof changeLog.changes)[number]) => change.fieldChanged === "textValue",
+        (change: (typeof changeLog.changes)[number]) => change.fieldChanged === "responseData.narrative",
       );
       expect(textChange).toBeDefined();
       expect(textChange).toMatchObject({
@@ -550,6 +579,175 @@ describe("accreditation workspace core filing", () => {
 
       expect(refreshedEntry.computedScore).toBeCloseTo(22.22, 2);
       expect(refreshedEntry.finalScore).toBeCloseTo(22.22, 2);
+    });
+  });
+
+  test("block-native formula scoring computes structured response inputs and persists computed output", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkspaceFixture({
+        tracker,
+        criteria: [
+          {
+            blockCode: "CR1",
+            title: "Publications Per Faculty",
+            maxScore: 10,
+            inputSchema: {
+              fields: {
+                publication_count: { required: true, mergeMode: "REPLACE" },
+                faculty_count: { required: true, mergeMode: "REPLACE" },
+              },
+            },
+            calculationRule: {
+              inputs: {
+                publication_count: { source: "response.publication_count", required: true },
+                faculty_count: { source: "response.faculty_count", required: true },
+              },
+              steps: [
+                {
+                  type: "FORMULA",
+                  outputKey: "pub_per_faculty",
+                  formula: "inputs.publication_count / inputs.faculty_count",
+                },
+              ],
+              resultKey: "pub_per_faculty",
+            },
+            scoringRule: {
+              type: "DIRECT",
+            },
+          },
+        ],
+      });
+
+      const entry = fixture.entriesByCode.get("CR1");
+      expect(entry).toBeDefined();
+      if (!entry) {
+        throw new Error("Formula fixture entry was not created.");
+      }
+
+      const saved = await setBlockEntryResponse(
+        entry.id,
+        fixture.tenant.id,
+        {
+          year: 2026,
+          responseData: {
+            publication_count: 40,
+            faculty_count: 10,
+          },
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(saved).toMatchObject({ status: "success" });
+
+      const scoring = await computeAssessmentWorkspaceScores(
+        fixture.workspaceId,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(scoring).toMatchObject({ status: "success" });
+      if (scoring.status !== "success") {
+        throw new Error(scoring.message);
+      }
+
+      const refreshedEntry = await prisma.blockEntry.findUniqueOrThrow({
+        where: { id: entry.id },
+        select: {
+          computedScore: true,
+          finalScore: true,
+          executionStatus: true,
+        },
+      });
+      expect(refreshedEntry.computedScore).toBe(4);
+      expect(refreshedEntry.finalScore).toBe(4);
+      expect(refreshedEntry.executionStatus).toBe("SUCCESS");
+
+      const refreshedResponse = await prisma.blockEntryResponse.findFirstOrThrow({
+        where: { entryId: entry.id, year: 2026 },
+        select: {
+          computedOutput: true,
+        },
+      });
+      expect(refreshedResponse.computedOutput).toMatchObject({
+        publication_count: 40,
+        faculty_count: 10,
+        pub_per_faculty: 4,
+        value: 4,
+      });
+    });
+  });
+
+  test("grade band matching uses half-open ranges so boundary values fall into the upper band", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkspaceFixture({
+        tracker,
+        criteria: [
+          {
+            blockCode: "CR1",
+            title: "Boundary Metric",
+            maxScore: 100,
+          },
+        ],
+      });
+
+      await prisma.accreditationGradeBand.createMany({
+        data: [
+          {
+            versionId: fixture.version.id,
+            gradeLabel: "B",
+            scoreMin: 0,
+            scoreMax: 50,
+            outcome: "Boundary lower band",
+            sortOrder: 0,
+          },
+          {
+            versionId: fixture.version.id,
+            gradeLabel: "A",
+            scoreMin: 50,
+            scoreMax: 100,
+            outcome: "Boundary upper band",
+            sortOrder: 1,
+          },
+        ],
+      });
+
+      const entry = fixture.entriesByCode.get("CR1");
+      expect(entry).toBeDefined();
+      if (!entry) {
+        throw new Error("Boundary fixture entry was not created.");
+      }
+
+      const saved = await setBlockEntryResponse(
+        entry.id,
+        fixture.tenant.id,
+        { year: 2026, numericValue: 50 },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(saved).toMatchObject({ status: "success" });
+
+      const scoring = await computeAssessmentWorkspaceScores(
+        fixture.workspaceId,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(scoring).toMatchObject({ status: "success" });
+      if (scoring.status !== "success") {
+        throw new Error(scoring.message);
+      }
+
+      const workspace = await prisma.assessmentWorkspace.findUniqueOrThrow({
+        where: { id: fixture.workspaceId },
+        select: {
+          overallRawScore: true,
+          resolvedGrade: true,
+          resolvedOutcome: true,
+        },
+      });
+      expect(workspace.overallRawScore).toBe(50);
+      expect(workspace.resolvedGrade).toBe("A");
+      expect(workspace.resolvedOutcome).toBe("Boundary upper band");
     });
   });
 
@@ -816,11 +1014,11 @@ describe("accreditation workspace core filing", () => {
       );
       expect(reopenedAttempt).toMatchObject({ status: "success" });
 
-      const latestYearData = await prisma.blockEntryYearValue.findUniqueOrThrow({
+      const latestYearData = await prisma.blockEntryResponse.findUniqueOrThrow({
         where: {
-          entryId_year: {
+          entryId_scopeKey: {
             entryId: entry.id,
-            year: 2026,
+            scopeKey: "YEAR:2026",
           },
         },
       });
@@ -1070,16 +1268,16 @@ describe("accreditation workspace core filing", () => {
       }
 
       const cloneWorkspaceId = (cloned.workspace as { id: string }).id;
-      const clonedRows = await prisma.blockEntryYearValue.findMany({
+      const clonedRows = await prisma.blockEntryResponse.findMany({
         where: {
           entry: {
             workspaceId: cloneWorkspaceId,
           },
         },
         select: {
+          scopeKey: true,
           year: true,
-          actualValue: true,
-          textValue: true,
+          responseData: true,
           dataSource: true,
           sourceRef: true,
         },
@@ -1090,13 +1288,17 @@ describe("accreditation workspace core filing", () => {
         expect.arrayContaining([
           expect.objectContaining({
             year: 2026,
-            actualValue: 18,
+            responseData: expect.objectContaining({
+              value: 18,
+            }),
             dataSource: "CLONED",
             sourceRef: fixture.workspaceId,
           }),
           expect.objectContaining({
             year: 2026,
-            textValue: "Narrative evidence collected",
+            responseData: expect.objectContaining({
+              narrative: "Narrative evidence collected",
+            }),
             dataSource: "CLONED",
             sourceRef: fixture.workspaceId,
           }),
@@ -1643,7 +1845,7 @@ describe("accreditation workspace core filing", () => {
       );
       expect(appliedReuse).toMatchObject({ status: "success", copiedRows: 1 });
 
-      const reusedRows = await prisma.blockEntryYearValue.findMany({
+      const reusedRows = await prisma.blockEntryResponse.findMany({
         where: {
           entryId: entry.id,
         },
@@ -1653,7 +1855,9 @@ describe("accreditation workspace core filing", () => {
         expect.arrayContaining([
           expect.objectContaining({
             year: 2025,
-            actualValue: 64,
+            responseData: expect.objectContaining({
+              value: 64,
+            }),
             dataSource: "CLONED",
             sourceRef: sourceWorkspaceId,
           }),
@@ -2022,16 +2226,18 @@ describe("accreditation workspace projections", () => {
         throw new Error(applied.message);
       }
 
-      const projectedYearData = await prisma.blockEntryYearValue.findUnique({
+      const projectedYearData = await prisma.blockEntryResponse.findUnique({
         where: {
-          entryId_year: {
+          entryId_scopeKey: {
             entryId: entry.id,
-            year: 2024,
+            scopeKey: "YEAR:2024",
           },
         },
       });
       expect(projectedYearData).toMatchObject({
-        actualValue: 93,
+        responseData: expect.objectContaining({
+          value: 93,
+        }),
         dataSource: "PROJECTED",
         sourceRef: applied.recipe.id,
       });
@@ -2076,16 +2282,18 @@ describe("accreditation workspace projections", () => {
       );
       expect(refreshed).toMatchObject({ status: "success", appliedCount: 1 });
 
-      const refreshedYearData = await prisma.blockEntryYearValue.findUnique({
+      const refreshedYearData = await prisma.blockEntryResponse.findUnique({
         where: {
-          entryId_year: {
+          entryId_scopeKey: {
             entryId: entry.id,
-            year: 2024,
+            scopeKey: "YEAR:2024",
           },
         },
       });
       expect(refreshedYearData).toMatchObject({
-        actualValue: 101,
+        responseData: expect.objectContaining({
+          value: 101,
+        }),
         dataSource: "PROJECTED",
         sourceRef: applied.recipe.id,
       });
@@ -2098,16 +2306,18 @@ describe("accreditation workspace projections", () => {
       );
       expect(detached).toMatchObject({ status: "success", detachedCount: 1 });
 
-      const detachedYearData = await prisma.blockEntryYearValue.findUnique({
+      const detachedYearData = await prisma.blockEntryResponse.findUnique({
         where: {
-          entryId_year: {
+          entryId_scopeKey: {
             entryId: entry.id,
-            year: 2024,
+            scopeKey: "YEAR:2024",
           },
         },
       });
       expect(detachedYearData).toMatchObject({
-        actualValue: 101,
+        responseData: expect.objectContaining({
+          value: 101,
+        }),
         dataSource: "MANUAL",
         sourceRef: null,
       });
@@ -2307,9 +2517,20 @@ describe("accreditation workspace projections", () => {
         },
       });
 
+      const sourceResponse = await prisma.blockEntryResponse.create({
+        data: {
+          entryId: sourceEntry.id,
+          scopeKey: "YEAR:2024",
+          year: 2024,
+          responseData: {},
+          dataSource: "MANUAL",
+        },
+      });
+
       const tableInstance = await prisma.blockEntryTableInstance.create({
         data: {
           entryId: sourceEntry.id,
+          responseId: sourceResponse.id,
           year: 2024,
           scopeKey: "YEAR:2024",
           fieldKey: "publication_list",
@@ -2415,16 +2636,18 @@ describe("accreditation workspace projections", () => {
       );
       expect(applied).toMatchObject({ status: "success", appliedCount: 1 });
 
-      const importedYearData = await prisma.blockEntryYearValue.findUnique({
+      const importedYearData = await prisma.blockEntryResponse.findUnique({
         where: {
-          entryId_year: {
+          entryId_scopeKey: {
             entryId: targetEntry.id,
-            year: 2024,
+            scopeKey: "YEAR:2024",
           },
         },
       });
       expect(importedYearData).toMatchObject({
-        actualValue: 2,
+        responseData: expect.objectContaining({
+          value: 2,
+        }),
         dataSource: "PROJECTED",
       });
     });

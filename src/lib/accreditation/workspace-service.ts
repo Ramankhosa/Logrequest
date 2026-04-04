@@ -5,6 +5,8 @@ import {
   ProjectionRunType,
   ProjectionSourceKind,
   ProjectionStorageMode,
+  CriterionBlockType,
+  CriterionBlockVisibility,
   CriterionDataType,
   BlockEntryStatus,
   CriterionYearAggregation,
@@ -26,6 +28,7 @@ import { createBulkNotifications } from "@/lib/notifications/notification-servic
 import { prisma } from "@/lib/prisma";
 import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import { hasTenantServiceEnabled } from "@/lib/tenant-services/service";
+import { executeBlockScoringEngine } from "./block-execution-engine";
 import { parseWorkspaceImportFile } from "./workspace-import";
 
 type DbClient = typeof prisma | Prisma.TransactionClient;
@@ -71,12 +74,22 @@ type WorkspaceScoringCriterion = {
   parentId: string | null;
   blockCode: string;
   title: string;
+  blockType: CriterionBlockType;
+  visibility: CriterionBlockVisibility;
+  contributesToTotal: boolean;
+  isSectionRoot: boolean;
   dataType: CriterionDataType;
   yearAggregation: CriterionYearAggregation;
   yearAggregationConfig: Prisma.JsonValue | null;
   maxScore: number | null;
   depth: number;
   isLeaf: boolean;
+  inputSchema: Prisma.JsonValue | null;
+  outputSchema: Prisma.JsonValue | null;
+  calculationRule: Prisma.JsonValue | null;
+  scoringRule: Prisma.JsonValue | null;
+  dependencyRules: Prisma.JsonValue | null;
+  sourceLinks: Prisma.JsonValue | null;
   expectedEvidence: Prisma.JsonValue | null;
   scoringSlabs: Array<{
     rangeMin: number | null;
@@ -123,6 +136,14 @@ type WorkspaceScoreComputation = {
     blockId: string;
     computedScore: number | null;
     finalScore: number | null;
+    executionStatus: string | null;
+    executionMeta: Prisma.JsonObject;
+    lastExecutionHash: string;
+  }>;
+  responseUpdates: Array<{
+    responseId: string;
+    computedOutput: Prisma.JsonObject;
+    computedScore: number | null;
   }>;
   dataSourceCounts: Record<string, number>;
 };
@@ -146,6 +167,29 @@ type WorkspaceSectionDefinition = {
   title: string;
   leafEntries: WorkspaceSectionLeafEntry[];
 };
+
+type BlockResponseLike = {
+  id?: string;
+  entryId?: string;
+  scopeKey: string;
+  year: number | null;
+  responseData: Prisma.JsonValue;
+  responseMetadata?: Prisma.JsonValue | null;
+  computedOutput?: Prisma.JsonValue | null;
+  computedScore?: number | null;
+  dataSource: BlockEntryValueSource;
+  sourceRef?: string | null;
+  remarks?: string | null;
+  updatedAt?: Date;
+};
+
+type ResponsePath = "response.value" | "response.narrative";
+type LegacyCompatibleResponsePath = ResponsePath | "actualValue" | "textValue";
+
+const DEFAULT_RESPONSE_SCOPE_KEY = "DEFAULT";
+const DEFAULT_NUMERIC_RESPONSE_KEY = "value";
+const DEFAULT_TEXT_RESPONSE_KEY = "narrative";
+const responsePathSchema = z.enum(["response.value", "response.narrative", "actualValue", "textValue"]);
 
 const workspaceCreateSchema = z.object({
   versionId: z.string().trim().min(1),
@@ -192,12 +236,40 @@ const milestoneUpdateSchema = z.object({
 });
 
 const responsesInputSchema = z.object({
-  year: z.number().int(),
+  year: z.number().int().nullable().optional(),
+  scopeKey: z.string().trim().min(1).max(120).nullable().optional(),
+  responseData: z.record(z.string(), z.any()).optional(),
+  responseMetadata: z.record(z.string(), z.any()).nullable().optional(),
   numericValue: z.number().nullable().optional(),
   textValue: z.string().trim().max(12000).nullable().optional(),
   remarks: z.string().trim().max(2000).nullable().optional(),
   expectedUpdatedAt: z.coerce.date().nullable().optional(),
   reason: z.string().trim().max(500).nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.year === undefined && !normalizeNullableString(value.scopeKey)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide a response year or scopeKey.",
+      path: ["year"],
+    });
+  }
+
+  const responseData = asJsonObject((value.responseData ?? null) as Prisma.JsonValue | null);
+  const numericValue =
+    value.numericValue ?? (typeof responseData?.[DEFAULT_NUMERIC_RESPONSE_KEY] === "number"
+      ? responseData[DEFAULT_NUMERIC_RESPONSE_KEY]
+      : null);
+  const textCandidate = responseData?.[DEFAULT_TEXT_RESPONSE_KEY];
+  const textValue =
+    normalizeNullableString(value.textValue) ??
+    (typeof textCandidate === "string" ? normalizeNullableString(textCandidate) : null);
+  if (numericValue === null && !textValue && !responseData) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide responseData or at least one numeric/text response value.",
+      path: ["responseData"],
+    });
+  }
 });
 
 const entryStatusInputSchema = z.object({
@@ -372,11 +444,11 @@ const entryProjectionInputSchema = z
     sourceEntryId: z.string().trim().min(1).optional(),
     sourceMetricId: z.string().trim().min(1).optional(),
     sourceTableFieldKey: z.string().trim().min(1).max(120).optional(),
-    sourcePath: z.enum(["actualValue", "textValue"]).optional(),
+    sourcePath: responsePathSchema.optional(),
     filters: projectionFilterSchema.optional(),
     transform: projectionTransformSchema.optional(),
     targetYear: z.number().int().optional(),
-    targetPath: z.enum(["actualValue", "textValue"]).default("actualValue"),
+    targetPath: responsePathSchema.default("response.value"),
     storageMode: z.nativeEnum(ProjectionStorageMode).default(ProjectionStorageMode.COPY),
   })
   .superRefine((value, ctx) => {
@@ -417,7 +489,129 @@ function hashProjectionPayload(value: unknown) {
 }
 
 function buildScopeKey(year: number | null | undefined) {
-  return year === null || year === undefined ? "STATIC" : `YEAR:${year}`;
+  return year === null || year === undefined ? DEFAULT_RESPONSE_SCOPE_KEY : `YEAR:${year}`;
+}
+
+function normalizeResponsePath(path: LegacyCompatibleResponsePath | string | null | undefined): ResponsePath {
+  if (path === "textValue" || path === "response.narrative") {
+    return "response.narrative";
+  }
+  return "response.value";
+}
+
+function buildResponseScopeKey(input: { year?: number | null; scopeKey?: string | null }) {
+  const normalizedScopeKey = normalizeNullableString(input.scopeKey);
+  if (normalizedScopeKey) {
+    return normalizedScopeKey;
+  }
+  return buildScopeKey(input.year ?? null);
+}
+
+function buildResponseData(input: {
+  existingData?: Prisma.JsonValue | null;
+  numericValue?: number | null;
+  textValue?: string | null;
+  responseData?: Prisma.JsonValue | null;
+}) {
+  const base = {
+    ...(asJsonObject(input.existingData) ?? {}),
+    ...(asJsonObject(input.responseData) ?? {}),
+  } satisfies Prisma.JsonObject;
+  if (input.numericValue !== undefined) {
+    base[DEFAULT_NUMERIC_RESPONSE_KEY] = input.numericValue;
+  }
+  if (input.textValue !== undefined) {
+    base[DEFAULT_TEXT_RESPONSE_KEY] = input.textValue;
+  }
+  return base;
+}
+
+function getResponseNumericValue(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
+  if (!response) {
+    return null;
+  }
+  const data = asJsonObject(response.responseData);
+  const value = data?.[DEFAULT_NUMERIC_RESPONSE_KEY];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function getResponseTextValue(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
+  if (!response) {
+    return null;
+  }
+  const data = asJsonObject(response.responseData);
+  const value = data?.[DEFAULT_TEXT_RESPONSE_KEY];
+  return typeof value === "string" ? normalizeNullableString(value) : null;
+}
+
+function getResponseYear(response: Pick<BlockResponseLike, "year" | "scopeKey">) {
+  if (response.year !== null && response.year !== undefined) {
+    return response.year;
+  }
+  const match = response.scopeKey.match(/^YEAR:(\d{4})$/);
+  return match ? Number(match[1]) : null;
+}
+
+function hasResponseContent(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
+  return getResponseNumericValue(response) !== null || !!getResponseTextValue(response);
+}
+
+function buildDefaultResponseMetadata(input: {
+  existingMetadata?: Prisma.JsonValue | null;
+  dataSource: BlockEntryValueSource;
+  sourceRef?: string | null;
+  actorUserId?: string | null;
+  numericTouched?: boolean;
+  textTouched?: boolean;
+  responseMetadata?: Prisma.JsonValue | null;
+  linkedPaths?: ResponsePath[];
+}) {
+  const nextMetadata = {
+    ...(asJsonObject(input.existingMetadata) ?? {}),
+    ...(asJsonObject(input.responseMetadata) ?? {}),
+  } satisfies Prisma.JsonObject;
+  const fields = {
+    ...(asJsonObject(nextMetadata.fields as Prisma.JsonValue | undefined) ?? {}),
+  } satisfies Prisma.JsonObject;
+  const timestamp = new Date().toISOString();
+  const lockedPaths = new Set(input.linkedPaths ?? []);
+
+  if (input.numericTouched) {
+    fields[DEFAULT_NUMERIC_RESPONSE_KEY] = {
+      sourceType: input.dataSource,
+      sourceRef: input.sourceRef ?? null,
+      updatedByUserId: input.actorUserId ?? null,
+      updatedAt: timestamp,
+      locked: lockedPaths.has("response.value"),
+    } satisfies Prisma.JsonObject;
+  }
+
+  if (input.textTouched) {
+    fields[DEFAULT_TEXT_RESPONSE_KEY] = {
+      sourceType: input.dataSource,
+      sourceRef: input.sourceRef ?? null,
+      updatedByUserId: input.actorUserId ?? null,
+      updatedAt: timestamp,
+      locked: lockedPaths.has("response.narrative"),
+    } satisfies Prisma.JsonObject;
+  }
+
+  nextMetadata.fields = fields;
+  return nextMetadata;
+}
+
+function getResponsePathValue(
+  response: Pick<BlockResponseLike, "responseData"> | null | undefined,
+  path: ResponsePath,
+) {
+  return path === "response.value" ? getResponseNumericValue(response) : getResponseTextValue(response);
 }
 
 function sectionSelectionMatches(
@@ -621,12 +815,12 @@ function resolveAggregationWeights(
 
 function aggregateNumericYearData(
   block: Pick<WorkspaceScoringCriterion, "yearAggregation" | "yearAggregationConfig">,
-  rows: Array<{ year: number; actualValue: number | null }>,
+  rows: Array<{ year: number; value: number | null }>,
 ) {
   const values = rows
-    .filter((row) => row.actualValue !== null)
+    .filter((row) => row.value !== null)
     .sort((left, right) => left.year - right.year)
-    .map((row) => ({ year: row.year, value: row.actualValue! }));
+    .map((row) => ({ year: row.year, value: row.value! }));
 
   if (values.length === 0) {
     return null;
@@ -1542,6 +1736,17 @@ async function buildWorkspaceScoringContext(tx: DbClient, workspaceId: string) {
           responses: {
             orderBy: { year: "asc" },
           },
+          tableInstances: {
+            include: {
+              rows: {
+                orderBy: { rowIndex: "asc" },
+                include: {
+                  cells: true,
+                },
+              },
+            },
+            orderBy: [{ fieldKey: "asc" }],
+          },
         },
       },
     },
@@ -1573,249 +1778,110 @@ async function buildWorkspaceScoringContext(tx: DbClient, workspaceId: string) {
 function computeWorkspaceScoresFromContext(
   context: NonNullable<Awaited<ReturnType<typeof buildWorkspaceScoringContext>>>,
 ): WorkspaceScoreComputation {
-  const criterionById = new Map<string, WorkspaceScoringCriterion>(
-    context.criteria.map((block) => [
-      block.id,
-      {
-        id: block.id,
-        parentId: block.parentId,
-        blockCode: block.blockCode,
-        title: block.title,
-        dataType: block.dataType,
-        yearAggregation: block.yearAggregation,
-        yearAggregationConfig: block.yearAggregationConfig,
-        maxScore: block.maxScore,
-        depth: block.depth,
-        isLeaf: block.isLeaf,
-        expectedEvidence: block.expectedEvidence,
-        scoringSlabs: block.scoringSlabs.map((slab) => ({
-          rangeMin: slab.rangeMin,
-          rangeMax: slab.rangeMax,
-          pointsAwarded: slab.pointsAwarded,
-          sortOrder: slab.sortOrder,
+  const engineResult = executeBlockScoringEngine({
+    workspace: {
+      version: {
+        scoreBase: context.workspace.version.scoreBase,
+        convertedScaleMax: context.workspace.version.convertedScaleMax,
+        conversionType: context.workspace.version.conversionType ?? null,
+        conversionFactor: context.workspace.version.conversionFactor ?? null,
+        gradeBands: context.workspace.version.gradeBands.map((band) => ({
+          gradeLabel: band.gradeLabel,
+          scoreMin: band.scoreMin,
+          scoreMax: band.scoreMax,
+          outcome: band.outcome,
+          sortOrder: band.sortOrder,
+        })),
+        thresholdRules: context.workspace.version.thresholdRules.map((rule) => ({
+          thresholdType: rule.thresholdType,
+          blockId: rule.blockId,
+          minValue: rule.minValue,
+          outcome: rule.outcome,
+          description: rule.description ?? null,
         })),
       },
-    ]),
-  );
-  const childrenByParent = new Map<string | null, string[]>();
-  for (const block of context.criteria) {
-    const existing = childrenByParent.get(block.parentId) ?? [];
-    existing.push(block.id);
-    childrenByParent.set(block.parentId, existing);
-  }
-
-  const profileWeightMap = new Map(
-    context.workspace.profile.weightOverrides.map((weight) => [weight.blockId, weight.maxScore]),
-  );
-  const entryByBlockId = new Map(context.workspace.entries.map((entry) => [entry.blockId, entry]));
-  const maxCache = new Map<string, number | null>();
-
-  const resolveEffectiveMaxScore = (blockId: string): number | null => {
-    const cached = maxCache.get(blockId);
-    if (cached !== undefined) {
-      return cached;
-    }
-
-    const block = criterionById.get(blockId);
-    if (!block) {
-      maxCache.set(blockId, null);
-      return null;
-    }
-
-    const weightedMax = profileWeightMap.get(blockId);
-    if (weightedMax !== undefined) {
-      maxCache.set(blockId, weightedMax);
-      return weightedMax;
-    }
-
-    if (block.maxScore !== null) {
-      maxCache.set(blockId, block.maxScore);
-      return block.maxScore;
-    }
-
-    const childIds = childrenByParent.get(blockId) ?? [];
-    if (childIds.length === 0) {
-      maxCache.set(blockId, null);
-      return null;
-    }
-
-    const total = childIds.reduce((sum, childId) => sum + (resolveEffectiveMaxScore(childId) ?? 0), 0);
-    const resolved = total > 0 ? total : null;
-    maxCache.set(blockId, resolved);
-    return resolved;
-  };
-
-  const blockScores = new Map<string, WorkspaceScoreRow>();
-  const leafEntryUpdates: WorkspaceScoreComputation["leafEntryUpdates"] = [];
-  const dataSourceCounts = new Map<string, number>();
-
-  for (const entry of context.workspace.entries) {
-    for (const responses of entry.responses) {
-      dataSourceCounts.set(
-        responses.dataSource,
-        (dataSourceCounts.get(responses.dataSource) ?? 0) + 1,
-      );
-    }
-  }
-
-  for (const block of context.criteria.filter((item) => item.isLeaf)) {
-    const entry = entryByBlockId.get(block.id);
-    const effectiveMax = resolveEffectiveMaxScore(block.id);
-    const aggregatedValue =
-      block.dataType === CriterionDataType.QUALITATIVE || !entry
-        ? null
-        : aggregateNumericYearData(
-            block,
-            entry.responses.map((row) => ({
-              year: row.year,
-              actualValue: row.actualValue,
+      profile: {
+        weightOverrides: context.workspace.profile.weightOverrides.map((weight) => ({
+          blockId: weight.blockId,
+          maxScore: weight.maxScore,
+        })),
+      },
+      entries: context.workspace.entries.map((entry) => ({
+        id: entry.id,
+        blockId: entry.blockId,
+        status: entry.status,
+        manualOverride: entry.manualOverride,
+        manualOverrideForced: entry.manualOverrideForced,
+        responses: entry.responses.map((response) => ({
+          id: response.id,
+          scopeKey: response.scopeKey,
+          year: response.year,
+          responseData: response.responseData,
+          responseMetadata: response.responseMetadata,
+          dataSource: response.dataSource,
+          sourceRef: response.sourceRef,
+        })),
+        tableInstances: entry.tableInstances.map((instance) => ({
+          responseId: instance.responseId,
+          scopeKey: instance.scopeKey,
+          fieldKey: instance.fieldKey,
+          rows: instance.rows.map((row) => ({
+            rowKey: row.rowKey,
+            dimensions: row.dimensions,
+            cells: row.cells.map((cell) => ({
+              columnKey: cell.columnKey,
+              numberValue: cell.numberValue,
+              textValue: cell.textValue,
+              booleanValue: cell.booleanValue,
+              dateValue: cell.dateValue,
+              jsonValue: cell.jsonValue,
             })),
-          );
-
-    let computedScore: number | null = null;
-    if (entry) {
-      if (block.dataType === CriterionDataType.QUALITATIVE) {
-        computedScore = null;
-      } else if (aggregatedValue !== null) {
-        if (block.scoringSlabs.length > 0) {
-          const matchingSlab = block.scoringSlabs.find((slab) =>
-            matchesScoringSlab(aggregatedValue, slab),
-          );
-          computedScore = matchingSlab ? matchingSlab.pointsAwarded : null;
-        } else {
-          computedScore = aggregatedValue;
-        }
-      }
-    }
-
-    const normalizedComputedScore = roundScore(
-      computedScore === null ? null : clampScore(computedScore, effectiveMax),
-    );
-    const finalScore = roundScore(
-      entry?.manualOverride !== null && entry?.manualOverride !== undefined
-        ? entry.manualOverride
-        : normalizedComputedScore,
-    );
-
-    const row: WorkspaceScoreRow = {
-      blockId: block.id,
+          })),
+        })),
+      })),
+      periodStart: context.workspace.periodStart,
+      periodEnd: context.workspace.periodEnd,
+    },
+    criteria: context.criteria.map((block) => ({
+      id: block.id,
+      parentId: block.parentId,
       blockCode: block.blockCode,
       title: block.title,
+      blockType: block.blockType,
+      visibility: block.visibility,
+      contributesToTotal: block.contributesToTotal,
+      isSectionRoot: block.isSectionRoot,
+      dataType: block.dataType,
+      yearAggregation: block.yearAggregation,
+      yearAggregationConfig: block.yearAggregationConfig,
+      maxScore: block.maxScore,
       depth: block.depth,
-      isLeaf: true,
-      maxScore: effectiveMax,
-      aggregatedValue: roundScore(aggregatedValue),
-      computedScore: normalizedComputedScore,
-      finalScore,
-      percentage:
-        effectiveMax && finalScore !== null && effectiveMax > 0
-          ? roundScore((finalScore / effectiveMax) * 100)
-          : null,
-      status: entry?.status ?? null,
-    };
-    blockScores.set(block.id, row);
-
-    if (entry) {
-      leafEntryUpdates.push({
-        entryId: entry.id,
-        blockId: block.id,
-        computedScore: normalizedComputedScore,
-        finalScore,
-      });
-    }
-  }
-
-  const criteriaByDescendingDepth = [...context.criteria].sort((left, right) => right.depth - left.depth);
-  for (const block of criteriaByDescendingDepth.filter((item) => !item.isLeaf)) {
-    const childIds = childrenByParent.get(block.id) ?? [];
-    const childScores = childIds
-      .map((childId) => blockScores.get(childId)?.finalScore ?? null)
-      .filter((value): value is number => value !== null);
-    const summedScore = childScores.length > 0 ? childScores.reduce((sum, value) => sum + value, 0) : null;
-    const effectiveMax = resolveEffectiveMaxScore(block.id);
-    const finalScore = roundScore(summedScore === null ? null : clampScore(summedScore, effectiveMax));
-
-    blockScores.set(block.id, {
-      blockId: block.id,
-      blockCode: block.blockCode,
-      title: block.title,
-      depth: block.depth,
-      isLeaf: false,
-      maxScore: effectiveMax,
-      aggregatedValue: null,
-      computedScore: finalScore,
-      finalScore,
-      percentage:
-        effectiveMax && finalScore !== null && effectiveMax > 0
-          ? roundScore((finalScore / effectiveMax) * 100)
-          : null,
-      status: null,
-    });
-  }
-
-  const rootBlockIds = context.criteria
-    .filter((block) => block.parentId === null)
-    .map((block) => block.id);
-  const overallRawScore = roundScore(
-    rootBlockIds.reduce((sum, blockId) => sum + (blockScores.get(blockId)?.finalScore ?? 0), 0),
-  );
-  const overallConvertedScore =
-    overallRawScore !== null
-      ? roundScore(
-          context.workspace.version.convertedScaleMax && context.workspace.version.scoreBase > 0
-            ? (overallRawScore / context.workspace.version.scoreBase) *
-                context.workspace.version.convertedScaleMax
-            : overallRawScore,
-        )
-      : null;
-  const gradeBasis = overallConvertedScore ?? overallRawScore;
-  const matchingBand =
-    gradeBasis === null
-      ? null
-      : context.workspace.version.gradeBands.find(
-          (band) => gradeBasis >= band.scoreMin && gradeBasis <= band.scoreMax,
-        ) ?? null;
-
-  const thresholdViolations = context.workspace.version.thresholdRules
-    .map((rule) => {
-      const criterionScore = rule.blockId
-        ? blockScores.get(rule.blockId)?.finalScore ?? null
-        : overallConvertedScore ?? overallRawScore;
-      const blockCode = rule.blockId
-        ? blockScores.get(rule.blockId)?.blockCode ?? null
-        : null;
-      if (criterionScore === null || criterionScore >= rule.minValue) {
-        return null;
-      }
-      return {
-        thresholdType: rule.thresholdType,
-        blockId: rule.blockId,
-        blockCode,
-        actualValue: roundScore(criterionScore),
-        minValue: rule.minValue,
-        outcome: rule.outcome,
-        description: rule.description ?? null,
-      };
-    })
-    .filter((item): item is NonNullable<typeof item> => item !== null);
-
-  const criterionScoreRecord = Object.fromEntries(
-    [...blockScores.entries()].map(([blockId, row]) => [blockId, row]),
-  );
+      isLeaf: block.isLeaf,
+      inputSchema: block.inputSchema,
+      outputSchema: block.outputSchema,
+      calculationRule: block.calculationRule,
+      scoringRule: block.scoringRule,
+      dependencyRules: block.dependencyRules,
+      sourceLinks: block.sourceLinks,
+      scoringSlabs: block.scoringSlabs.map((slab) => ({
+        rangeMin: slab.rangeMin,
+        rangeMax: slab.rangeMax,
+        pointsAwarded: slab.pointsAwarded,
+        sortOrder: slab.sortOrder,
+      })),
+    })),
+  });
 
   return {
-    overallRawScore,
-    overallConvertedScore,
-    resolvedGrade: matchingBand?.gradeLabel ?? null,
-    resolvedOutcome:
-      thresholdViolations[0]?.outcome ?? matchingBand?.outcome ?? null,
-    thresholdResult: {
-      passed: thresholdViolations.length === 0,
-      violations: thresholdViolations,
-    },
-    blockScores: criterionScoreRecord,
-    leafEntryUpdates,
-    dataSourceCounts: Object.fromEntries(dataSourceCounts.entries()),
+    overallRawScore: engineResult.overallRawScore,
+    overallConvertedScore: engineResult.overallConvertedScore,
+    resolvedGrade: engineResult.resolvedGrade,
+    resolvedOutcome: engineResult.resolvedOutcome,
+    thresholdResult: engineResult.thresholdResult,
+    blockScores: engineResult.blockScores,
+    leafEntryUpdates: engineResult.leafEntryUpdates,
+    responseUpdates: engineResult.responseUpdates,
+    dataSourceCounts: engineResult.dataSourceCounts,
   };
 }
 
@@ -1825,12 +1891,26 @@ async function applyWorkspaceScores(
   scoring: WorkspaceScoreComputation,
   markFresh: boolean,
 ) {
+  for (const update of scoring.responseUpdates) {
+    await tx.blockEntryResponse.update({
+      where: { id: update.responseId },
+      data: {
+        computedOutput: update.computedOutput as Prisma.InputJsonValue,
+        computedScore: update.computedScore,
+      },
+    });
+  }
+
   for (const update of scoring.leafEntryUpdates) {
     await tx.blockEntry.update({
       where: { id: update.entryId },
       data: {
         computedScore: update.computedScore,
         finalScore: update.finalScore,
+        executionStatus: update.executionStatus,
+        executionMeta: update.executionMeta as Prisma.InputJsonValue,
+        lastExecutionHash: update.lastExecutionHash,
+        lastComputedAt: new Date(),
       },
     });
   }
@@ -2140,11 +2220,16 @@ function validateYearDataByCriterion(input: {
   };
   numericValue: number | null;
   textValue: string | null;
+  responseData?: Prisma.JsonValue | null;
 }) {
   const { block, numericValue, textValue } = input;
+  const responseData = asJsonObject(input.responseData);
+  const hasStructuredResponseFields = !!responseData && Object.keys(responseData).some(
+    (key) => key !== DEFAULT_NUMERIC_RESPONSE_KEY && key !== DEFAULT_TEXT_RESPONSE_KEY,
+  );
 
   if (block.dataType === CriterionDataType.QUANTITATIVE) {
-    if (numericValue === null) {
+    if (numericValue === null && !hasStructuredResponseFields) {
       return `${block.title} requires a numeric value.`;
     }
   }
@@ -2156,7 +2241,7 @@ function validateYearDataByCriterion(input: {
   }
 
   if (block.dataType === CriterionDataType.HYBRID) {
-    if (numericValue === null && !textValue) {
+    if (numericValue === null && !textValue && !hasStructuredResponseFields) {
       return `${block.title} requires a numeric value, text narrative, or both.`;
     }
   }
@@ -2368,8 +2453,9 @@ export async function listAssessmentWorkspaces(
           responses: {
             select: {
               id: true,
-              actualValue: true,
-              textValue: true,
+              scopeKey: true,
+              year: true,
+              responseData: true,
             },
           },
         },
@@ -2398,8 +2484,7 @@ export async function listAssessmentWorkspaces(
     ).length;
     const populatedYearCells = workspace.entries.reduce(
       (sum, entry) =>
-        sum +
-        entry.responses.filter((row) => row.actualValue !== null || row.textValue !== null).length,
+        sum + entry.responses.filter((row) => hasResponseContent(row)).length,
       0,
     );
     const expectedYearCells = totalEntries * yearSpan;
@@ -2568,8 +2653,7 @@ export async function getAssessmentWorkspace(
   ).length;
   const populatedYearCells = workspace.entries.reduce(
     (sum, entry) =>
-      sum +
-      entry.responses.filter((row) => row.actualValue !== null || row.textValue !== null).length,
+      sum + entry.responses.filter((row) => hasResponseContent(row)).length,
     0,
   );
   const expectedYearCells = totalEntries * yearSpan;
@@ -2917,7 +3001,7 @@ export async function setBlockEntryResponse(
 ) {
   const parsed = responsesInputSchema.safeParse(input);
   if (!parsed.success) {
-    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid year data." } satisfies ErrorResult;
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid response data." } satisfies ErrorResult;
   }
 
   const entry = await prisma.blockEntry.findUnique({
@@ -2975,21 +3059,46 @@ export async function setBlockEntryResponse(
   }
 
   if (!entry.block.isLeaf) {
-    return { status: "error", message: "Only leaf criteria can capture year data." } satisfies ErrorResult;
+    return { status: "error", message: "Only leaf blocks can capture response data." } satisfies ErrorResult;
   }
 
-  const { startYear, endYear } = getWorkspaceYearBounds(entry.workspace.periodStart, entry.workspace.periodEnd);
-  if (parsed.data.year < startYear || parsed.data.year > endYear) {
+  const responseYear = parsed.data.year ?? null;
+  const scopeKey = buildResponseScopeKey({
+    year: responseYear,
+    scopeKey: parsed.data.scopeKey,
+  });
+
+  if (responseYear !== null) {
+    const { startYear, endYear } = getWorkspaceYearBounds(entry.workspace.periodStart, entry.workspace.periodEnd);
+    if (responseYear < startYear || responseYear > endYear) {
+      return {
+        status: "error",
+        message: `Year ${responseYear} is outside the workspace period (${startYear}-${endYear}).`,
+      } satisfies ErrorResult;
+    }
+  }
+
+  const liveProjectionLocks = await findActiveLiveProjectionTargetPaths(entryId, scopeKey);
+  const responsePayload = buildResponseData({
+    responseData: (parsed.data.responseData ?? null) as Prisma.JsonValue | null,
+    numericValue: parsed.data.numericValue ?? undefined,
+    textValue: normalizeNullableString(parsed.data.textValue) ?? undefined,
+  });
+  const numericValue = getResponseNumericValue({ responseData: responsePayload });
+  const textValue = getResponseTextValue({ responseData: responsePayload });
+
+  if (
+    (parsed.data.numericValue !== undefined || getResponseNumericValue({ responseData: (parsed.data.responseData ?? null) as Prisma.JsonValue | null }) !== null) &&
+    liveProjectionLocks.has("response.value")
+  ) {
     return {
       status: "error",
-      message: `Year ${parsed.data.year} is outside the workspace period (${startYear}-${endYear}).`,
+      message: "This data is linked to a live projection. Detach the projection before editing it manually.",
     } satisfies ErrorResult;
   }
-
-  const liveProjectionLocks = await findActiveLiveProjectionTargetPaths(entryId, parsed.data.year);
   if (
-    (parsed.data.numericValue !== undefined && liveProjectionLocks.has("actualValue")) ||
-    (parsed.data.textValue !== undefined && liveProjectionLocks.has("textValue"))
+    (parsed.data.textValue !== undefined || textValue !== null) &&
+    liveProjectionLocks.has("response.narrative")
   ) {
     return {
       status: "error",
@@ -2997,23 +3106,22 @@ export async function setBlockEntryResponse(
     } satisfies ErrorResult;
   }
 
-  const numericValue = parsed.data.numericValue ?? null;
-  const textValue = normalizeNullableString(parsed.data.textValue);
   const validationError = validateYearDataByCriterion({
     block: entry.block,
     numericValue,
     textValue,
+    responseData: (parsed.data.responseData ?? null) as Prisma.JsonValue | null,
   });
   if (validationError) {
     return { status: "error", message: validationError } satisfies ErrorResult;
   }
 
   const updated = await prisma.$transaction(async (tx) => {
-    const existing = await tx.blockEntryYearValue.findUnique({
+    const existing = await tx.blockEntryResponse.findUnique({
       where: {
-        entryId_year: {
+        entryId_scopeKey: {
           entryId,
-          year: parsed.data.year,
+          scopeKey,
         },
       },
     });
@@ -3030,8 +3138,14 @@ export async function setBlockEntryResponse(
     }
 
     const nextRemarks = normalizeNullableString(parsed.data.remarks);
-    const numericChanged = (existing?.actualValue ?? null) !== numericValue;
-    const textChanged = (existing?.textValue ?? null) !== textValue;
+    const nextResponseData = buildResponseData({
+      existingData: existing?.responseData,
+      responseData: (parsed.data.responseData ?? null) as Prisma.JsonValue | null,
+      numericValue: numericValue ?? undefined,
+      textValue: textValue ?? undefined,
+    });
+    const numericChanged = getResponseNumericValue(existing) !== numericValue;
+    const textChanged = getResponseTextValue(existing) !== textValue;
     const remarksChanged = (existing?.remarks ?? null) !== nextRemarks;
     const hasMeaningfulChange = !existing || numericChanged || textChanged || remarksChanged;
     const reason = normalizeReason(parsed.data.reason);
@@ -3044,25 +3158,45 @@ export async function setBlockEntryResponse(
     }
 
     const saved = existing
-      ? await tx.blockEntryYearValue.update({
+      ? await tx.blockEntryResponse.update({
           where: { id: existing.id },
           data: {
-            actualValue: numericValue,
-            textValue,
+            year: responseYear,
+            responseData: nextResponseData,
+            responseMetadata: buildDefaultResponseMetadata({
+              existingMetadata: existing.responseMetadata,
+              responseMetadata: (parsed.data.responseMetadata ?? null) as Prisma.JsonValue | null,
+              dataSource: BlockEntryValueSource.MANUAL,
+              actorUserId,
+              numericTouched: numericChanged || parsed.data.numericValue !== undefined,
+              textTouched: textChanged || parsed.data.textValue !== undefined,
+            }),
+            computedOutput: nextResponseData,
+            computedScore: existing.computedScore,
             remarks: nextRemarks,
             dataSource: BlockEntryValueSource.MANUAL,
             sourceRef: null,
             updatedByUserId: actorUserId,
           },
         })
-      : await tx.blockEntryYearValue.create({
+      : await tx.blockEntryResponse.create({
           data: {
             entryId,
-            year: parsed.data.year,
-            actualValue: numericValue,
-            textValue,
+            scopeKey,
+            year: responseYear,
+            responseData: nextResponseData,
+            responseMetadata: buildDefaultResponseMetadata({
+              responseMetadata: (parsed.data.responseMetadata ?? null) as Prisma.JsonValue | null,
+              dataSource: BlockEntryValueSource.MANUAL,
+              actorUserId,
+              numericTouched: true,
+              textTouched: true,
+            }),
+            computedOutput: nextResponseData,
             remarks: nextRemarks,
             dataSource: BlockEntryValueSource.MANUAL,
+            enteredByUserId: actorUserId,
+            enteredAt: new Date(),
             updatedByUserId: actorUserId,
           },
         });
@@ -3070,20 +3204,20 @@ export async function setBlockEntryResponse(
     if (numericChanged) {
       await recordCriterionEntryChange(tx, {
         entryId,
-        year: parsed.data.year,
-        fieldChanged: "actualValue",
-        oldValue: stringifyChangeValue(existing?.actualValue ?? null),
+        year: responseYear,
+        fieldChanged: "responseData.value",
+        oldValue: stringifyChangeValue(getResponseNumericValue(existing)),
         newValue: stringifyChangeValue(numericValue),
         reason,
         changedByUserId: actorUserId,
       });
     }
     if (textChanged) {
-      const textLog = buildTextChangeLog(existing?.textValue, textValue);
+      const textLog = buildTextChangeLog(getResponseTextValue(existing), textValue);
       await recordCriterionEntryChange(tx, {
         entryId,
-        year: parsed.data.year,
-        fieldChanged: "textValue",
+        year: responseYear,
+        fieldChanged: "responseData.narrative",
         oldValue: textLog.oldValue,
         newValue: textLog.newValue,
         changeMeta: textLog.changeMeta,
@@ -3094,7 +3228,7 @@ export async function setBlockEntryResponse(
     if (remarksChanged) {
       await recordCriterionEntryChange(tx, {
         entryId,
-        year: parsed.data.year,
+        year: responseYear,
         fieldChanged: "remarks",
         oldValue: existing?.remarks ?? null,
         newValue: nextRemarks,
@@ -3140,10 +3274,11 @@ export async function setBlockEntryResponse(
             versionId: permissionContext.workspace.versionId,
             blockId: entry.block.id,
             actorUserId,
-            triggerMessage: `${entry.block.blockCode} ${parsed.data.year} data was updated.`,
+            triggerMessage: `${entry.block.blockCode} ${responseYear ?? scopeKey} data was updated.`,
             metadata: {
               blockCode: entry.block.blockCode,
-              year: parsed.data.year,
+              year: responseYear,
+              scopeKey,
               numericChanged,
               textChanged,
               remarksChanged,
@@ -3175,7 +3310,7 @@ export async function setBlockEntryResponse(
 
   return {
     status: "success",
-    message: "Year data saved.",
+    message: "Block response saved.",
     responses: updated.responses,
   } satisfies SuccessResult<{ responses: typeof updated.responses }>;
 }
@@ -5227,6 +5362,7 @@ export async function importAssessmentWorkspaceData(
         block: entry.block,
         numericValue,
         textValue,
+        responseData: null,
       });
       if (validationError) {
         errors.push(`Row ${row.rowIndex}: ${validationError}`);
@@ -5234,35 +5370,59 @@ export async function importAssessmentWorkspaceData(
         continue;
       }
 
-      const existing = await tx.blockEntryYearValue.findUnique({
+      const existing = await tx.blockEntryResponse.findUnique({
         where: {
-          entryId_year: {
+          entryId_scopeKey: {
             entryId: entry.id,
-            year: row.year,
+            scopeKey: buildScopeKey(row.year),
           },
         },
       });
 
-      await tx.blockEntryYearValue.upsert({
+      const nextResponseData = buildResponseData({
+        existingData: existing?.responseData,
+        numericValue,
+        textValue,
+      });
+
+      await tx.blockEntryResponse.upsert({
         where: {
-          entryId_year: {
+          entryId_scopeKey: {
             entryId: entry.id,
-            year: row.year,
+            scopeKey: buildScopeKey(row.year),
           },
         },
         create: {
           entryId: entry.id,
+          scopeKey: buildScopeKey(row.year),
           year: row.year,
-          actualValue: numericValue,
-          textValue,
+          responseData: nextResponseData,
+          responseMetadata: buildDefaultResponseMetadata({
+            dataSource: BlockEntryValueSource.IMPORTED,
+            sourceRef: input.fileName,
+            actorUserId,
+            numericTouched: true,
+            textTouched: true,
+          }),
+          computedOutput: nextResponseData,
           remarks: normalizeNullableString(row.remarks),
           dataSource: BlockEntryValueSource.IMPORTED,
           sourceRef: input.fileName,
+          enteredByUserId: actorUserId,
+          enteredAt: new Date(),
           updatedByUserId: actorUserId,
         },
         update: {
-          actualValue: numericValue,
-          textValue,
+          responseData: nextResponseData,
+          responseMetadata: buildDefaultResponseMetadata({
+            existingMetadata: existing?.responseMetadata,
+            dataSource: BlockEntryValueSource.IMPORTED,
+            sourceRef: input.fileName,
+            actorUserId,
+            numericTouched: true,
+            textTouched: true,
+          }),
+          computedOutput: nextResponseData,
           remarks: normalizeNullableString(row.remarks),
           dataSource: BlockEntryValueSource.IMPORTED,
           sourceRef: input.fileName,
@@ -5464,25 +5624,70 @@ export async function cloneAssessmentWorkspace(
         continue;
       }
 
-      const overlappingRows = sourceEntry.responses.filter(
-        (row) => row.year >= startYear && row.year <= endYear,
-      );
+      const overlappingRows = sourceEntry.responses.filter((row) => {
+        const year = getResponseYear(row);
+        return year !== null && year >= startYear && year <= endYear;
+      });
       if (overlappingRows.length === 0) {
         continue;
       }
 
-      await tx.blockEntryYearValue.createMany({
-        data: overlappingRows.map((row) => ({
-          entryId: targetEntry.id,
-          year: row.year,
-          actualValue: row.actualValue,
-          textValue: row.textValue,
-          remarks: row.remarks,
-          dataSource: BlockEntryValueSource.CLONED,
-          sourceRef: sourceWorkspaceId,
-          updatedByUserId: actorUserId,
-        })),
-      });
+      for (const row of overlappingRows) {
+        const nextResponseData = buildResponseData({
+          responseData: row.responseData,
+          numericValue: getResponseNumericValue(row),
+          textValue: getResponseTextValue(row),
+        });
+        const year = getResponseYear(row);
+        await tx.blockEntryResponse.upsert({
+          where: {
+            entryId_scopeKey: {
+              entryId: targetEntry.id,
+              scopeKey: row.scopeKey,
+            },
+          },
+          create: {
+            entryId: targetEntry.id,
+            scopeKey: row.scopeKey,
+            year,
+            responseData: nextResponseData,
+            responseMetadata: buildDefaultResponseMetadata({
+              existingMetadata: row.responseMetadata,
+              dataSource: BlockEntryValueSource.CLONED,
+              sourceRef: sourceWorkspaceId,
+              actorUserId,
+              numericTouched: true,
+              textTouched: true,
+            }),
+            computedOutput: row.computedOutput ?? nextResponseData,
+            computedScore: row.computedScore,
+            remarks: row.remarks,
+            dataSource: BlockEntryValueSource.CLONED,
+            sourceRef: sourceWorkspaceId,
+            enteredByUserId: actorUserId,
+            enteredAt: new Date(),
+            updatedByUserId: actorUserId,
+          },
+          update: {
+            year,
+            responseData: nextResponseData,
+            responseMetadata: buildDefaultResponseMetadata({
+              existingMetadata: row.responseMetadata,
+              dataSource: BlockEntryValueSource.CLONED,
+              sourceRef: sourceWorkspaceId,
+              actorUserId,
+              numericTouched: true,
+              textTouched: true,
+            }),
+            computedOutput: row.computedOutput ?? nextResponseData,
+            computedScore: row.computedScore,
+            remarks: row.remarks,
+            dataSource: BlockEntryValueSource.CLONED,
+            sourceRef: sourceWorkspaceId,
+            updatedByUserId: actorUserId,
+          },
+        });
+      }
 
       await tx.blockEntry.update({
         where: { id: targetEntry.id },
@@ -6480,17 +6685,20 @@ export async function getAssessmentWorkspaceDataGaps(
 
   const { startYear, endYear } = getWorkspaceYearBounds(workspace.periodStart, workspace.periodEnd);
   const gaps = workspace.entries.flatMap((entry) => {
-    const yearMap = new Map(entry.responses.map((row) => [row.year, row]));
+    const yearMap = new Map(
+      entry.responses
+        .map((row) => [getResponseYear(row), row] as const)
+        .filter((item): item is readonly [number, (typeof entry.responses)[number]] => item[0] !== null),
+    );
     const missingYears: number[] = [];
     for (let year = startYear; year <= endYear; year += 1) {
       const row = yearMap.get(year);
       const hasValue =
         entry.block.dataType === CriterionDataType.QUANTITATIVE
-          ? row?.actualValue !== null && row?.actualValue !== undefined
+          ? getResponseNumericValue(row) !== null
           : entry.block.dataType === CriterionDataType.QUALITATIVE
-            ? !!normalizeNullableString(row?.textValue ?? null)
-            : (row?.actualValue !== null && row?.actualValue !== undefined) ||
-              !!normalizeNullableString(row?.textValue ?? null);
+            ? !!getResponseTextValue(row)
+            : getResponseNumericValue(row) !== null || !!getResponseTextValue(row);
       if (!hasValue) {
         missingYears.push(year);
       }
@@ -6630,33 +6838,37 @@ export async function previewAssessmentWorkspaceReuse(
       continue;
     }
 
-    const overlappingRows = sourceEntry.responses.filter(
-      (row) => row.year >= startYear && row.year <= endYear && (row.actualValue !== null || row.textValue !== null),
-    );
+    const overlappingRows = sourceEntry.responses.filter((row) => {
+      const year = getResponseYear(row);
+      return year !== null && year >= startYear && year <= endYear && hasResponseContent(row);
+    });
     if (overlappingRows.length === 0) {
       willSkip.push({ blockCode, reason: "No overlapping data for the target period." });
       continue;
     }
 
-    const targetYearMap = new Map(targetEntry.responses.map((row) => [row.year, row]));
+    const targetYearMap = new Map(
+      targetEntry.responses
+        .map((row) => [getResponseYear(row), row] as const)
+        .filter((item): item is readonly [number, (typeof targetEntry.responses)[number]] => item[0] !== null),
+    );
     const hasExistingData = overlappingRows.some((row) => {
-      const targetRow = targetYearMap.get(row.year);
-      return !!targetRow && (targetRow.actualValue !== null || targetRow.textValue !== null);
+      const targetRow = targetYearMap.get(getResponseYear(row) ?? Number.NaN);
+      return !!targetRow && hasResponseContent(targetRow);
     });
     for (const row of overlappingRows) {
-      const targetRow = targetYearMap.get(row.year);
+      const targetRow = targetYearMap.get(getResponseYear(row) ?? Number.NaN);
       if (
         targetRow &&
-        ((targetRow.actualValue ?? null) !== (row.actualValue ?? null) ||
-          (normalizeNullableString(targetRow.textValue) ?? null) !==
-            (normalizeNullableString(row.textValue) ?? null))
+        (getResponseNumericValue(targetRow) !== getResponseNumericValue(row) ||
+          getResponseTextValue(targetRow) !== getResponseTextValue(row))
       ) {
-        conflicts.push({ blockCode, year: row.year });
+        conflicts.push({ blockCode, year: getResponseYear(row) ?? 0 });
       }
     }
     willCopy.push({
       blockCode,
-      years: overlappingRows.map((row) => row.year),
+      years: overlappingRows.map((row) => getResponseYear(row) ?? 0),
       hasExistingData,
     });
   }
@@ -6776,33 +6988,62 @@ export async function applyAssessmentWorkspaceReuse(
       }
 
       for (const row of sourceEntry.responses) {
-        if (row.year < startYear || row.year > endYear) {
+        const year = getResponseYear(row);
+        if (year === null || year < startYear || year > endYear) {
           continue;
         }
-        if (row.actualValue === null && !normalizeNullableString(row.textValue)) {
+        if (!hasResponseContent(row)) {
           continue;
         }
 
-        await tx.blockEntryYearValue.upsert({
+        const nextResponseData = buildResponseData({
+          responseData: row.responseData,
+          numericValue: getResponseNumericValue(row),
+          textValue: getResponseTextValue(row),
+        });
+
+        await tx.blockEntryResponse.upsert({
           where: {
-            entryId_year: {
+            entryId_scopeKey: {
               entryId: targetEntry.id,
-              year: row.year,
+              scopeKey: row.scopeKey,
             },
           },
           create: {
             entryId: targetEntry.id,
-            year: row.year,
-            actualValue: row.actualValue,
-            textValue: normalizeNullableString(row.textValue),
+            scopeKey: row.scopeKey,
+            year,
+            responseData: nextResponseData,
+            responseMetadata: buildDefaultResponseMetadata({
+              existingMetadata: row.responseMetadata,
+              dataSource: BlockEntryValueSource.CLONED,
+              sourceRef: source.id,
+              actorUserId,
+              numericTouched: true,
+              textTouched: true,
+            }),
+            computedOutput: row.computedOutput ?? nextResponseData,
+            computedScore: row.computedScore,
             remarks: row.remarks,
             dataSource: BlockEntryValueSource.CLONED,
             sourceRef: source.id,
+            enteredByUserId: actorUserId,
+            enteredAt: new Date(),
             updatedByUserId: actorUserId,
           },
           update: {
-            actualValue: row.actualValue,
-            textValue: normalizeNullableString(row.textValue),
+            year,
+            responseData: nextResponseData,
+            responseMetadata: buildDefaultResponseMetadata({
+              existingMetadata: row.responseMetadata,
+              dataSource: BlockEntryValueSource.CLONED,
+              sourceRef: source.id,
+              actorUserId,
+              numericTouched: true,
+              textTouched: true,
+            }),
+            computedOutput: row.computedOutput ?? nextResponseData,
+            computedScore: row.computedScore,
             remarks: row.remarks,
             dataSource: BlockEntryValueSource.CLONED,
             sourceRef: source.id,
@@ -7555,7 +7796,7 @@ type ProjectionTargetEntryContext = {
 
 type PreparedProjectionPreview = {
   sourceKind: ProjectionSourceKind;
-  targetPath: "actualValue" | "textValue";
+  targetPath: ResponsePath;
   storageMode: ProjectionStorageMode;
   sourceSummary: Prisma.JsonObject;
   filters: Prisma.JsonObject | null;
@@ -7711,7 +7952,7 @@ function applyProjectionNumericScale(
 function resolveProjectionGroupValue(input: {
   group: ProjectionSourceGroup;
   transform: Prisma.JsonValue | null | undefined;
-  targetPath: "actualValue" | "textValue";
+  targetPath: ResponsePath;
 }): ErrorResult | SuccessResult<{ numberValue: number | null; textValue: string | null }> {
   const mode = getProjectionTransformMode(input.transform);
   const separator = getProjectionTransformSeparator(input.transform);
@@ -7724,7 +7965,7 @@ function resolveProjectionGroupValue(input: {
     return {
       status: "success",
       numberValue: countValue,
-      textValue: input.targetPath === "textValue" ? String(countValue) : null,
+      textValue: input.targetPath === "response.narrative" ? String(countValue) : null,
     };
   }
 
@@ -7747,7 +7988,7 @@ function resolveProjectionGroupValue(input: {
       return {
         status: "success",
         numberValue: sum,
-        textValue: input.targetPath === "textValue" ? String(sum) : null,
+        textValue: input.targetPath === "response.narrative" ? String(sum) : null,
       };
     }
     case "AVG": {
@@ -7764,7 +8005,7 @@ function resolveProjectionGroupValue(input: {
       return {
         status: "success",
         numberValue: avg,
-        textValue: input.targetPath === "textValue" ? String(avg) : null,
+        textValue: input.targetPath === "response.narrative" ? String(avg) : null,
       };
     }
     case "TEXT_JOIN": {
@@ -7790,9 +8031,9 @@ function resolveProjectionGroupValue(input: {
         return { status: "error", message: "Projection source did not return any values." };
       }
 
-      if (input.targetPath === "actualValue") {
+      if (input.targetPath === "response.value") {
         if (typeof first.numberValue !== "number" || !Number.isFinite(first.numberValue)) {
-          return { status: "error", message: "Projection result is not numeric enough for actualValue." };
+          return { status: "error", message: "Projection result is not numeric enough for response.value." };
         }
         const scaled = applyProjectionNumericScale(first.numberValue, input.transform);
         if (scaled === null) {
@@ -7893,11 +8134,11 @@ async function getProjectionTargetEntryContext(
   };
 }
 
-async function findActiveLiveProjectionTargetPaths(entryId: string, year: number) {
+async function findActiveLiveProjectionTargetPaths(entryId: string, scopeKey: string) {
   const targets = await prisma.blockProjectionTarget.findMany({
     where: {
       targetEntryId: entryId,
-      targetScopeKey: buildScopeKey(year),
+      targetScopeKey: scopeKey,
       recipe: {
         isActive: true,
         storageMode: ProjectionStorageMode.LIVE_REFERENCE,
@@ -7908,7 +8149,7 @@ async function findActiveLiveProjectionTargetPaths(entryId: string, year: number
     },
   });
 
-  return new Set(targets.map((target) => target.targetPath));
+  return new Set(targets.map((target) => normalizeResponsePath(target.targetPath)));
 }
 
 async function findProjectionTargetConflicts(input: {
@@ -8048,7 +8289,7 @@ function extractTableCellValue(cell: {
 async function collectProjectionSourceGroups(input: {
   tenantId: string;
   parsed: z.infer<typeof entryProjectionInputSchema>;
-  targetPath: "actualValue" | "textValue";
+  targetPath: ResponsePath;
   actorUserId: string;
   actorRole: Role | null | undefined;
 }): Promise<
@@ -8283,16 +8524,19 @@ async function collectProjectionSourceGroups(input: {
     };
   }
 
-  const sourcePath = input.parsed.sourcePath ?? input.targetPath;
+  const sourcePath = normalizeResponsePath(input.parsed.sourcePath ?? input.targetPath);
   const responsesGroups = sourceEntry.responses
-    .filter((row) => (yearsFilter.length > 0 ? yearsFilter.includes(row.year) : true))
+    .filter((row) => {
+      const year = getResponseYear(row);
+      return yearsFilter.length > 0 ? year !== null && yearsFilter.includes(year) : true;
+    })
     .map<ProjectionSourceGroup>((row) => ({
-      sourceYear: row.year,
-      sourceScopeKey: buildScopeKey(row.year),
+      sourceYear: getResponseYear(row),
+      sourceScopeKey: row.scopeKey,
       values: [
         {
-          numberValue: sourcePath === "actualValue" ? row.actualValue ?? null : null,
-          textValue: sourcePath === "textValue" ? normalizeNullableString(row.textValue) : null,
+          numberValue: sourcePath === "response.value" ? getResponseNumericValue(row) : null,
+          textValue: sourcePath === "response.narrative" ? getResponseTextValue(row) : null,
           dimensions: {},
         },
       ],
@@ -8340,7 +8584,7 @@ async function prepareCriterionEntryProjectionPreview(input: {
   const sourceGroupsResult = await collectProjectionSourceGroups({
     tenantId: input.tenantId,
     parsed: input.parsed,
-    targetPath: input.parsed.targetPath,
+    targetPath: normalizeResponsePath(input.parsed.targetPath),
     actorUserId: input.actorUserId,
     actorRole: input.actorRole,
   });
@@ -8358,6 +8602,7 @@ async function prepareCriterionEntryProjectionPreview(input: {
   }
 
   const transform = serializeProjectionTransform(input.parsed.transform);
+  const normalizedTargetPath = normalizeResponsePath(input.parsed.targetPath);
   const matches: ProjectionPreviewMatch[] = [];
   const { startYear, endYear } = getWorkspaceYearBounds(
     targetContext.entry.workspace.periodStart,
@@ -8375,7 +8620,7 @@ async function prepareCriterionEntryProjectionPreview(input: {
     const resolved = resolveProjectionGroupValue({
       group,
       transform,
-      targetPath: input.parsed.targetPath,
+      targetPath: normalizedTargetPath,
     });
     if (resolved.status === "error") {
       return resolved;
@@ -8400,8 +8645,8 @@ async function prepareCriterionEntryProjectionPreview(input: {
       targetScopeKey: buildScopeKey(targetYear),
       sourceYear: group.sourceYear,
       sourceScopeKey: group.sourceScopeKey,
-      materializedNumberValue: input.parsed.targetPath === "actualValue" ? resolved.numberValue : null,
-      materializedTextValue: input.parsed.targetPath === "textValue" ? resolved.textValue : null,
+      materializedNumberValue: normalizedTargetPath === "response.value" ? resolved.numberValue : null,
+      materializedTextValue: normalizedTargetPath === "response.narrative" ? resolved.textValue : null,
       rowCount: group.rowCount,
       dimensions:
         group.values.length === 1
@@ -8414,33 +8659,31 @@ async function prepareCriterionEntryProjectionPreview(input: {
     return { status: "error", message: "No projection results were produced for the selected source." };
   }
 
-  const existingYearData = await prisma.blockEntryYearValue.findMany({
+  const existingResponses = await prisma.blockEntryResponse.findMany({
     where: {
       entryId: input.entryId,
-      year: {
-        in: matches.map((match) => match.targetYear),
+      scopeKey: {
+        in: matches.map((match) => match.targetScopeKey),
       },
     },
   });
-  const existingByYear = new Map(existingYearData.map((row) => [row.year, row]));
+  const existingByScope = new Map(existingResponses.map((row) => [row.scopeKey, row]));
 
   const overwriteWarningCandidates = matches
     .map((match) => {
-      const existing = existingByYear.get(match.targetYear);
-      const currentValue =
-        input.parsed.targetPath === "actualValue"
-          ? stringifyProjectionCurrentValue(existing?.actualValue ?? null)
-          : stringifyProjectionCurrentValue(existing?.textValue ?? null);
-      const projectedValue =
-        input.parsed.targetPath === "actualValue"
-          ? stringifyProjectionCurrentValue(match.materializedNumberValue)
-          : stringifyProjectionCurrentValue(match.materializedTextValue);
+      const existing = existingByScope.get(match.targetScopeKey);
+      const currentValue = stringifyProjectionCurrentValue(getResponsePathValue(existing, normalizedTargetPath));
+      const projectedValue = stringifyProjectionCurrentValue(
+        normalizedTargetPath === "response.value"
+          ? match.materializedNumberValue
+          : match.materializedTextValue,
+      );
       if (currentValue === null || currentValue === projectedValue) {
         return null;
       }
       return {
         targetYear: match.targetYear,
-        targetPath: input.parsed.targetPath,
+        targetPath: normalizedTargetPath,
         currentValue,
       };
     })
@@ -8480,7 +8723,7 @@ async function prepareCriterionEntryProjectionPreview(input: {
     targetContext,
     preview: {
       sourceKind: sourceGroupsResult.sourceKind,
-      targetPath: input.parsed.targetPath,
+      targetPath: normalizedTargetPath,
       storageMode: input.parsed.storageMode,
       sourceSummary: sourceGroupsResult.sourceSummary,
       filters: serializeProjectionFilter(input.parsed.filters),
@@ -8497,40 +8740,45 @@ async function upsertProjectedYearDataTx(input: {
   tx: DbClient;
   recipeId: string;
   targetEntry: ProjectionTargetEntryContext["entry"];
-  targetPath: "actualValue" | "textValue";
+  targetPath: ResponsePath;
   match: ProjectionPreviewMatch;
   actorUserId: string;
   reason: string;
 }) {
-  const existing = await input.tx.blockEntryYearValue.findUnique({
+  const existing = await input.tx.blockEntryResponse.findUnique({
     where: {
-      entryId_year: {
+      entryId_scopeKey: {
         entryId: input.targetEntry.id,
-        year: input.match.targetYear,
+        scopeKey: input.match.targetScopeKey,
       },
     },
   });
 
   const nextActualValue =
-    input.targetPath === "actualValue"
+    input.targetPath === "response.value"
       ? input.match.materializedNumberValue
-      : existing?.actualValue ?? null;
+      : getResponseNumericValue(existing);
   const nextTextValue =
-    input.targetPath === "textValue"
+    input.targetPath === "response.narrative"
       ? normalizeNullableString(input.match.materializedTextValue)
-      : existing?.textValue ?? null;
+      : getResponseTextValue(existing);
+  const nextResponseData = buildResponseData({
+    existingData: existing?.responseData,
+    numericValue: nextActualValue ?? undefined,
+    textValue: nextTextValue ?? undefined,
+  });
 
   const validationError = validateYearDataByCriterion({
     block: input.targetEntry.block,
     numericValue: nextActualValue,
     textValue: nextTextValue,
+    responseData: nextResponseData,
   });
   if (validationError) {
     return { status: "error", message: validationError } satisfies ErrorResult;
   }
-
-  const numericChanged = (existing?.actualValue ?? null) !== nextActualValue;
-  const textChanged = (existing?.textValue ?? null) !== nextTextValue;
+  const numericChanged = getResponseNumericValue(existing) !== nextActualValue;
+  const textChanged = getResponseTextValue(existing) !== nextTextValue;
   const hasMeaningfulChange =
     !existing ||
     numericChanged ||
@@ -8539,24 +8787,44 @@ async function upsertProjectedYearDataTx(input: {
     existing.sourceRef !== input.recipeId;
 
   const saved = existing
-    ? await input.tx.blockEntryYearValue.update({
+    ? await input.tx.blockEntryResponse.update({
         where: { id: existing.id },
         data: {
-          actualValue: nextActualValue,
-          textValue: nextTextValue,
+          year: input.match.targetYear,
+          responseData: nextResponseData,
+          responseMetadata: buildDefaultResponseMetadata({
+            existingMetadata: existing.responseMetadata,
+            dataSource: BlockEntryValueSource.PROJECTED,
+            sourceRef: input.recipeId,
+            actorUserId: input.actorUserId,
+            numericTouched: numericChanged || input.targetPath === "response.value",
+            textTouched: textChanged || input.targetPath === "response.narrative",
+            linkedPaths: [],
+          }),
+          computedOutput: nextResponseData,
           dataSource: BlockEntryValueSource.PROJECTED,
           sourceRef: input.recipeId,
           updatedByUserId: input.actorUserId,
         },
       })
-    : await input.tx.blockEntryYearValue.create({
+    : await input.tx.blockEntryResponse.create({
         data: {
           entryId: input.targetEntry.id,
+          scopeKey: input.match.targetScopeKey,
           year: input.match.targetYear,
-          actualValue: nextActualValue,
-          textValue: nextTextValue,
+          responseData: nextResponseData,
+          responseMetadata: buildDefaultResponseMetadata({
+            dataSource: BlockEntryValueSource.PROJECTED,
+            sourceRef: input.recipeId,
+            actorUserId: input.actorUserId,
+            numericTouched: true,
+            textTouched: true,
+          }),
+          computedOutput: nextResponseData,
           dataSource: BlockEntryValueSource.PROJECTED,
           sourceRef: input.recipeId,
+          enteredByUserId: input.actorUserId,
+          enteredAt: new Date(),
           updatedByUserId: input.actorUserId,
         },
       });
@@ -8565,19 +8833,19 @@ async function upsertProjectedYearDataTx(input: {
     await recordCriterionEntryChange(input.tx, {
       entryId: input.targetEntry.id,
       year: input.match.targetYear,
-      fieldChanged: "actualValue",
-      oldValue: stringifyChangeValue(existing?.actualValue ?? null),
+      fieldChanged: "responseData.value",
+      oldValue: stringifyChangeValue(getResponseNumericValue(existing)),
       newValue: stringifyChangeValue(nextActualValue),
       reason: input.reason,
       changedByUserId: input.actorUserId,
     });
   }
   if (textChanged) {
-    const textLog = buildTextChangeLog(existing?.textValue, nextTextValue);
+    const textLog = buildTextChangeLog(getResponseTextValue(existing), nextTextValue);
     await recordCriterionEntryChange(input.tx, {
       entryId: input.targetEntry.id,
       year: input.match.targetYear,
-      fieldChanged: "textValue",
+      fieldChanged: "responseData.narrative",
       oldValue: textLog.oldValue,
       newValue: textLog.newValue,
       changeMeta: textLog.changeMeta,
@@ -8671,16 +8939,17 @@ async function upsertProjectedYearDataTx(input: {
 async function clearProjectedYearDataTargetTx(input: {
   tx: DbClient;
   targetEntry: ProjectionTargetEntryContext["entry"];
-  targetPath: "actualValue" | "textValue";
+  targetPath: ResponsePath;
   targetYear: number;
+  targetScopeKey: string;
   actorUserId: string;
   reason: string;
 }) {
-  const existing = await input.tx.blockEntryYearValue.findUnique({
+  const existing = await input.tx.blockEntryResponse.findUnique({
     where: {
-      entryId_year: {
+      entryId_scopeKey: {
         entryId: input.targetEntry.id,
-        year: input.targetYear,
+        scopeKey: input.targetScopeKey,
       },
     },
   });
@@ -8688,25 +8957,36 @@ async function clearProjectedYearDataTargetTx(input: {
     return { status: "success", changed: false } satisfies SuccessResult<{ changed: boolean }>;
   }
 
-  const nextActualValue = input.targetPath === "actualValue" ? null : existing.actualValue ?? null;
-  const nextTextValue = input.targetPath === "textValue" ? null : existing.textValue ?? null;
-  const numericChanged = (existing.actualValue ?? null) !== nextActualValue;
-  const textChanged = (existing.textValue ?? null) !== nextTextValue;
+  const nextActualValue = input.targetPath === "response.value" ? null : getResponseNumericValue(existing);
+  const nextTextValue = input.targetPath === "response.narrative" ? null : getResponseTextValue(existing);
+  const numericChanged = getResponseNumericValue(existing) !== nextActualValue;
+  const textChanged = getResponseTextValue(existing) !== nextTextValue;
 
   if (!numericChanged && !textChanged && existing.sourceRef === null && existing.dataSource === BlockEntryValueSource.MANUAL) {
     return { status: "success", changed: false } satisfies SuccessResult<{ changed: boolean }>;
   }
 
   if (nextActualValue === null && nextTextValue === null && !existing.remarks) {
-    await input.tx.blockEntryYearValue.delete({
+    await input.tx.blockEntryResponse.delete({
       where: { id: existing.id },
     });
   } else {
-    await input.tx.blockEntryYearValue.update({
+    await input.tx.blockEntryResponse.update({
       where: { id: existing.id },
       data: {
-        actualValue: nextActualValue,
-        textValue: nextTextValue,
+        responseData: buildResponseData({
+          existingData: existing.responseData,
+          numericValue: nextActualValue ?? undefined,
+          textValue: nextTextValue ?? undefined,
+        }),
+        responseMetadata: buildDefaultResponseMetadata({
+          existingMetadata: existing.responseMetadata,
+          dataSource: BlockEntryValueSource.MANUAL,
+          sourceRef: null,
+          actorUserId: input.actorUserId,
+          numericTouched: numericChanged,
+          textTouched: textChanged,
+        }),
         dataSource: BlockEntryValueSource.MANUAL,
         sourceRef: null,
         updatedByUserId: input.actorUserId,
@@ -8718,19 +8998,19 @@ async function clearProjectedYearDataTargetTx(input: {
     await recordCriterionEntryChange(input.tx, {
       entryId: input.targetEntry.id,
       year: input.targetYear,
-      fieldChanged: "actualValue",
-      oldValue: stringifyChangeValue(existing.actualValue ?? null),
+      fieldChanged: "responseData.value",
+      oldValue: stringifyChangeValue(getResponseNumericValue(existing)),
       newValue: stringifyChangeValue(nextActualValue),
       reason: input.reason,
       changedByUserId: input.actorUserId,
     });
   }
   if (textChanged) {
-    const textLog = buildTextChangeLog(existing.textValue, nextTextValue);
+    const textLog = buildTextChangeLog(getResponseTextValue(existing), nextTextValue);
     await recordCriterionEntryChange(input.tx, {
       entryId: input.targetEntry.id,
       year: input.targetYear,
-      fieldChanged: "textValue",
+      fieldChanged: "responseData.narrative",
       oldValue: textLog.oldValue,
       newValue: textLog.newValue,
       changeMeta: textLog.changeMeta,
@@ -8822,8 +9102,11 @@ async function applyProjectionRecipeTx(input: {
     const cleared = await clearProjectedYearDataTargetTx({
       tx: input.tx,
       targetEntry: input.targetContext.entry,
-      targetPath: existingTarget.targetPath as "actualValue" | "textValue",
-      targetYear: existingTarget.targetYear ?? Number.parseInt(existingTarget.targetScopeKey.replace("YEAR:", ""), 10),
+      targetPath: normalizeResponsePath(existingTarget.targetPath),
+      targetYear:
+        existingTarget.targetYear ??
+        Number.parseInt(existingTarget.targetScopeKey.replace("YEAR:", ""), 10),
+      targetScopeKey: existingTarget.targetScopeKey,
       actorUserId: input.actorUserId,
       reason: "Projection refresh removed source data",
     });
@@ -9150,6 +9433,7 @@ export async function listBlockEntryProjectionSources(
         },
         responses: {
           select: {
+            scopeKey: true,
             year: true,
           },
           orderBy: { year: "asc" },
@@ -9210,7 +9494,13 @@ export async function listBlockEntryProjectionSources(
         workspaceStatus: entry.workspace.status,
         blockCode: entry.block.blockCode,
         blockTitle: entry.block.title,
-        availableYears: [...new Set(entry.responses.map((row) => row.year))],
+        availableYears: [
+          ...new Set(
+            entry.responses
+              .map((row) => getResponseYear(row))
+              .filter((year): year is number => year !== null),
+          ),
+        ],
         tableFields: entry.tableInstances.map((instance) => ({
           fieldKey: instance.fieldKey,
           year: instance.year,
@@ -9221,7 +9511,7 @@ export async function listBlockEntryProjectionSources(
         recipeId: recipe.id,
         sourceKind: recipe.sourceKind,
         storageMode: recipe.storageMode,
-        targetPath: recipe.targetPath,
+        targetPath: normalizeResponsePath(recipe.targetPath),
         sourceMetric: recipe.sourceMetric,
         sourceEntry:
           recipe.sourceEntry
@@ -9340,11 +9630,13 @@ export async function applyBlockEntryProjection(
         sourceEntryId: parsed.data.sourceEntryId ?? null,
         sourceMetricId: parsed.data.sourceMetricId ?? null,
         sourceTableFieldKey: normalizeNullableString(parsed.data.sourceTableFieldKey),
-        sourcePath: normalizeNullableString(parsed.data.sourcePath),
+        sourcePath: normalizeNullableString(parsed.data.sourcePath)
+          ? normalizeResponsePath(parsed.data.sourcePath)
+          : null,
         filters: prepared.preview.filters ?? Prisma.DbNull,
         transform: prepared.preview.transform,
         storageMode: parsed.data.storageMode,
-        targetPath: parsed.data.targetPath,
+        targetPath: normalizeResponsePath(parsed.data.targetPath),
         lastSourceRevisionHash: prepared.preview.sourceRevisionHash,
         createdByUserId: actorUserId,
       },
@@ -9412,13 +9704,10 @@ export async function refreshBlockEntryProjection(
       sourceEntryId: recipe.sourceEntryId ?? undefined,
       sourceMetricId: recipe.sourceMetricId ?? undefined,
       sourceTableFieldKey: recipe.sourceTableFieldKey ?? undefined,
-      sourcePath:
-        recipe.sourcePath === "actualValue" || recipe.sourcePath === "textValue"
-          ? (recipe.sourcePath as "actualValue" | "textValue")
-          : undefined,
+      sourcePath: recipe.sourcePath ? normalizeResponsePath(recipe.sourcePath) : undefined,
       filters: (asJsonObject(recipe.filters) as z.infer<typeof projectionFilterSchema> | null) ?? undefined,
       transform: (asJsonObject(recipe.transform) as z.infer<typeof projectionTransformSchema> | null) ?? undefined,
-      targetPath: recipe.targetPath as "actualValue" | "textValue",
+      targetPath: normalizeResponsePath(recipe.targetPath),
       storageMode: recipe.storageMode,
     },
     actorUserId,
@@ -9553,22 +9842,28 @@ export async function detachBlockEntryProjection(
         touchedYears.add(target.targetYear);
       }
 
-      const responses = target.targetYear === null
-        ? null
-        : await tx.blockEntryYearValue.findUnique({
-            where: {
-              entryId_year: {
-                entryId: recipe.targetEntryId,
-                year: target.targetYear,
-              },
-            },
-          });
+      const responses = await tx.blockEntryResponse.findUnique({
+        where: {
+          entryId_scopeKey: {
+            entryId: recipe.targetEntryId,
+            scopeKey: target.targetScopeKey,
+          },
+        },
+      });
       if (responses && responses.sourceRef === recipe.id) {
-        await tx.blockEntryYearValue.update({
+        await tx.blockEntryResponse.update({
           where: { id: responses.id },
           data: {
             dataSource: BlockEntryValueSource.MANUAL,
             sourceRef: null,
+            responseMetadata: buildDefaultResponseMetadata({
+              existingMetadata: responses.responseMetadata,
+              dataSource: BlockEntryValueSource.MANUAL,
+              sourceRef: null,
+              actorUserId,
+              numericTouched: target.targetPath === "response.value",
+              textTouched: target.targetPath === "response.narrative",
+            }),
             updatedByUserId: actorUserId,
           },
         });
