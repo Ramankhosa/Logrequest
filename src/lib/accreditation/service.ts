@@ -1580,6 +1580,7 @@ export async function listSuperadminTenantsWithServiceStates() {
   const tenants = await prisma.tenant.findMany({
     include: {
       serviceEntitlements: true,
+      featureEntitlements: true,
     },
     orderBy: [{ name: "asc" }],
   });
@@ -1597,6 +1598,13 @@ export async function listSuperadminTenantsWithServiceStates() {
       enabledAt: service.enabledAt,
       disabledAt: service.disabledAt,
       notes: service.notes,
+    })),
+    features: tenant.featureEntitlements.map((feature) => ({
+      featureCode: feature.featureCode,
+      status: feature.status,
+      enabledAt: feature.enabledAt,
+      disabledAt: feature.disabledAt,
+      notes: feature.notes,
     })),
   }));
 }

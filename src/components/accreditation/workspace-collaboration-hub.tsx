@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { WorkspaceReportingCopilotPanel } from "./workspace-reporting-copilot-panel";
 
 type WorkspaceRow = {
   id: string;
@@ -868,6 +869,11 @@ export function WorkspaceCollaborationHub() {
                   </div>
                 </div>
               </section>
+
+              <WorkspaceReportingCopilotPanel
+                workspaceId={detail.id}
+                workspaceStatus={detail.status}
+              />
             </>
           )}
         </div>

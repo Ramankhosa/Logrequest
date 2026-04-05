@@ -19,6 +19,7 @@ import {
   Database,
   Target,
   Tag,
+  Bot,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,7 @@ const iconMap: Record<string, LucideIcon> = {
   "target": Target,
   "tag": Tag,
   "award": Award,
+  "bot": Bot,
 };
 
 export function SidebarNav({ groups }: { groups: NavigationGroup[] }) {

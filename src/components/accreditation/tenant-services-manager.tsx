@@ -10,6 +10,14 @@ type TenantServiceRow = {
   notes: string | null;
 };
 
+type TenantFeatureRow = {
+  featureCode: "ACCREDITATION_COPILOT";
+  status: "ENABLED" | "DISABLED";
+  enabledAt: string | Date | null;
+  disabledAt: string | Date | null;
+  notes: string | null;
+};
+
 type TenantRow = {
   id: string;
   name: string;
@@ -18,12 +26,14 @@ type TenantRow = {
   lifecycleState: string;
   entitlementState: string;
   services: TenantServiceRow[];
+  features: TenantFeatureRow[];
 };
 
 function normalizeTenantRow(row: TenantRow): TenantRow {
   return {
     ...row,
     services: row.services ?? [],
+    features: row.features ?? [],
   };
 }
 
@@ -113,6 +123,54 @@ export function TenantServicesManager({
     }
   }
 
+  async function toggleAccreditationCopilot(tenant: TenantRow, enabled: boolean) {
+    setActionId(`${tenant.id}:copilot`);
+    try {
+      const notes = window
+        .prompt(
+          enabled
+            ? `Optional note for enabling accreditation copilot on ${tenant.name}`
+            : `Optional note for disabling accreditation copilot on ${tenant.name}`,
+          "",
+        )
+        ?.trim();
+
+      const response = await fetch(
+        `/api/superadmin/tenants/${tenant.id}/features/ACCREDITATION_COPILOT`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            enabled,
+            notes: notes && notes.length > 0 ? notes : null,
+          }),
+        },
+      );
+      const data = (await response.json()) as {
+        status: "success" | "error";
+        message?: string;
+      };
+      if (!response.ok || data.status !== "success") {
+        throw new Error(data.message ?? "Failed to update accreditation copilot feature.");
+      }
+      setMessage({
+        type: "success",
+        text: data.message ?? "Tenant feature updated.",
+      });
+      await refreshTenants();
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "Failed to update accreditation copilot feature.",
+      });
+    } finally {
+      setActionId(null);
+    }
+  }
+
   return (
     <div className="space-y-5">
       {message ? (
@@ -131,7 +189,7 @@ export function TenantServicesManager({
         <div>
           <h2 className="text-base font-semibold text-slate-900">Tenant Services</h2>
           <p className="text-sm text-slate-500">
-            Enable or disable the accreditation add-on for each tenant.
+            Control the accreditation add-on and its tenant-level copilot feature.
           </p>
         </div>
         <button
@@ -165,7 +223,10 @@ export function TenantServicesManager({
                   Accreditation
                 </th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                  Action
+                  Copilot
+                </th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  Actions
                 </th>
               </tr>
             </thead>
@@ -174,7 +235,11 @@ export function TenantServicesManager({
                 const accreditation = tenant.services.find(
                   (service) => service.serviceCode === "ACCREDITATION",
                 );
+                const copilot = tenant.features.find(
+                  (feature) => feature.featureCode === "ACCREDITATION_COPILOT",
+                );
                 const enabled = accreditation?.status === "ENABLED";
+                const copilotEnabled = copilot?.status === "ENABLED" && enabled;
 
                 return (
                   <tr key={tenant.id}>
@@ -206,22 +271,64 @@ export function TenantServicesManager({
                       </div>
                     </td>
                     <td className="px-4 py-4">
-                      <button
-                        type="button"
-                        disabled={actionId === tenant.id}
-                        onClick={() => void toggleAccreditation(tenant, !enabled)}
-                        className={`rounded-full px-4 py-2 text-xs font-semibold disabled:opacity-60 ${
-                          enabled
-                            ? "border border-rose-200 bg-rose-50 text-rose-700"
-                            : "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                      <div
+                        className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                          copilotEnabled
+                            ? "bg-emerald-100 text-emerald-700"
+                            : enabled
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-slate-100 text-slate-600"
                         }`}
                       >
-                        {actionId === tenant.id
-                          ? "Saving..."
+                        {copilotEnabled
+                          ? "Enabled"
                           : enabled
-                            ? "Disable"
-                            : "Enable"}
-                      </button>
+                            ? "Feature disabled"
+                            : "Service disabled"}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        {enabled
+                          ? copilot?.enabledAt
+                            ? `Enabled ${new Date(copilot.enabledAt).toLocaleString()}`
+                            : "Not provisioned"
+                          : "Unavailable until accreditation is enabled"}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={actionId === tenant.id}
+                          onClick={() => void toggleAccreditation(tenant, !enabled)}
+                          className={`rounded-full px-4 py-2 text-xs font-semibold disabled:opacity-60 ${
+                            enabled
+                              ? "border border-rose-200 bg-rose-50 text-rose-700"
+                              : "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                          }`}
+                        >
+                          {actionId === tenant.id
+                            ? "Saving..."
+                            : enabled
+                              ? "Disable"
+                              : "Enable"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!enabled || actionId === `${tenant.id}:copilot`}
+                          onClick={() => void toggleAccreditationCopilot(tenant, !copilotEnabled)}
+                          className={`rounded-full px-4 py-2 text-xs font-semibold disabled:opacity-60 ${
+                            copilotEnabled
+                              ? "border border-rose-200 bg-rose-50 text-rose-700"
+                              : "border border-indigo-200 bg-indigo-50 text-indigo-700"
+                          }`}
+                        >
+                          {actionId === `${tenant.id}:copilot`
+                            ? "Saving..."
+                            : copilotEnabled
+                              ? "Disable Copilot"
+                              : "Enable Copilot"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -229,7 +336,7 @@ export function TenantServicesManager({
               {tenants.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-4 py-10 text-center text-sm text-slate-500"
                   >
                     No tenants found.

@@ -14,6 +14,7 @@ const createSuperadminVersionBlockMock = vi.fn();
 const updateSuperadminVersionBlockMock = vi.fn();
 const validateSuperadminVersionBlocksMock = vi.fn();
 const publishSuperadminVersionBlocksMock = vi.fn();
+const hasTenantFeatureEnabledMock = vi.fn();
 
 vi.mock("next-auth", () => ({
   default: vi.fn(() => ({})),
@@ -33,6 +34,16 @@ vi.mock("@/lib/accreditation/block-template-service", () => ({
   validateSuperadminVersionBlocks: validateSuperadminVersionBlocksMock,
   publishSuperadminVersionBlocks: publishSuperadminVersionBlocksMock,
 }));
+
+vi.mock("@/lib/tenant-services/service", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/tenant-services/service")>(
+    "@/lib/tenant-services/service",
+  );
+  return {
+    ...actual,
+    hasTenantFeatureEnabled: hasTenantFeatureEnabledMock,
+  };
+});
 
 function tenantSession(role: "TENANT_OWNER" | "TENANT_ADMIN" | "TENANT_USER" = "TENANT_ADMIN") {
   return {
@@ -55,6 +66,7 @@ function superadminSession() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  hasTenantFeatureEnabledMock.mockResolvedValue(true);
 });
 
 describe("accreditation block-template routes", () => {
@@ -293,5 +305,46 @@ describe("accreditation block-template routes", () => {
       { params: Promise.resolve({ id: "version-1" }) },
     );
     expect(invalidPublishResponse.status).toBe(400);
+  });
+
+  test("tenant block assistantConfig writes are rejected when copilot is disabled", async () => {
+    getServerSessionMock.mockResolvedValue(tenantSession("TENANT_OWNER"));
+    hasTenantFeatureEnabledMock.mockResolvedValue(false);
+
+    const blocksRoute = await import(
+      "@/app/api/tenant/accreditation/versions/[id]/blocks/route"
+    );
+    const blockRoute = await import(
+      "@/app/api/tenant/accreditation/blocks/[id]/route"
+    );
+
+    const createDenied = await blocksRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          blockCode: "CR1",
+          title: "Research",
+          blockType: "GROUP",
+          assistantConfig: { mode: "STRICT" },
+        }),
+      }),
+      { params: Promise.resolve({ id: "version-1" }) },
+    );
+    expect(createDenied.status).toBe(403);
+    expect(createTenantVersionBlockMock).not.toHaveBeenCalled();
+
+    const patchDenied = await blockRoute.PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          assistantConfig: { mode: "STRICT" },
+        }),
+      }),
+      { params: Promise.resolve({ id: "block-1" }) },
+    );
+    expect(patchDenied.status).toBe(403);
+    expect(updateTenantVersionBlockMock).not.toHaveBeenCalled();
   });
 });

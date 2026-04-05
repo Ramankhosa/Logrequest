@@ -115,6 +115,7 @@ export const superadminNavigationGroups: NavigationGroup[] = [
       { href: "/superadmin/kra-categories", label: "KRA Categories", icon: "tag" },
       { href: "/superadmin/journals", label: "Journal Catalog", icon: "tag" },
       { href: "/superadmin/accreditation", label: "Accreditation", icon: "award" },
+      { href: "/superadmin/llm-config", label: "LLM Config", icon: "bot" },
       { href: "/insights", label: "Insights", icon: "bar-chart-2" },
     ],
   },

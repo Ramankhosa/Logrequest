@@ -12,6 +12,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import { hasTenantServiceEnabled } from "@/lib/tenant-services/service";
+import { blockAssistantConfigSchema } from "./copilot-config";
 
 const MAX_BLOCK_DEPTH = 2;
 
@@ -54,6 +55,7 @@ type BlockRow = {
   validationRules: Prisma.JsonValue | null;
   evidenceSchema: Prisma.JsonValue | null;
   expectedEvidence: Prisma.JsonValue | null;
+  assistantConfig: Prisma.JsonValue | null;
   dependencyRules: Prisma.JsonValue | null;
   sourceLinks: Prisma.JsonValue | null;
   isLeaf: boolean;
@@ -87,6 +89,7 @@ const blockInputSchema = z.object({
   scoringRule: z.unknown().optional(),
   validationRules: z.unknown().optional(),
   evidenceSchema: z.unknown().optional(),
+  assistantConfig: z.unknown().optional(),
   dependencyRules: z.unknown().optional(),
   sourceLinks: z.unknown().optional(),
   isActive: z.boolean().optional(),
@@ -110,6 +113,7 @@ const blockPatchSchema = z.object({
   scoringRule: z.unknown().optional(),
   validationRules: z.unknown().optional(),
   evidenceSchema: z.unknown().optional(),
+  assistantConfig: z.unknown().optional(),
   dependencyRules: z.unknown().optional(),
   sourceLinks: z.unknown().optional(),
   isActive: z.boolean().optional(),
@@ -281,6 +285,7 @@ function serializeJsonFields(values: z.infer<typeof blockInputSchema> | z.infer<
     "scoringRule",
     "validationRules",
     "evidenceSchema",
+    "assistantConfig",
     "dependencyRules",
     "sourceLinks",
   ] as const;
@@ -441,11 +446,27 @@ function mapBlockRows(rows: Awaited<ReturnType<typeof prisma.criterionBlock.find
     validationRules: block.validationRules as Prisma.JsonValue | null,
     evidenceSchema: block.evidenceSchema as Prisma.JsonValue | null,
     expectedEvidence: block.expectedEvidence as Prisma.JsonValue | null,
+    assistantConfig: block.assistantConfig as Prisma.JsonValue | null,
     dependencyRules: block.dependencyRules as Prisma.JsonValue | null,
     sourceLinks: block.sourceLinks as Prisma.JsonValue | null,
     isLeaf: block.isLeaf,
     isActive: block.isActive,
   }));
+}
+
+function validateAssistantConfigInput(value: Prisma.InputJsonValue | undefined, originalValue: unknown) {
+  if (originalValue === undefined || originalValue === null) {
+    return null;
+  }
+  if (typeof originalValue === "string" && originalValue.trim().length === 0) {
+    return null;
+  }
+  if (value === undefined) {
+    return null;
+  }
+
+  const parsed = blockAssistantConfigSchema.safeParse(value);
+  return parsed.success ? null : parsed.error.issues[0]?.message ?? "assistantConfig is invalid.";
 }
 
 async function listVersionBlocks(versionId: string) {
@@ -716,6 +737,13 @@ async function createBlockTx(
   if (!jsonFields.ok) {
     return { status: "error" as const, message: jsonFields.message };
   }
+  const assistantConfigError = validateAssistantConfigInput(
+    jsonFields.values.assistantConfig,
+    parsed.data.assistantConfig,
+  );
+  if (assistantConfigError) {
+    return { status: "error" as const, message: assistantConfigError };
+  }
 
   let depth = 0;
   if (parsed.data.parentId) {
@@ -770,6 +798,7 @@ async function createBlockTx(
         validationRules: jsonFields.values.validationRules,
         evidenceSchema: jsonFields.values.evidenceSchema,
         expectedEvidence: jsonFields.values.evidenceSchema,
+        assistantConfig: jsonFields.values.assistantConfig,
         dependencyRules: jsonFields.values.dependencyRules,
         sourceLinks: jsonFields.values.sourceLinks,
         isActive: parsed.data.isActive ?? true,
@@ -814,6 +843,13 @@ async function updateBlockTx(
   const jsonFields = serializeJsonFields(parsed.data);
   if (!jsonFields.ok) {
     return { status: "error" as const, message: jsonFields.message };
+  }
+  const assistantConfigError = validateAssistantConfigInput(
+    jsonFields.values.assistantConfig,
+    parsed.data.assistantConfig,
+  );
+  if (assistantConfigError) {
+    return { status: "error" as const, message: assistantConfigError };
   }
 
   let topology:
@@ -934,6 +970,7 @@ async function updateBlockTx(
                 expectedEvidence: jsonFields.values.evidenceSchema,
               }
             : {}),
+          ...(jsonFields.values.assistantConfig !== undefined ? { assistantConfig: jsonFields.values.assistantConfig } : {}),
           ...(jsonFields.values.dependencyRules !== undefined ? { dependencyRules: jsonFields.values.dependencyRules } : {}),
           ...(jsonFields.values.sourceLinks !== undefined ? { sourceLinks: jsonFields.values.sourceLinks } : {}),
           ...(parsed.data.isActive !== undefined ? { isActive: parsed.data.isActive } : {}),
@@ -1546,6 +1583,7 @@ export async function forkGlobalVersionToTenantDraft(
             validationRules: block.validationRules as Prisma.InputJsonValue | null,
             evidenceSchema: block.evidenceSchema as Prisma.InputJsonValue | null,
             expectedEvidence: block.expectedEvidence as Prisma.InputJsonValue | null,
+            assistantConfig: block.assistantConfig as Prisma.InputJsonValue | null,
             lineageKey: block.lineageKey,
             visibility: block.visibility,
             contributesToTotal: block.contributesToTotal,
@@ -1574,6 +1612,13 @@ export async function forkGlobalVersionToTenantDraft(
         sourceVersionId: sourceVersion.id,
         versionCode: await getNextForkVersionCodeTx(tx, tenantBody.id, sourceVersion.versionCode),
         versionName: `${sourceVersion.versionName} (Tenant Draft)`,
+        assistantPackKey: sourceVersion.assistantPackKey,
+        copilotMode: sourceVersion.copilotMode,
+        llmProfileId: sourceVersion.llmProfileId,
+        llmConfig:
+          sourceVersion.llmConfig === null
+            ? Prisma.JsonNull
+            : (sourceVersion.llmConfig as Prisma.InputJsonValue),
         scoreBase: sourceVersion.scoreBase,
         convertedScaleMax: sourceVersion.convertedScaleMax,
         conversionType: sourceVersion.conversionType,
@@ -1650,6 +1695,7 @@ export async function forkGlobalVersionToTenantDraft(
           validationRules: block.validationRules ?? undefined,
           evidenceSchema: block.evidenceSchema ?? undefined,
           expectedEvidence: block.expectedEvidence ?? block.evidenceSchema ?? undefined,
+          assistantConfig: block.assistantConfig ?? undefined,
           isLeaf: block.isLeaf ?? blockTypeIsLeaf(block.blockType),
           dependencyRules: block.dependencyRules ?? undefined,
           sourceLinks: block.sourceLinks ?? undefined,

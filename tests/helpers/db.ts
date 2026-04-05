@@ -1,10 +1,14 @@
 import type {
   MembershipStatus,
   Role,
+  TenantFeatureCode,
   TenantServiceCode,
   UserLifecycleState,
 } from "@prisma/client";
-import { TenantServiceEntitlementStatus } from "@prisma/client";
+import {
+  TenantFeatureEntitlementStatus,
+  TenantServiceEntitlementStatus,
+} from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export type DbTracker = {
@@ -135,6 +139,35 @@ export async function enableTenantService(input: {
       tenantId: input.tenantId,
       serviceCode: input.serviceCode,
       status: TenantServiceEntitlementStatus.ENABLED,
+      enabledAt: new Date(),
+      enabledByUserId: input.actorUserId,
+    },
+  });
+}
+
+export async function enableTenantFeature(input: {
+  tenantId: string;
+  featureCode: TenantFeatureCode;
+  actorUserId: string;
+}) {
+  return prisma.tenantFeatureEntitlement.upsert({
+    where: {
+      tenantId_featureCode: {
+        tenantId: input.tenantId,
+        featureCode: input.featureCode,
+      },
+    },
+    update: {
+      status: TenantFeatureEntitlementStatus.ENABLED,
+      enabledAt: new Date(),
+      enabledByUserId: input.actorUserId,
+      disabledAt: null,
+      disabledByUserId: null,
+    },
+    create: {
+      tenantId: input.tenantId,
+      featureCode: input.featureCode,
+      status: TenantFeatureEntitlementStatus.ENABLED,
       enabledAt: new Date(),
       enabledByUserId: input.actorUserId,
     },
@@ -275,6 +308,13 @@ export async function cleanupTrackedData(tracker: DbTracker) {
       },
     });
     await prisma.tenantServiceEntitlement.deleteMany({
+      where: {
+        tenantId: {
+          in: tenantIds,
+        },
+      },
+    });
+    await prisma.tenantFeatureEntitlement.deleteMany({
       where: {
         tenantId: {
           in: tenantIds,

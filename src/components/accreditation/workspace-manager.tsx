@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { WorkspaceProjectionStudio } from "./workspace-projection-studio";
+import { WorkspaceReportingCopilotPanel } from "./workspace-reporting-copilot-panel";
 
 type BodyOption = {
   id: string;
@@ -642,6 +643,12 @@ export function WorkspaceManager() {
                   blockCode: entry.blockCode,
                   blockTitle: entry.blockTitle,
                 }))}
+              />
+
+              <WorkspaceReportingCopilotPanel
+                workspaceId={detail.id}
+                workspaceStatus={detail.status}
+                allowWorkflowMutations
               />
             </div>
           )}

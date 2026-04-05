@@ -83,6 +83,15 @@ enum TenantServiceEntitlementStatus {
   DISABLED
 }
 
+enum TenantFeatureCode {
+  ACCREDITATION_COPILOT
+}
+
+enum TenantFeatureEntitlementStatus {
+  ENABLED
+  DISABLED
+}
+
 enum ContributorType {
   INTERNAL
   EXTERNAL
@@ -239,6 +248,20 @@ enum AccreditationTemplateLifecycleStatus {
   PUBLISHED
   SUPERSEDED
   ARCHIVED
+}
+
+enum CopilotMode {
+  DISABLED
+  DETERMINISTIC_ONLY
+  LLM_ASSISTED
+}
+
+enum PlatformLlmProvider {
+  OPENAI
+  ANTHROPIC
+  GOOGLE
+  DEEPSEEK
+  GROQ
 }
 
 enum CriterionBlockType {
@@ -423,6 +446,62 @@ enum RefreshSuggestionStatus {
   ACCEPTED
   REJECTED
   AUTO_APPLIED
+}
+
+enum DvvQueryStatus {
+  RECEIVED
+  ASSIGNED
+  DRAFTED
+  SUBMITTED
+  CLOSED
+}
+
+enum DvvQueryPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RecommendationStatus {
+  RECEIVED
+  ACTION_PLANNED
+  IN_PROGRESS
+  COMPLETED
+  DEFERRED
+}
+
+enum RecommendationPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum SuggestionScope {
+  WORKSPACE
+  BLOCK_ENTRY
+}
+
+enum SuggestionType {
+  GUIDANCE
+  REVIEW
+  DRAFT
+  RISK
+  QUESTION_CHECKLIST
+}
+
+enum SuggestionStatus {
+  ACTIVE
+  ACCEPTED
+  DISMISSED
+  STALE
+}
+
+enum EvidenceExtractionStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  UNSUPPORTED
 }
 
 enum AssessmentPeriodState {
@@ -736,6 +815,7 @@ model Tenant {
   journalCatalogRecords          JournalCatalogRecord[]
   journalImportBatches           JournalImportBatch[]
   serviceEntitlements            TenantServiceEntitlement[]
+  featureEntitlements            TenantFeatureEntitlement[]
   accreditationBodies            AccreditationBody[]
   assessmentWorkspaces           AssessmentWorkspace[]
   kpiAccreditationBlockLinks KpiAccreditationBlockLink[]
@@ -779,6 +859,25 @@ model TenantServiceEntitlement {
   @@unique([tenantId, serviceCode])
   @@index([tenantId, status])
   @@index([serviceCode, status])
+}
+
+model TenantFeatureEntitlement {
+  id               String                         @id @default(cuid())
+  tenantId         String
+  featureCode      TenantFeatureCode
+  status           TenantFeatureEntitlementStatus @default(DISABLED)
+  enabledAt        DateTime?
+  enabledByUserId  String?
+  disabledAt       DateTime?
+  disabledByUserId String?
+  notes            String?
+  createdAt        DateTime                       @default(now())
+  updatedAt        DateTime                       @updatedAt
+  tenant           Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, featureCode])
+  @@index([tenantId, status])
+  @@index([featureCode, status])
 }
 
 model User {
@@ -1148,6 +1247,10 @@ model AccreditationBodyVersion {
   sourceVersionId   String?
   versionCode       String
   versionName       String
+  assistantPackKey  String?
+  copilotMode       CopilotMode                     @default(DETERMINISTIC_ONLY)
+  llmProfileId      String?
+  llmConfig         Json?
   engineVersion     Int                              @default(1)
   scoreBase         Float
   convertedScaleMax Float?
@@ -1166,6 +1269,7 @@ model AccreditationBodyVersion {
   body              AccreditationBody                @relation(fields: [bodyId], references: [id], onDelete: Cascade)
   sourceVersion     AccreditationBodyVersion?        @relation("AccreditationVersionForks", fields: [sourceVersionId], references: [id], onDelete: SetNull)
   forkedVersions    AccreditationBodyVersion[]       @relation("AccreditationVersionForks")
+  llmProfile        PlatformLlmProfile?             @relation(fields: [llmProfileId], references: [id], onDelete: SetNull)
   blocks            CriterionBlock[]
   profiles          AccreditationProfile[]
   gradeBands        AccreditationGradeBand[]
@@ -1175,6 +1279,53 @@ model AccreditationBodyVersion {
   @@unique([bodyId, versionCode])
   @@index([bodyId, isActive])
   @@index([lifecycleStatus])
+  @@index([llmProfileId])
+}
+
+model PlatformLlmModel {
+  id                         String                    @id @default(cuid())
+  code                       String                    @unique
+  displayName                String
+  provider                   PlatformLlmProvider
+  contextWindow              Int
+  maxOutputTokens            Int?
+  supportsVision             Boolean                   @default(false)
+  supportsStreaming          Boolean                   @default(false)
+  supportsStructuredOutputs  Boolean                   @default(false)
+  supportsReasoning          Boolean                   @default(false)
+  inputCostPer1M             Int                       @default(0)
+  outputCostPer1M            Int                       @default(0)
+  isActive                   Boolean                   @default(true)
+  isDefault                  Boolean                   @default(false)
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+  primaryProfiles            PlatformLlmProfile[]      @relation("PlatformLlmProfilePrimaryModel")
+
+  @@index([provider, isActive])
+}
+
+model PlatformLlmProfile {
+  id                        String                     @id @default(cuid())
+  key                       String                     @unique
+  displayName               String
+  description               String?
+  primaryModelId            String
+  fallbackModelIds          String[]                   @default([])
+  defaultMaxTokensIn        Int?
+  defaultMaxTokensOut       Int?
+  defaultTemperature        Float?
+  defaultReasoningEffort    String?
+  supportsStructuredOutputs Boolean                    @default(false)
+  usageTags                 String[]                   @default([])
+  isActive                  Boolean                    @default(true)
+  isDefault                 Boolean                    @default(false)
+  createdAt                 DateTime                   @default(now())
+  updatedAt                 DateTime                   @updatedAt
+  primaryModel              PlatformLlmModel           @relation("PlatformLlmProfilePrimaryModel", fields: [primaryModelId], references: [id], onDelete: Restrict)
+  bodyVersions              AccreditationBodyVersion[]
+
+  @@index([primaryModelId])
+  @@index([isActive])
 }
 
 model AccreditationProfile {
@@ -1220,6 +1371,7 @@ model CriterionBlock {
   validationRules       Json?
   evidenceSchema        Json?
   expectedEvidence      Json?
+  assistantConfig       Json?
   dependencyRules       Json?
   sourceLinks           Json?
   isLeaf                Boolean                   @default(false)
@@ -1335,6 +1487,9 @@ model AssessmentWorkspace {
   freezeLogs            WorkspaceFreezeLog[]
   evidence              BlockEvidence[]
   snapshots             ScoreSnapshot[]
+  dvvQueries            DvvQuery[]
+  peerRecommendations   PeerRecommendation[]
+  assistantSuggestions  AccreditationAssistantSuggestion[]
   projectionRecipes     BlockProjectionRecipe[]      @relation("ProjectionTargetWorkspace")
   sourceProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionSourceWorkspace")
 
@@ -1387,6 +1542,7 @@ model BlockEntry {
   changeLog            BlockEntryChange[]
   discussionThreads    WorkspaceDiscussionThread[]
   tableInstances       BlockEntryTableInstance[]
+  assistantSuggestions AccreditationAssistantSuggestion[]
   targetProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionTargetEntry")
   sourceProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionSourceEntry")
   projectionTargets    BlockProjectionTarget[]
@@ -1507,9 +1663,109 @@ model EvidenceVersion {
   uploadedByUserId String
   uploadedAt       DateTime          @default(now())
   evidence         BlockEvidence          @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  extraction       EvidenceVersionExtraction?
 
   @@unique([evidenceId, versionNumber])
   @@index([evidenceId, uploadedAt])
+}
+
+model DvvQuery {
+  id                      String               @id @default(cuid())
+  workspaceId             String
+  linkedBlockIds          String[]             @default([])
+  queryNumber             String
+  queryText               String               @db.Text
+  responseText            String?              @db.Text
+  status                  DvvQueryStatus       @default(RECEIVED)
+  priority                DvvQueryPriority     @default(MEDIUM)
+  assignedToUserId        String?
+  assignedToExternalName  String?
+  assignedToExternalEmail String?
+  dueDate                 DateTime?
+  receivedAt              DateTime
+  respondedAt             DateTime?
+  responseAttachments     Json?
+  createdByUserId         String
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+  workspace               AssessmentWorkspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, priority])
+}
+
+model PeerRecommendation {
+  id                      String                  @id @default(cuid())
+  workspaceId             String
+  linkedBlockIds          String[]                @default([])
+  recommendationText      String                  @db.Text
+  priority                RecommendationPriority  @default(MEDIUM)
+  actionPlan              String?                 @db.Text
+  status                  RecommendationStatus    @default(RECEIVED)
+  assignedToUserId        String?
+  assignedToExternalName  String?
+  assignedToExternalEmail String?
+  targetDate              DateTime?
+  completedAt             DateTime?
+  progressNotes           Json?
+  createdByUserId         String
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  workspace               AssessmentWorkspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, priority])
+}
+
+model AccreditationAssistantSuggestion {
+  id                String              @id @default(cuid())
+  workspaceId       String
+  entryId           String?
+  scope             SuggestionScope
+  type              SuggestionType
+  assistantPackKey  String
+  profileKey        String?
+  providerCode      String?
+  modelCode         String?
+  promptVersion     String?
+  content           String              @db.Text
+  structuredPayload Json?
+  citations         Json
+  groundingStatus   String
+  confidence        Float?
+  sourceHash        String?
+  executionMeta     Json?
+  status            SuggestionStatus    @default(ACTIVE)
+  acceptedByUserId  String?
+  acceptedAt        DateTime?
+  dismissedByUserId String?
+  dismissedAt       DateTime?
+  createdByUserId   String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  workspace         AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entry             BlockEntry?         @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, scope, type, status])
+  @@index([entryId, type, status])
+}
+
+model EvidenceVersionExtraction {
+  id                String                   @id @default(cuid())
+  evidenceVersionId String                   @unique
+  status            EvidenceExtractionStatus @default(PENDING)
+  contentHash       String?
+  extractedText     String?                  @db.Text
+  structuredChunks  Json?
+  pageCount         Int?
+  fileType          String?
+  processingMeta    Json?
+  processedAt       DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  evidenceVersion   EvidenceVersion          @relation(fields: [evidenceVersionId], references: [id], onDelete: Cascade)
+
+  @@index([status])
 }
 
 model EvidenceEntryLink {

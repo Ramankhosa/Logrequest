@@ -46,14 +46,14 @@ type SuccessResult<T extends object> = {
 
 type ServiceResult<T extends object = Record<string, never>> = SuccessResult<T> | ErrorResult;
 
-type CollaboratorContext = {
+export type CollaboratorContext = {
   id?: string;
   role: WorkspaceCollaboratorRole;
   assignedSections: string[];
   lastVisitedAt?: Date | null;
 };
 
-type WorkspacePermissionContext = {
+export type WorkspacePermissionContext = {
   workspace: {
     id: string;
     tenantId: string;
@@ -539,7 +539,7 @@ function buildResponseData(input: {
   return base;
 }
 
-function getResponseNumericValue(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
+export function getResponseNumericValue(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
   if (!response) {
     return null;
   }
@@ -555,7 +555,7 @@ function getResponseNumericValue(response: Pick<BlockResponseLike, "responseData
   return null;
 }
 
-function getResponseTextValue(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
+export function getResponseTextValue(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
   if (!response) {
     return null;
   }
@@ -564,7 +564,7 @@ function getResponseTextValue(response: Pick<BlockResponseLike, "responseData"> 
   return typeof value === "string" ? normalizeNullableString(value) : null;
 }
 
-function getResponseYear(response: Pick<BlockResponseLike, "year" | "scopeKey">) {
+export function getResponseYear(response: Pick<BlockResponseLike, "year" | "scopeKey">) {
   if (response.year !== null && response.year !== undefined) {
     return response.year;
   }
@@ -572,7 +572,7 @@ function getResponseYear(response: Pick<BlockResponseLike, "year" | "scopeKey">)
   return match ? Number(match[1]) : null;
 }
 
-function hasResponseContent(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
+export function hasResponseContent(response: Pick<BlockResponseLike, "responseData"> | null | undefined) {
   return getResponseNumericValue(response) !== null || !!getResponseTextValue(response);
 }
 
@@ -758,7 +758,7 @@ function buildTextChangeLog(before: string | null | undefined, after: string | n
   };
 }
 
-function collectExpectedEvidenceDocTypes(value: Prisma.JsonValue | null | undefined): string[] {
+export function collectExpectedEvidenceDocTypes(value: Prisma.JsonValue | null | undefined): string[] {
   if (!value) {
     return [];
   }
@@ -894,7 +894,7 @@ async function hasWorkspaceAdminAccess(
   });
 }
 
-async function getWorkspacePermissionContext(input: {
+export async function getWorkspacePermissionContext(input: {
   tenantId: string;
   workspaceId: string;
   actorUserId: string;
@@ -971,11 +971,11 @@ async function getWorkspacePermissionContext(input: {
   };
 }
 
-function canReadWorkspace(context: WorkspacePermissionContext) {
+export function canReadWorkspace(context: WorkspacePermissionContext) {
   return context.isWorkspaceAdmin || context.collaborator !== null;
 }
 
-function canPerformWorkspaceRole(
+export function canPerformWorkspaceRole(
   context: WorkspacePermissionContext,
   roles: WorkspaceCollaboratorRole[],
 ) {
@@ -1178,7 +1178,7 @@ async function buildWorkspaceSectionDefinitionsTx(
   };
 }
 
-function isWorkspaceLockedForEntryEdits(status: AssessmentWorkspaceStatus) {
+export function isWorkspaceLockedForEntryEdits(status: AssessmentWorkspaceStatus) {
   const lockedStatuses: AssessmentWorkspaceStatus[] = [
     AssessmentWorkspaceStatus.FROZEN,
     AssessmentWorkspaceStatus.SUBMITTED,

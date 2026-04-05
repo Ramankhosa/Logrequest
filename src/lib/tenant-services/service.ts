@@ -1,4 +1,11 @@
-import { Prisma, Role, TenantServiceCode, TenantServiceEntitlementStatus } from "@prisma/client";
+import {
+  Prisma,
+  Role,
+  TenantFeatureCode,
+  TenantFeatureEntitlementStatus,
+  TenantServiceCode,
+  TenantServiceEntitlementStatus,
+} from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export type TenantServiceEntitlementView = {
@@ -13,6 +20,24 @@ export type TenantServiceEntitlementView = {
   notes: string | null;
   createdAt: Date;
   updatedAt: Date;
+};
+
+export type TenantFeatureEntitlementView = {
+  id: string;
+  tenantId: string;
+  featureCode: TenantFeatureCode;
+  status: TenantFeatureEntitlementStatus;
+  enabledAt: Date | null;
+  enabledByUserId: string | null;
+  disabledAt: Date | null;
+  disabledByUserId: string | null;
+  notes: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+const FEATURE_PARENT_SERVICE: Record<TenantFeatureCode, TenantServiceCode> = {
+  [TenantFeatureCode.ACCREDITATION_COPILOT]: TenantServiceCode.ACCREDITATION,
 };
 
 export async function listTenantServiceEntitlements(
@@ -51,6 +76,47 @@ export async function listEnabledTenantServiceCodes(tenantId: string): Promise<T
   return rows.map((row) => row.serviceCode);
 }
 
+export async function listTenantFeatureEntitlements(
+  tenantId: string,
+): Promise<TenantFeatureEntitlementView[]> {
+  const rows = await prisma.tenantFeatureEntitlement.findMany({
+    where: { tenantId },
+    orderBy: { featureCode: "asc" },
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    tenantId: row.tenantId,
+    featureCode: row.featureCode,
+    status: row.status,
+    enabledAt: row.enabledAt,
+    enabledByUserId: row.enabledByUserId ?? null,
+    disabledAt: row.disabledAt,
+    disabledByUserId: row.disabledByUserId ?? null,
+    notes: row.notes ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }));
+}
+
+export async function listEnabledTenantFeatureCodes(
+  tenantId: string,
+): Promise<TenantFeatureCode[]> {
+  const rows = await prisma.tenantFeatureEntitlement.findMany({
+    where: {
+      tenantId,
+      status: TenantFeatureEntitlementStatus.ENABLED,
+    },
+    orderBy: { featureCode: "asc" },
+    select: { featureCode: true },
+  });
+
+  const enabledServices = new Set(await listEnabledTenantServiceCodes(tenantId));
+  return rows
+    .map((row) => row.featureCode)
+    .filter((featureCode) => enabledServices.has(FEATURE_PARENT_SERVICE[featureCode]));
+}
+
 export async function hasTenantServiceEnabled(
   tenantId: string,
   serviceCode: TenantServiceCode,
@@ -66,6 +132,26 @@ export async function hasTenantServiceEnabled(
   });
 
   return row?.status === TenantServiceEntitlementStatus.ENABLED;
+}
+
+export async function hasTenantFeatureEnabled(
+  tenantId: string,
+  featureCode: TenantFeatureCode,
+): Promise<boolean> {
+  const [featureRow, parentServiceEnabled] = await Promise.all([
+    prisma.tenantFeatureEntitlement.findUnique({
+      where: {
+        tenantId_featureCode: {
+          tenantId,
+          featureCode,
+        },
+      },
+      select: { status: true },
+    }),
+    hasTenantServiceEnabled(tenantId, FEATURE_PARENT_SERVICE[featureCode]),
+  ]);
+
+  return parentServiceEnabled && featureRow?.status === TenantFeatureEntitlementStatus.ENABLED;
 }
 
 export async function setTenantServiceEntitlement(input: {
@@ -177,5 +263,118 @@ export async function setTenantServiceEntitlement(input: {
       createdAt: entitlement.createdAt,
       updatedAt: entitlement.updatedAt,
     } satisfies TenantServiceEntitlementView,
+  };
+}
+
+export async function setTenantFeatureEntitlement(input: {
+  tenantId: string;
+  featureCode: TenantFeatureCode;
+  enabled: boolean;
+  actorUserId: string;
+  actorRole: Role;
+  notes?: string | null;
+}) {
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: input.tenantId },
+    select: { id: true, code: true, name: true },
+  });
+
+  if (!tenant) {
+    return { status: "error" as const, message: "Tenant not found." };
+  }
+
+  const nextStatus = input.enabled
+    ? TenantFeatureEntitlementStatus.ENABLED
+    : TenantFeatureEntitlementStatus.DISABLED;
+
+  const existing = await prisma.tenantFeatureEntitlement.findUnique({
+    where: {
+      tenantId_featureCode: {
+        tenantId: input.tenantId,
+        featureCode: input.featureCode,
+      },
+    },
+  });
+
+  const now = new Date();
+
+  const entitlement = await prisma.$transaction(async (tx) => {
+    const saved = await tx.tenantFeatureEntitlement.upsert({
+      where: {
+        tenantId_featureCode: {
+          tenantId: input.tenantId,
+          featureCode: input.featureCode,
+        },
+      },
+      create: {
+        tenantId: input.tenantId,
+        featureCode: input.featureCode,
+        status: nextStatus,
+        enabledAt: input.enabled ? now : null,
+        enabledByUserId: input.enabled ? input.actorUserId : null,
+        disabledAt: input.enabled ? null : now,
+        disabledByUserId: input.enabled ? null : input.actorUserId,
+        notes: input.notes ?? null,
+      },
+      update: {
+        status: nextStatus,
+        enabledAt: input.enabled ? now : existing?.enabledAt ?? now,
+        enabledByUserId: input.enabled ? input.actorUserId : existing?.enabledByUserId ?? null,
+        disabledAt: input.enabled ? null : now,
+        disabledByUserId: input.enabled ? null : input.actorUserId,
+        notes: input.notes ?? null,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId: input.tenantId,
+        actorUserId: input.actorUserId,
+        actorRole: input.actorRole,
+        targetType: "TenantFeatureEntitlement",
+        targetId: saved.id,
+        action: input.enabled ? "tenant.feature.enabled" : "tenant.feature.disabled",
+        previousState: existing
+          ? {
+              status: existing.status,
+              notes: existing.notes,
+              enabledAt: existing.enabledAt?.toISOString() ?? null,
+              disabledAt: existing.disabledAt?.toISOString() ?? null,
+            }
+          : Prisma.JsonNull,
+        newState: {
+          featureCode: saved.featureCode,
+          status: saved.status,
+          notes: saved.notes,
+          enabledAt: saved.enabledAt?.toISOString() ?? null,
+          disabledAt: saved.disabledAt?.toISOString() ?? null,
+        },
+        metadata: {
+          tenantCode: tenant.code,
+          tenantName: tenant.name,
+          parentService: FEATURE_PARENT_SERVICE[input.featureCode],
+        },
+      },
+    });
+
+    return saved;
+  });
+
+  return {
+    status: "success" as const,
+    message: `${input.featureCode} feature ${input.enabled ? "enabled" : "disabled"} for ${tenant.name}.`,
+    entitlement: {
+      id: entitlement.id,
+      tenantId: entitlement.tenantId,
+      featureCode: entitlement.featureCode,
+      status: entitlement.status,
+      enabledAt: entitlement.enabledAt,
+      enabledByUserId: entitlement.enabledByUserId ?? null,
+      disabledAt: entitlement.disabledAt,
+      disabledByUserId: entitlement.disabledByUserId ?? null,
+      notes: entitlement.notes ?? null,
+      createdAt: entitlement.createdAt,
+      updatedAt: entitlement.updatedAt,
+    } satisfies TenantFeatureEntitlementView,
   };
 }

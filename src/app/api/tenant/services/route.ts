@@ -1,7 +1,10 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth/options";
-import { listEnabledTenantServiceCodes } from "@/lib/tenant-services/service";
+import {
+  listEnabledTenantFeatureCodes,
+  listEnabledTenantServiceCodes,
+} from "@/lib/tenant-services/service";
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -13,6 +16,9 @@ export async function GET() {
     );
   }
 
-  const enabledServices = await listEnabledTenantServiceCodes(session.user.tenantId);
-  return NextResponse.json({ status: "success", enabledServices });
+  const [enabledServices, enabledFeatures] = await Promise.all([
+    listEnabledTenantServiceCodes(session.user.tenantId),
+    listEnabledTenantFeatureCodes(session.user.tenantId),
+  ]);
+  return NextResponse.json({ status: "success", enabledServices, enabledFeatures });
 }

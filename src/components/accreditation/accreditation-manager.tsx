@@ -20,6 +20,7 @@ type VersionRow = {
   versionName: string;
   scoreBase: number;
   isActive: boolean;
+  copilotMode?: "DISABLED" | "DETERMINISTIC_ONLY" | "LLM_ASSISTED";
   lifecycleStatus: "DRAFT" | "VALIDATED" | "PUBLISHED" | "SUPERSEDED" | "ARCHIVED";
   blockCount?: number;
 };
@@ -39,8 +40,39 @@ type BlockNode = {
   validationRules?: unknown;
   evidenceSchema?: unknown;
   dependencyRules?: unknown;
+  assistantConfig?: unknown;
   isLeaf?: boolean;
   children: BlockNode[];
+};
+
+type LlmProfileOption = {
+  id: string;
+  key: string;
+  displayName: string;
+  primaryModel: {
+    displayName: string;
+    code: string;
+    provider: string;
+  };
+};
+
+type CopilotConfigRow = {
+  versionId: string;
+  copilotMode: "DISABLED" | "DETERMINISTIC_ONLY" | "LLM_ASSISTED";
+  assistantPackKey: string | null;
+  llmProfileId: string | null;
+  llmProfile: LlmProfileOption | null;
+  llmConfig: unknown;
+  lockState: {
+    isLocked: boolean;
+    reason: string | null;
+  };
+  effectiveSource: {
+    type: "GLOBAL_INHERITED" | "GLOBAL_OWNED" | "TENANT_OWNED";
+    versionId: string;
+    versionCode: string | null;
+    bodyCode: string;
+  };
 };
 
 type ProfileWeightRow = {
@@ -151,6 +183,18 @@ function toNumber(value: FormDataEntryValue | null, fallback = 0): number {
   return parsed ?? fallback;
 }
 
+function tryParseJsonInput(value: string, label: string) {
+  if (!value.trim()) {
+    return { status: "success" as const, value: null };
+  }
+
+  try {
+    return { status: "success" as const, value: JSON.parse(value) as unknown };
+  } catch {
+    return { status: "error" as const, message: `${label} must be valid JSON.` };
+  }
+}
+
 export function AccreditationManager({
   scope,
   initialKpiId,
@@ -174,21 +218,34 @@ export function AccreditationManager({
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [blocks, setBlocks] = useState<BlockNode[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [copilotConfig, setCopilotConfig] = useState<CopilotConfigRow | null>(null);
+  const [availableLlmProfiles, setAvailableLlmProfiles] = useState<LlmProfileOption[]>([]);
   const [criteria, setCriteria] = useState<CriterionNode[]>([]);
   const [selectedCriterionId, setSelectedCriterionId] = useState<string | null>(null);
   const [blockKpis, setBlockKpis] = useState<CriterionKpiRow[]>([]);
   const [kpis, setKpis] = useState<KpiOption[]>([]);
   const [selectedKpiId, setSelectedKpiId] = useState<string | null>(initialKpiId ?? null);
   const [links, setLinks] = useState<LinkRow[]>([]);
+  const [tenantEnabledFeatures, setTenantEnabledFeatures] = useState<string[]>([]);
 
   const selectedBody = bodies.find((body) => body.id === selectedBodyId) ?? null;
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  const tenantCopilotEnabled =
+    scope === "superadmin" || tenantEnabledFeatures.includes("ACCREDITATION_COPILOT");
   const canEditSelectedBody = scope === "superadmin" || selectedBody?.scope === "TENANT";
+  const canEditSelectedVersionCopilot =
+    tenantCopilotEnabled &&
+    !!selectedVersion &&
+    !!copilotConfig &&
+    canEditSelectedBody &&
+    !copilotConfig.lockState.isLocked &&
+    (scope === "superadmin" || selectedBody?.scope === "TENANT");
   const canEditSelectedVersionBlocks =
     canEditSelectedBody &&
     (selectedVersion?.lifecycleStatus === "DRAFT" ||
       selectedVersion?.lifecycleStatus === "VALIDATED");
+  const canEditAssistantRules = scope === "superadmin" || tenantCopilotEnabled;
   const flatBlocks = useMemo(() => flattenBlocks(blocks), [blocks]);
   const selectedBlock = flatBlocks.find((block) => block.id === selectedBlockId) ?? null;
   const canEditRuntimeCriteria = false;
@@ -260,6 +317,23 @@ export function AccreditationManager({
     setCriteria(mapBlocksToCriteria(nextBlocks));
   }
 
+  async function fetchCopilotConfig(versionId: string) {
+    const response = await fetch(`${basePath}/versions/${versionId}/copilot-config`, {
+      cache: "no-store",
+    });
+    const data = (await response.json()) as {
+      status: "success" | "error";
+      message?: string;
+      config?: CopilotConfigRow;
+      availableProfiles?: LlmProfileOption[];
+    };
+    if (!response.ok || data.status !== "success") {
+      throw new Error(data.message ?? "Failed to load copilot settings.");
+    }
+    setCopilotConfig(data.config ?? null);
+    setAvailableLlmProfiles(data.availableProfiles ?? []);
+  }
+
   async function fetchKpis() {
     if (scope !== "tenant") {
       return;
@@ -277,6 +351,23 @@ export function AccreditationManager({
       throw new Error(data.message ?? "Failed to load KPI options.");
     }
     setKpis(data.kpis ?? []);
+  }
+
+  async function fetchTenantFeatureAccess() {
+    if (scope !== "tenant") {
+      return;
+    }
+
+    const response = await fetch("/api/tenant/services", { cache: "no-store" });
+    const data = (await response.json()) as {
+      status: "success" | "error";
+      message?: string;
+      enabledFeatures?: string[];
+    };
+    if (!response.ok || data.status !== "success") {
+      throw new Error(data.message ?? "Failed to load tenant feature access.");
+    }
+    setTenantEnabledFeatures(data.enabledFeatures ?? []);
   }
 
   async function fetchLinks(kpiId: string) {
@@ -325,7 +416,7 @@ export function AccreditationManager({
         setLoading(true);
         await fetchBodies();
         if (scope === "tenant") {
-          await fetchKpis();
+          await Promise.all([fetchKpis(), fetchTenantFeatureAccess()]);
         }
         if (!cancelled) {
           setMessage(null);
@@ -399,14 +490,24 @@ export function AccreditationManager({
       setSelectedProfileId(null);
       setBlocks([]);
       setSelectedBlockId(null);
+      setCopilotConfig(null);
+      setAvailableLlmProfiles([]);
       setCriteria([]);
       setSelectedCriterionId(null);
       return;
     }
 
+    const copilotPromise = tenantCopilotEnabled
+      ? fetchCopilotConfig(selectedVersionId)
+      : Promise.resolve().then(() => {
+          setCopilotConfig(null);
+          setAvailableLlmProfiles([]);
+        });
+
     void Promise.all([
       fetchProfiles(selectedVersionId),
       fetchBlocks(selectedVersionId),
+      copilotPromise,
     ]).catch(
       (error) => {
         setMessage({
@@ -420,11 +521,13 @@ export function AccreditationManager({
         setSelectedProfileId(null);
         setBlocks([]);
         setSelectedBlockId(null);
+        setCopilotConfig(null);
+        setAvailableLlmProfiles([]);
         setCriteria([]);
         setSelectedCriterionId(null);
       },
     );
-  }, [selectedVersionId]);
+  }, [selectedVersionId, tenantCopilotEnabled]);
 
   useEffect(() => {
     if (!selectedProfileId && profiles.length > 0) {
@@ -825,6 +928,166 @@ export function AccreditationManager({
           )}
         </section>
       </div>
+
+      <section className="space-y-4 rounded-3xl border border-slate-200 bg-white/80 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Copilot Settings</h2>
+            <p className="text-sm text-slate-500">
+              Configure the body-version LLM behavior, active model profile, and grounding policy.
+            </p>
+          </div>
+          {scope === "superadmin" ? (
+            <a
+              href="/superadmin/llm-config"
+              className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+            >
+              Manage LLM Profiles
+            </a>
+          ) : null}
+        </div>
+
+        {scope === "tenant" && !tenantCopilotEnabled ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-600">
+            Accreditation copilot is not enabled for this tenant. Reporting remains available, but
+            version-level copilot settings and assistant-rule editing stay hidden until a superadmin
+            enables the copilot feature.
+          </div>
+        ) : selectedVersion && copilotConfig ? (
+          <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                  <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    Mode
+                  </div>
+                  <div className="mt-2 text-sm font-semibold text-slate-900">
+                    {copilotConfig.copilotMode}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                  <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    Assistant Pack
+                  </div>
+                  <div className="mt-2 text-sm font-semibold text-slate-900">
+                    {copilotConfig.assistantPackKey ?? "Auto-resolve from body"}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                  <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    Profile
+                  </div>
+                  <div className="mt-2 text-sm font-semibold text-slate-900">
+                    {copilotConfig.llmProfile?.displayName ?? "Deterministic fallback only"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+                Effective source:{" "}
+                <strong className="text-slate-900">
+                  {copilotConfig.effectiveSource.type}
+                </strong>
+                {" · "}
+                {copilotConfig.effectiveSource.bodyCode}
+                {copilotConfig.effectiveSource.versionCode
+                  ? ` ${copilotConfig.effectiveSource.versionCode}`
+                  : ""}
+              </div>
+
+              {copilotConfig.lockState.isLocked ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  {copilotConfig.lockState.reason ??
+                    "This version inherits locked body-level copilot settings from its global source version."}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Version policy</h3>
+                <p className="text-xs text-slate-500">
+                  Body-level settings define provider/model policy. Lower-level block rules refine behavior.
+                </p>
+              </div>
+
+              <form
+                className="space-y-3"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  const form = new FormData(event.currentTarget);
+                  const llmConfigText = String(form.get("llmConfig") ?? "");
+                  const parsedConfig = tryParseJsonInput(llmConfigText, "LLM config");
+                  if (parsedConfig.status === "error") {
+                    setMessage({ type: "error", text: parsedConfig.message });
+                    return;
+                  }
+
+                  await submitJson(`${basePath}/versions/${selectedVersion.id}/copilot-config`, "PATCH", {
+                    copilotMode: String(form.get("copilotMode") ?? "DETERMINISTIC_ONLY"),
+                    assistantPackKey: String(form.get("assistantPackKey") ?? "") || null,
+                    llmProfileId: String(form.get("llmProfileId") ?? "") || null,
+                    llmConfig: parsedConfig.value,
+                  });
+                  await Promise.all([
+                    fetchCopilotConfig(selectedVersion.id),
+                    fetchVersions(selectedBodyId!),
+                  ]);
+                }}
+              >
+                <select
+                  name="copilotMode"
+                  defaultValue={copilotConfig.copilotMode}
+                  disabled={!canEditSelectedVersionCopilot || submitting}
+                  className={inputClassName}
+                >
+                  <option value="DISABLED">DISABLED</option>
+                  <option value="DETERMINISTIC_ONLY">DETERMINISTIC_ONLY</option>
+                  <option value="LLM_ASSISTED">LLM_ASSISTED</option>
+                </select>
+                <input
+                  name="assistantPackKey"
+                  defaultValue={copilotConfig.assistantPackKey ?? ""}
+                  placeholder="Assistant pack key (optional)"
+                  disabled={!canEditSelectedVersionCopilot || submitting}
+                  className={inputClassName}
+                />
+                <select
+                  name="llmProfileId"
+                  defaultValue={copilotConfig.llmProfileId ?? ""}
+                  disabled={!canEditSelectedVersionCopilot || submitting}
+                  className={inputClassName}
+                >
+                  <option value="">No profile</option>
+                  {availableLlmProfiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.displayName} · {profile.primaryModel.code}
+                    </option>
+                  ))}
+                </select>
+                <textarea
+                  name="llmConfig"
+                  defaultValue={JSON.stringify(copilotConfig.llmConfig ?? {}, null, 2)}
+                  placeholder="LLM policy JSON"
+                  disabled={!canEditSelectedVersionCopilot || submitting}
+                  className={`${inputClassName} min-h-40`}
+                />
+                <button
+                  type="submit"
+                  disabled={!canEditSelectedVersionCopilot || submitting}
+                  className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  Save copilot settings
+                </button>
+              </form>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+            Select a version to view or edit copilot settings.
+          </div>
+        )}
+      </section>
 
       <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <section className="space-y-4 rounded-3xl border border-slate-200 bg-white/80 p-5">
@@ -1295,6 +1558,12 @@ export function AccreditationManager({
                         validationRules: String(form.get("validationRules") ?? "") || null,
                         evidenceSchema: String(form.get("evidenceSchema") ?? "") || null,
                         dependencyRules: String(form.get("dependencyRules") ?? "") || null,
+                        ...(canEditAssistantRules
+                          ? {
+                              assistantConfig:
+                                String(form.get("assistantConfig") ?? "") || null,
+                            }
+                          : {}),
                       });
                       event.currentTarget.reset();
                       await fetchBlocks(selectedVersion.id);
@@ -1355,6 +1624,13 @@ export function AccreditationManager({
                       placeholder='Dependency rules JSON, e.g. [{"targetBlockCode":"1.1"}]'
                       className={`${inputClassName} min-h-24 md:col-span-2`}
                     />
+                    {canEditAssistantRules ? (
+                      <textarea
+                        name="assistantConfig"
+                        placeholder="Assistant config JSON"
+                        className={`${inputClassName} min-h-24 md:col-span-2`}
+                      />
+                    ) : null}
                     <button
                       type="submit"
                       disabled={submitting}
@@ -1442,6 +1718,12 @@ export function AccreditationManager({
                             validationRules: String(form.get("validationRules") ?? "") || null,
                             evidenceSchema: String(form.get("evidenceSchema") ?? "") || null,
                             dependencyRules: String(form.get("dependencyRules") ?? "") || null,
+                            ...(canEditAssistantRules
+                              ? {
+                                  assistantConfig:
+                                    String(form.get("assistantConfig") ?? "") || null,
+                                }
+                              : {}),
                           });
                           await fetchBlocks(selectedVersion.id);
                         }}
@@ -1511,6 +1793,18 @@ export function AccreditationManager({
                           placeholder="Dependency rules JSON"
                           className={`${inputClassName} min-h-24`}
                         />
+                        {canEditAssistantRules ? (
+                          <textarea
+                            name="assistantConfig"
+                            defaultValue={
+                              selectedBlock.assistantConfig
+                                ? JSON.stringify(selectedBlock.assistantConfig, null, 2)
+                                : ""
+                            }
+                            placeholder="Assistant config JSON"
+                            className={`${inputClassName} min-h-28`}
+                          />
+                        ) : null}
                         <button
                           type="submit"
                           disabled={submitting}
