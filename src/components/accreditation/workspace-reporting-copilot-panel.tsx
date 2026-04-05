@@ -66,6 +66,25 @@ type EntryOption = {
   blockCode: string;
   blockTitle: string;
   status: string;
+  responses: Array<{
+    scopeKey: string;
+    year: number | null;
+    responseData: {
+      value?: number | null;
+      narrative?: string | null;
+    };
+  }>;
+  latestEvidence: Array<{
+    evidenceId: string;
+    title: string;
+    docType: string | null;
+    latestVersion: {
+      id: string;
+      fileName: string;
+      fileType: string | null;
+      uploadedAt: string;
+    } | null;
+  }>;
 };
 
 type LinkedBlockRef = {
@@ -100,12 +119,38 @@ type AssistantSuggestion = {
   confidence: number | null;
   groundingStatus: string;
   status: string;
+  staleReason?: string | null;
+  feedbackValue?: string | null;
   citations: Array<{
     type?: string;
     ref?: string;
     snippet?: string;
+    confidence?: number | null;
+    evidenceVersionId?: string | null;
+    chunkId?: string | null;
+    metricCode?: string | null;
+    responseFieldKey?: string | null;
   }>;
   createdAt: string;
+};
+
+type EvidenceExtractionSummary = {
+  id: string;
+  status: string;
+  engineVersion: string | null;
+  confidence: number | null;
+  processedAt: string | null;
+  qualityFlags: string[];
+  chunkCount: number;
+};
+
+type EvidenceChunk = {
+  id: string;
+  chunkIndex: number;
+  sectionHeading: string | null;
+  plainText: string;
+  tokenEstimate: number | null;
+  confidence: number | null;
 };
 
 const inputClassName =
@@ -132,6 +177,25 @@ function suggestionLabel(type: string) {
   return type.replaceAll("_", " ");
 }
 
+function formatEntryResponse(entry: EntryOption | null) {
+  if (!entry) return "";
+  const parts = entry.responses
+    .map((response) => {
+      const label = response.year ?? response.scopeKey;
+      const narrative = response.responseData?.narrative?.trim();
+      const value = response.responseData?.value;
+      if (narrative) {
+        return `${label}: ${narrative}`;
+      }
+      if (typeof value === "number") {
+        return `${label}: ${value}`;
+      }
+      return null;
+    })
+    .filter((value): value is string => !!value);
+  return parts.join("\n\n");
+}
+
 export function WorkspaceReportingCopilotPanel({
   workspaceId,
   workspaceStatus,
@@ -148,6 +212,10 @@ export function WorkspaceReportingCopilotPanel({
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [watchlist, setWatchlist] = useState<AssistantSuggestion | null>(null);
   const [suggestions, setSuggestions] = useState<AssistantSuggestion[]>([]);
+  const [draftPad, setDraftPad] = useState("");
+  const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
+  const [extractionsByVersionId, setExtractionsByVersionId] = useState<Record<string, EvidenceExtractionSummary | null>>({});
+  const [chunksByVersionId, setChunksByVersionId] = useState<Record<string, EvidenceChunk[]>>({});
   const [dvvQueries, setDvvQueries] = useState<DvvQuery[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [dvvSummary, setDvvSummary] = useState<{
@@ -162,6 +230,7 @@ export function WorkspaceReportingCopilotPanel({
     completed: number;
     highPriority: number;
   } | null>(null);
+  const selectedEntry = entries.find((entry) => entry.id === selectedEntryId) ?? null;
 
   async function loadCore() {
     const servicesResult = await fetchJson<{ enabledFeatures?: string[] }>("/api/tenant/services");
@@ -235,6 +304,49 @@ export function WorkspaceReportingCopilotPanel({
     setSuggestions(result.suggestions);
   }
 
+  async function loadEvidenceIntelligence(entry: EntryOption | null) {
+    if (!entry) {
+      setExtractionsByVersionId({});
+      setChunksByVersionId({});
+      return;
+    }
+
+    const versionIds = entry.latestEvidence
+      .map((evidence) => evidence.latestVersion?.id ?? null)
+      .filter((value): value is string => !!value);
+
+    if (versionIds.length === 0) {
+      setExtractionsByVersionId({});
+      setChunksByVersionId({});
+      return;
+    }
+
+    const results = await Promise.all(
+      versionIds.map(async (versionId) => {
+        const [extractionResult, chunkResult] = await Promise.all([
+          fetchJson<{ extraction: EvidenceExtractionSummary | null }>(
+            `/api/tenant/accreditation/evidence-versions/${versionId}/extraction`,
+          ),
+          fetchJson<{ chunks: EvidenceChunk[] }>(
+            `/api/tenant/accreditation/evidence-versions/${versionId}/chunks`,
+          ),
+        ]);
+        return {
+          versionId,
+          extraction: extractionResult.extraction,
+          chunks: chunkResult.chunks,
+        };
+      }),
+    );
+
+    setExtractionsByVersionId(
+      Object.fromEntries(results.map((row) => [row.versionId, row.extraction])),
+    );
+    setChunksByVersionId(
+      Object.fromEntries(results.map((row) => [row.versionId, row.chunks])),
+    );
+  }
+
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -267,6 +379,22 @@ export function WorkspaceReportingCopilotPanel({
       });
     });
   }, [copilotEnabled, selectedEntryId]);
+
+  useEffect(() => {
+    setDraftPad(formatEntryResponse(selectedEntry));
+    setSelectedSuggestionId(null);
+    if (!copilotEnabled) {
+      setExtractionsByVersionId({});
+      setChunksByVersionId({});
+      return;
+    }
+    loadEvidenceIntelligence(selectedEntry).catch((error: unknown) => {
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to load evidence intelligence.",
+      });
+    });
+  }, [copilotEnabled, selectedEntryId, entries]);
 
   async function downloadReport(format: "json" | "csv") {
     setBusy(true);
@@ -345,6 +473,57 @@ export function WorkspaceReportingCopilotPanel({
     }
   }
 
+  async function handleSuggestionFeedback(
+    suggestionId: string,
+    action: "mark_useful" | "mark_not_useful",
+  ) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await fetchJson(`/api/tenant/accreditation/assistant-suggestions/${suggestionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (selectedEntryId) {
+        await loadSuggestions(selectedEntryId);
+      }
+      setMessage({
+        type: "success",
+        text: action === "mark_useful" ? "Marked suggestion as useful." : "Marked suggestion as not useful.",
+      });
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Suggestion feedback failed.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runEvidenceExtraction(evidenceVersionId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await fetchJson(`/api/tenant/accreditation/evidence-versions/${evidenceVersionId}/extract`, {
+        method: "POST",
+      });
+      await loadEvidenceIntelligence(selectedEntry);
+      if (selectedEntryId) {
+        await loadSuggestions(selectedEntryId);
+      }
+      setMessage({ type: "success", text: "Evidence extraction refreshed." });
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Evidence extraction failed.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleCreateDvv(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!allowWorkflowMutations) return;
@@ -409,6 +588,11 @@ export function WorkspaceReportingCopilotPanel({
     completeness?.blocks.filter(
       (block) => block.completionStatus !== "APPROVED" && block.completionStatus !== "READY",
     ) ?? [];
+  const selectedDraftSuggestion =
+    suggestions.find((suggestion) => suggestion.id === selectedSuggestionId) ??
+    suggestions.find((suggestion) => suggestion.type === "DRAFT" && suggestion.status !== "DISMISSED") ??
+    null;
+  const currentResponseText = formatEntryResponse(selectedEntry);
 
   return (
     <section className="rounded-[1.75rem] border border-slate-200/80 bg-white/85 p-6">
@@ -619,12 +803,28 @@ export function WorkspaceReportingCopilotPanel({
                     Draft
                   </button>
                 </div>
+                {selectedEntry ? (
+                  <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    <p className="font-medium text-slate-900">
+                      {selectedEntry.blockCode} · {selectedEntry.blockTitle}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Current status {selectedEntry.status.replaceAll("_", " ")} · Responses {selectedEntry.responses.length}
+                      · Evidence {selectedEntry.latestEvidence.length}
+                    </p>
+                  </div>
+                ) : null}
                 <div className="mt-4 space-y-3">
                   {suggestions.length === 0 ? (
                     <p className="text-sm text-slate-500">No assistant suggestions yet for the selected block.</p>
                   ) : (
                     suggestions.map((suggestion) => (
-                      <div key={suggestion.id} className="rounded-xl bg-slate-50 px-4 py-3">
+                      <div
+                        key={suggestion.id}
+                        className={`rounded-xl px-4 py-3 ${
+                          selectedSuggestionId === suggestion.id ? "bg-slate-100 ring-1 ring-slate-300" : "bg-slate-50"
+                        }`}
+                      >
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div>
                             <p className="text-sm font-medium text-slate-900">
@@ -641,6 +841,27 @@ export function WorkspaceReportingCopilotPanel({
                             <button
                               type="button"
                               disabled={busy}
+                              onClick={() => setSelectedSuggestionId(suggestion.id)}
+                              className="rounded-xl border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                            >
+                              Focus
+                            </button>
+                            {suggestion.type === "DRAFT" ? (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => {
+                                  setSelectedSuggestionId(suggestion.id);
+                                  setDraftPad(suggestion.content);
+                                }}
+                                className="rounded-xl border border-sky-300 px-3 py-1 text-xs text-sky-700"
+                              >
+                                Apply To Draft
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              disabled={busy}
                               onClick={() => void handleSuggestionAction(suggestion.id, "accept")}
                               className="rounded-xl border border-emerald-300 px-3 py-1 text-xs text-emerald-700"
                             >
@@ -654,25 +875,155 @@ export function WorkspaceReportingCopilotPanel({
                             >
                               Dismiss
                             </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleSuggestionFeedback(suggestion.id, "mark_useful")}
+                              className="rounded-xl border border-indigo-300 px-3 py-1 text-xs text-indigo-700"
+                            >
+                              Useful
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleSuggestionFeedback(suggestion.id, "mark_not_useful")}
+                              className="rounded-xl border border-amber-300 px-3 py-1 text-xs text-amber-700"
+                            >
+                              Not Useful
+                            </button>
                           </div>
                         </div>
                         <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{suggestion.content}</p>
                         {suggestion.citations.length > 0 ? (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {suggestion.citations.slice(0, 4).map((citation, index) => (
-                              <span
+                          <div className="mt-3 grid gap-2">
+                            {suggestion.citations.slice(0, 6).map((citation, index) => (
+                              <button
+                                type="button"
                                 key={`${suggestion.id}-citation-${index}`}
-                                className="rounded-full bg-white px-3 py-1 text-[11px] text-slate-600"
+                                onClick={() => {
+                                  if (suggestion.type === "DRAFT" && citation.snippet) {
+                                    setDraftPad((current) =>
+                                      current.trim().length > 0 ? `${current}\n\n[Citation] ${citation.snippet}` : citation.snippet ?? "",
+                                    );
+                                  }
+                                }}
+                                className="rounded-2xl bg-white px-3 py-2 text-left text-[11px] text-slate-600"
                               >
-                                {(citation.type ?? "source").replaceAll("_", " ")}:{" "}
-                                {citation.ref ?? citation.snippet ?? "reference"}
-                              </span>
+                                <span className="font-medium text-slate-800">
+                                  {(citation.type ?? "source").replaceAll("_", " ")}
+                                </span>
+                                <span className="ml-1">
+                                  {citation.snippet ?? citation.ref ?? "reference"}
+                                </span>
+                              </button>
                             ))}
                           </div>
                         ) : null}
                       </div>
                     ))
                   )}
+                </div>
+                <div className="mt-6 rounded-2xl border border-slate-200 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h5 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Draft Workspace
+                      </h5>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Compare the current response with a selected draft suggestion. This remains local and does not save the official response.
+                      </p>
+                    </div>
+                    {selectedDraftSuggestion ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setDraftPad(selectedDraftSuggestion.content)}
+                        className="rounded-xl border border-sky-300 px-3 py-1 text-xs text-sky-700"
+                      >
+                        Apply Selected Draft
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Current Response</p>
+                      <pre className="mt-2 min-h-40 whitespace-pre-wrap rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                        {currentResponseText || "No current response content for this block."}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Draft Pad</p>
+                      <textarea
+                        value={draftPad}
+                        onChange={(event) => setDraftPad(event.target.value)}
+                        className={`${inputClassName} mt-2 min-h-40`}
+                        placeholder="Apply a draft suggestion here to compare or refine it."
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-6 rounded-2xl border border-slate-200 p-4">
+                  <h5 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    Evidence Intelligence
+                  </h5>
+                  <div className="mt-4 space-y-3">
+                    {selectedEntry?.latestEvidence.length ? (
+                      selectedEntry.latestEvidence.map((evidence) => {
+                        const versionId = evidence.latestVersion?.id;
+                        const extraction = versionId ? extractionsByVersionId[versionId] : null;
+                        const chunks = versionId ? chunksByVersionId[versionId] ?? [] : [];
+                        return (
+                          <div key={evidence.evidenceId} className="rounded-xl bg-slate-50 px-4 py-3">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-medium text-slate-900">{evidence.title}</p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  {evidence.docType ?? "Unclassified"}
+                                  {evidence.latestVersion ? ` · ${evidence.latestVersion.fileName}` : " · No file version"}
+                                  {extraction ? ` · ${extraction.status}` : " · Not extracted"}
+                                  {extraction?.chunkCount ? ` · ${extraction.chunkCount} chunks` : ""}
+                                </p>
+                              </div>
+                              {versionId ? (
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => void runEvidenceExtraction(versionId)}
+                                  className="rounded-xl border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                                >
+                                  {extraction ? "Re-extract" : "Extract"}
+                                </button>
+                              ) : null}
+                            </div>
+                            {extraction ? (
+                              <p className="mt-2 text-xs text-slate-500">
+                                Engine {extraction.engineVersion ?? "unknown"}
+                                {extraction.confidence !== null ? ` · Confidence ${Math.round(extraction.confidence * 100)}%` : ""}
+                                {extraction.processedAt ? ` · Processed ${formatDate(extraction.processedAt)}` : ""}
+                                {extraction.qualityFlags.length > 0 ? ` · ${extraction.qualityFlags.join(", ")}` : ""}
+                              </p>
+                            ) : null}
+                            {chunks.length > 0 ? (
+                              <div className="mt-3 grid gap-2">
+                                {chunks.slice(0, 2).map((chunk) => (
+                                  <div key={chunk.id} className="rounded-2xl bg-white px-3 py-3 text-sm text-slate-700">
+                                    <p className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                                      Chunk {chunk.chunkIndex + 1}
+                                      {chunk.sectionHeading ? ` · ${chunk.sectionHeading}` : ""}
+                                      {chunk.tokenEstimate ? ` · ~${chunk.tokenEstimate} tokens` : ""}
+                                    </p>
+                                    <p className="mt-2 whitespace-pre-wrap">{chunk.plainText.slice(0, 420)}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="text-sm text-slate-500">No evidence is currently linked to the selected block.</p>
+                    )}
+                  </div>
                 </div>
               </div>
               ) : null}

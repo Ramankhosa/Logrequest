@@ -26,6 +26,8 @@ const generateWorkspaceWatchlistSuggestionMock = vi.fn();
 const listEntryAssistantSuggestionsMock = vi.fn();
 const updateAssistantSuggestionStatusMock = vi.fn();
 const extractEvidenceVersionForCopilotMock = vi.fn();
+const getEvidenceVersionExtractionDetailsMock = vi.fn();
+const listEvidenceVersionChunksMock = vi.fn();
 
 vi.mock("next-auth", () => ({
   default: vi.fn(() => ({})),
@@ -58,6 +60,8 @@ vi.mock("@/lib/accreditation/accreditation-copilot-service", () => ({
   listEntryAssistantSuggestions: listEntryAssistantSuggestionsMock,
   updateAssistantSuggestionStatus: updateAssistantSuggestionStatusMock,
   extractEvidenceVersionForCopilot: extractEvidenceVersionForCopilotMock,
+  getEvidenceVersionExtractionDetails: getEvidenceVersionExtractionDetailsMock,
+  listEvidenceVersionChunks: listEvidenceVersionChunksMock,
 }));
 
 vi.mock("@/lib/tenant-services/service", async () => {
@@ -401,6 +405,14 @@ describe("reporting and copilot routes", () => {
     listEntryAssistantSuggestionsMock.mockResolvedValue({ status: "success", suggestions: [] });
     updateAssistantSuggestionStatusMock.mockResolvedValue({ status: "success", suggestion: { id: "s1" } });
     extractEvidenceVersionForCopilotMock.mockResolvedValue({ status: "success", extraction: { id: "x1" } });
+    getEvidenceVersionExtractionDetailsMock.mockResolvedValue({
+      status: "success",
+      extraction: { id: "x1", status: "SUCCESS", chunkCount: 2 },
+    });
+    listEvidenceVersionChunksMock.mockResolvedValue({
+      status: "success",
+      chunks: [{ id: "chunk-1" }],
+    });
     getCrossWorkspaceOverlapReportMock.mockResolvedValue({ status: "success", report: { summary: {} } });
 
     const watchlistRoute = await import(
@@ -423,6 +435,12 @@ describe("reporting and copilot routes", () => {
     );
     const extractRoute = await import(
       "@/app/api/tenant/accreditation/evidence-versions/[id]/extract/route"
+    );
+    const extractionDetailRoute = await import(
+      "@/app/api/tenant/accreditation/evidence-versions/[id]/extraction/route"
+    );
+    const extractionChunksRoute = await import(
+      "@/app/api/tenant/accreditation/evidence-versions/[id]/chunks/route"
     );
     const overlapRoute = await import(
       "@/app/api/tenant/accreditation/reports/workspace-overlap/route"
@@ -508,6 +526,28 @@ describe("reporting and copilot routes", () => {
     });
     expect(extractResponse.status).toBe(200);
     expect(extractEvidenceVersionForCopilotMock).toHaveBeenCalledWith(
+      "evidence-version-1",
+      "tenant-1",
+      "user-1",
+      "TENANT_USER",
+    );
+
+    const extractionDetailResponse = await extractionDetailRoute.GET(new Request("http://localhost"), {
+      params: Promise.resolve({ id: "evidence-version-1" }),
+    });
+    expect(extractionDetailResponse.status).toBe(200);
+    expect(getEvidenceVersionExtractionDetailsMock).toHaveBeenCalledWith(
+      "evidence-version-1",
+      "tenant-1",
+      "user-1",
+      "TENANT_USER",
+    );
+
+    const extractionChunksResponse = await extractionChunksRoute.GET(new Request("http://localhost"), {
+      params: Promise.resolve({ id: "evidence-version-1" }),
+    });
+    expect(extractionChunksResponse.status).toBe(200);
+    expect(listEvidenceVersionChunksMock).toHaveBeenCalledWith(
       "evidence-version-1",
       "tenant-1",
       "user-1",

@@ -1,16 +1,15 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { extname, isAbsolute, resolve } from "node:path";
 import {
   BlockEntryStatus,
   CopilotMode,
+  type EvidenceSuggestionCitation,
   Prisma,
   Role,
   SuggestionScope,
+  SuggestionFeedbackValue,
   SuggestionStatus,
   SuggestionType,
   WorkspaceCollaboratorRole,
-  EvidenceExtractionStatus,
 } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
@@ -39,6 +38,14 @@ import {
 } from "./copilot-config";
 import { resolveAssistantPack } from "./assistant-packs";
 import { executeAccreditationLlm } from "@/lib/llm/accreditation-llm-gateway";
+import {
+  buildCitation,
+  buildEvidenceChunks,
+  EVIDENCE_EXTRACTION_ENGINE_VERSION,
+  estimateTokenCount,
+  extractEvidenceContent,
+  type CopilotCitation,
+} from "./evidence-intelligence";
 
 type ErrorResult = {
   status: "error";
@@ -61,7 +68,8 @@ const DAILY_WORKSPACE_SUGGESTION_CAP = 100;
 const MONTHLY_TENANT_SUGGESTION_CAP = 2000;
 
 const suggestionActionSchema = z.object({
-  action: z.enum(["accept", "dismiss"]),
+  action: z.enum(["accept", "dismiss", "mark_useful", "mark_not_useful", "clear_feedback"]),
+  notes: z.string().trim().max(1000).optional(),
 });
 
 async function ensureTenantCopilotFeatureEnabled(tenantId: string) {
@@ -71,51 +79,6 @@ async function ensureTenantCopilotFeatureEnabled(tenantId: string) {
 
 function buildHash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function tryParseDataUrl(url: string) {
-  if (!url.startsWith("data:")) {
-    return null;
-  }
-  const separatorIndex = url.indexOf(",");
-  if (separatorIndex === -1) {
-    return null;
-  }
-  const header = url.slice(5, separatorIndex);
-  const body = url.slice(separatorIndex + 1);
-  const isBase64 = header.endsWith(";base64");
-  return Buffer.from(body, isBase64 ? "base64" : "utf8").toString("utf8");
-}
-
-async function readEvidenceText(fileUrl: string, fileName: string, fileType: string | null) {
-  const lowerType = (fileType ?? "").toLowerCase();
-  const extension = extname(fileName).toLowerCase();
-  const isPlainText =
-    lowerType.includes("text") ||
-    lowerType.includes("json") ||
-    lowerType.includes("csv") ||
-    [".txt", ".md", ".json", ".csv"].includes(extension);
-
-  if (!isPlainText) {
-    return { status: EvidenceExtractionStatus.UNSUPPORTED, text: null, reason: "Unsupported file type." } as const;
-  }
-
-  const dataUrlText = tryParseDataUrl(fileUrl);
-  if (dataUrlText !== null) {
-    return { status: EvidenceExtractionStatus.SUCCESS, text: dataUrlText, reason: null } as const;
-  }
-
-  const candidatePath = isAbsolute(fileUrl) ? fileUrl : resolve(process.cwd(), fileUrl);
-  try {
-    const text = await readFile(candidatePath, "utf8");
-    return { status: EvidenceExtractionStatus.SUCCESS, text, reason: null } as const;
-  } catch (error) {
-    return {
-      status: EvidenceExtractionStatus.UNSUPPORTED,
-      text: null,
-      reason: error instanceof Error ? error.message : "Evidence file is not readable in the current environment.",
-    } as const;
-  }
 }
 
 async function requireEntryReadAccess(
@@ -239,6 +202,11 @@ async function getOrReuseSuggestion(input: {
       sourceHash: input.sourceHash,
       status: SuggestionStatus.ACTIVE,
     },
+    include: {
+      normalizedCitations: {
+        orderBy: [{ createdAt: "asc" }],
+      },
+    },
     orderBy: { createdAt: "desc" },
   });
 }
@@ -253,17 +221,9 @@ async function markEntrySuggestionsStale(entryId: string, workspaceId: string, s
     },
     data: {
       status: SuggestionStatus.STALE,
+      staleReason: "entry_context_changed",
     },
   });
-}
-
-function buildCitation(type: string, ref: string, snippet: string, confidence = 0.9) {
-  return {
-    type,
-    ref,
-    snippet,
-    confidence,
-  };
 }
 
 type EntryCopilotContext = NonNullable<Awaited<ReturnType<typeof getEntryCopilotContext>>>;
@@ -275,7 +235,12 @@ function redactPromptText(value: string) {
 }
 
 function normalizeGroundingStatus(value: string | undefined) {
-  if (value === "FULLY_GROUNDED" || value === "PARTIALLY_GROUNDED" || value === "METADATA_ONLY") {
+  if (
+    value === "FULLY_GROUNDED" ||
+    value === "PARTIALLY_GROUNDED" ||
+    value === "METADATA_ONLY" ||
+    value === "NO_EVIDENCE"
+  ) {
     return value;
   }
   return "INSUFFICIENT_GROUNDING";
@@ -316,18 +281,28 @@ function buildEntryPromptContext(context: EntryCopilotContext) {
 
   const evidence = context.entry.evidenceLinks.map((link) => {
     const latestVersion = link.evidence.versions[0];
-    const extractedText = latestVersion?.extraction?.extractedText?.trim() ?? "";
-    const trimmedExtraction =
-      extractedText.length > 0 ? redactPromptText(extractedText.slice(0, 3000)) : null;
+    const extraction = latestVersion?.extraction;
+    const extractedText = extraction?.extractedText?.trim() ?? "";
+    const trimmedExtraction = extractedText.length > 0 ? redactPromptText(extractedText.slice(0, 2400)) : null;
     return {
       evidenceId: link.evidenceId,
       title: link.evidence.title,
       docType: link.evidence.docType,
       isFinalMarked: link.evidence.isFinalMarked,
       latestVersionId: latestVersion?.id ?? null,
-      extractionStatus: latestVersion?.extraction?.status ?? null,
-      extractionHash: latestVersion?.extraction?.contentHash ?? null,
+      extractionStatus: extraction?.status ?? null,
+      extractionHash: extraction?.contentHash ?? null,
+      extractionEngineVersion: extraction?.engineVersion ?? null,
+      extractionConfidence: extraction?.confidence ?? null,
+      extractionQualityFlags: extraction?.qualityFlags ?? [],
       extractedExcerpt: trimmedExtraction,
+      extractedChunks:
+        extraction?.chunks.slice(0, 3).map((chunk) => ({
+          chunkId: chunk.id,
+          snippet: redactPromptText(chunk.plainText.slice(0, 240)),
+          tokenEstimate: chunk.tokenEstimate,
+          sectionHeading: chunk.sectionHeading,
+        })) ?? [],
     };
   });
 
@@ -377,9 +352,100 @@ function buildEntryPromptContext(context: EntryCopilotContext) {
   };
 }
 
+function tokenizeForMatching(value: string) {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => token.length >= 3);
+}
+
+function buildEntryKeywordSet(context: EntryCopilotContext) {
+  const keywords = new Set<string>();
+  for (const token of tokenizeForMatching(context.entry.block.blockCode)) {
+    keywords.add(token);
+  }
+  for (const token of tokenizeForMatching(context.entry.block.title)) {
+    keywords.add(token);
+  }
+  for (const response of context.entry.responses) {
+    const textValue = getResponseTextValue(response);
+    if (!textValue) {
+      continue;
+    }
+    for (const token of tokenizeForMatching(textValue).slice(0, 40)) {
+      keywords.add(token);
+    }
+  }
+  for (const recipe of context.metricRecipes) {
+    const code = recipe.sourceMetric?.code;
+    if (!code) {
+      continue;
+    }
+    for (const token of tokenizeForMatching(code)) {
+      keywords.add(token);
+    }
+  }
+  return keywords;
+}
+
+function selectRelevantEvidenceChunks(context: EntryCopilotContext) {
+  const keywordSet = buildEntryKeywordSet(context);
+  const candidates = context.entry.evidenceLinks.flatMap((link) => {
+    const latestVersion = link.evidence.versions[0];
+    const extraction = latestVersion?.extraction;
+    if (!latestVersion || !extraction?.chunks?.length) {
+      return [];
+    }
+    return extraction.chunks.map((chunk) => {
+      const text = chunk.plainText.toLowerCase();
+      let score = 0;
+      for (const keyword of keywordSet) {
+        if (text.includes(keyword)) {
+          score += 1;
+        }
+      }
+      if ((link.evidence.docType ?? "").length > 0) {
+        score += 0.25;
+      }
+      if (link.evidence.isFinalMarked) {
+        score += 0.5;
+      }
+      return {
+        latestVersionId: latestVersion.id,
+        chunk,
+        score,
+      };
+    });
+  });
+
+  const sorted = candidates.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    return left.chunk.chunkIndex - right.chunk.chunkIndex;
+  });
+
+  const selected: Array<(typeof sorted)[number]> = [];
+  let tokenBudget = 0;
+  for (const candidate of sorted) {
+    const nextTokens = candidate.chunk.tokenEstimate ?? estimateTokenCount(candidate.chunk.plainText);
+    if (selected.length >= 6 || tokenBudget + nextTokens > 4800) {
+      break;
+    }
+    selected.push(candidate);
+    tokenBudget += nextTokens;
+  }
+  return selected;
+}
+
 function buildAllowedEntryCitations(context: EntryCopilotContext) {
   const citations = [
-    buildCitation("block", context.entry.block.blockCode, context.entry.block.title, 0.98),
+    buildCitation({
+      type: "block",
+      ref: context.entry.block.blockCode,
+      snippet: context.entry.block.title,
+      confidence: 0.98,
+    }),
     ...context.entry.responses
       .map((response) => {
         const textValue = getResponseTextValue(response);
@@ -390,31 +456,34 @@ function buildAllowedEntryCitations(context: EntryCopilotContext) {
         if (!snippet) {
           return null;
         }
-        return buildCitation(
-          "response",
-          response.id,
+        return buildCitation({
+          type: "response",
+          ref: response.id,
           snippet,
-          0.92,
-        );
+          confidence: 0.92,
+          responseFieldKey: textValue ? "response.narrative" : "response.value",
+        });
       })
-      .filter((citation): citation is ReturnType<typeof buildCitation> => !!citation),
+      .filter((citation): citation is CopilotCitation => !!citation),
     ...context.entry.evidenceLinks.map((link) =>
-      buildCitation("evidence", link.evidenceId, link.evidence.title, 0.9),
+      buildCitation({
+        type: "evidence",
+        ref: link.evidenceId,
+        snippet: link.evidence.title,
+        confidence: 0.9,
+        evidenceVersionId: link.evidence.versions[0]?.id ?? null,
+      }),
     ),
-    ...context.entry.evidenceLinks
-      .map((link) => {
-        const extraction = link.evidence.versions[0]?.extraction;
-        if (!extraction?.extractedText) {
-          return null;
-        }
-        return buildCitation(
-          "evidence_extraction",
-          extraction.evidenceVersionId,
-          redactPromptText(extraction.extractedText.slice(0, 180)),
-          0.94,
-        );
-      })
-      .filter((citation): citation is ReturnType<typeof buildCitation> => !!citation),
+    ...selectRelevantEvidenceChunks(context).map(({ latestVersionId, chunk, score }) =>
+      buildCitation({
+        type: "evidence_chunk",
+        ref: chunk.id,
+        snippet: redactPromptText(chunk.plainText.slice(0, 220)),
+        confidence: Math.max(0.68, Math.min(0.98, 0.82 + score * 0.02)),
+        evidenceVersionId: latestVersionId,
+        chunkId: chunk.id,
+      }),
+    ),
     ...context.metricRecipes
       .map((recipe) => {
         const observation = recipe.sourceMetric?.observations[0];
@@ -427,16 +496,19 @@ function buildAllowedEntryCitations(context: EntryCopilotContext) {
           observation.jsonValue ??
           null;
         return buildCitation(
-          "metric",
-          recipe.sourceMetric.code,
-          `${recipe.sourceMetric.code}: ${typeof value === "object" ? JSON.stringify(value) : value ?? "unavailable"}`,
-          0.91,
+          {
+            type: "metric",
+            ref: recipe.sourceMetric.code,
+            snippet: `${recipe.sourceMetric.code}: ${typeof value === "object" ? JSON.stringify(value) : value ?? "unavailable"}`,
+            confidence: 0.91,
+            metricCode: recipe.sourceMetric.code,
+          },
         );
       })
-      .filter((citation): citation is ReturnType<typeof buildCitation> => !!citation),
+      .filter((citation): citation is CopilotCitation => !!citation),
   ];
 
-  const byKey = new Map<string, ReturnType<typeof buildCitation>>();
+  const byKey = new Map<string, CopilotCitation>();
   for (const citation of citations) {
     byKey.set(`${citation.type}:${citation.ref}`, citation);
   }
@@ -461,7 +533,7 @@ function tryParseJsonObject(output: string) {
 
 function parseCitationsFromModelOutput(
   raw: unknown,
-  allowedCitations: Array<ReturnType<typeof buildCitation>>,
+  allowedCitations: CopilotCitation[],
 ) {
   const allowedByKey = new Map(allowedCitations.map((citation) => [`${citation.type}:${citation.ref}`, citation]));
   if (!Array.isArray(raw)) {
@@ -479,17 +551,48 @@ function parseCitationsFromModelOutput(
       }
       return allowedByKey.get(`${type}:${ref}`) ?? null;
     })
-    .filter((citation): citation is ReturnType<typeof buildCitation> => !!citation);
+    .filter((citation): citation is CopilotCitation => !!citation);
 }
 
-function decorateSuggestion<T extends { executionMeta: Prisma.JsonValue | null }>(suggestion: T) {
+function mapNormalizedCitation(citation: EvidenceSuggestionCitation) {
+  return {
+    type: citation.citationType,
+    ref: citation.chunkId ?? citation.metricCode ?? citation.responseFieldKey ?? citation.evidenceVersionId ?? citation.id,
+    snippet: citation.renderedSnippet,
+    confidence: citation.confidence,
+    evidenceVersionId: citation.evidenceVersionId,
+    chunkId: citation.chunkId,
+    metricCode: citation.metricCode,
+    responseFieldKey: citation.responseFieldKey,
+  };
+}
+
+function normalizeStoredCitations(citations: Prisma.JsonValue | null) {
+  if (!Array.isArray(citations)) {
+    return [];
+  }
+  return citations.filter((citation) => typeof citation === "object" && citation !== null);
+}
+
+function decorateSuggestion<
+  T extends {
+    executionMeta: Prisma.JsonValue | null;
+    citations?: Prisma.JsonValue | null;
+    normalizedCitations?: EvidenceSuggestionCitation[];
+  },
+>(suggestion: T) {
   const meta =
     suggestion.executionMeta && typeof suggestion.executionMeta === "object" && !Array.isArray(suggestion.executionMeta)
       ? (suggestion.executionMeta as Record<string, unknown>)
       : null;
+  const normalizedCitations =
+    suggestion.normalizedCitations && suggestion.normalizedCitations.length > 0
+      ? suggestion.normalizedCitations.map((citation) => mapNormalizedCitation(citation))
+      : normalizeStoredCitations(suggestion.citations ?? null);
 
   return {
     ...suggestion,
+    citations: normalizedCitations,
     providerSummary:
       meta && typeof meta.providerSummary === "object" && meta.providerSummary !== null
         ? meta.providerSummary
@@ -503,6 +606,44 @@ function decorateSuggestion<T extends { executionMeta: Prisma.JsonValue | null }
         ? meta.usageMeta
         : null,
   };
+}
+
+function buildNormalizedCitationInput(
+  suggestionId: string,
+  citation: CopilotCitation,
+): Prisma.EvidenceSuggestionCitationUncheckedCreateInput {
+  return {
+    suggestionId,
+    citationType: citation.type,
+    evidenceVersionId: citation.evidenceVersionId ?? null,
+    chunkId: citation.chunkId ?? null,
+    metricCode: citation.metricCode ?? null,
+    responseFieldKey: citation.responseFieldKey ?? null,
+    renderedSnippet: citation.snippet,
+    confidence: citation.confidence,
+  };
+}
+
+async function createSuggestionWithCitations(
+  data: Prisma.AccreditationAssistantSuggestionUncheckedCreateInput,
+  citations: CopilotCitation[],
+) {
+  return prisma.$transaction(async (tx) => {
+    const suggestion = await tx.accreditationAssistantSuggestion.create({ data });
+    if (citations.length > 0) {
+      await tx.evidenceSuggestionCitation.createMany({
+        data: citations.map((citation) => buildNormalizedCitationInput(suggestion.id, citation)),
+      });
+    }
+    return tx.accreditationAssistantSuggestion.findUniqueOrThrow({
+      where: { id: suggestion.id },
+      include: {
+        normalizedCitations: {
+          orderBy: [{ createdAt: "asc" }],
+        },
+      },
+    });
+  });
 }
 
 async function generateLlmEntrySuggestion(context: EntryCopilotContext, type: EntrySuggestionType) {
@@ -541,7 +682,7 @@ Return JSON only with this shape:
   "content": string,
   "citations": [{"type": string, "ref": string}],
   "confidence": number,
-  "groundingStatus": "FULLY_GROUNDED" | "PARTIALLY_GROUNDED" | "METADATA_ONLY" | "INSUFFICIENT_GROUNDING",
+  "groundingStatus": "FULLY_GROUNDED" | "PARTIALLY_GROUNDED" | "METADATA_ONLY" | "NO_EVIDENCE" | "INSUFFICIENT_GROUNDING",
   "structuredPayload": object
 }
 
@@ -690,7 +831,13 @@ async function getEntryCopilotContext(entryId: string, tenantId: string) {
                 orderBy: [{ versionNumber: "desc" }],
                 take: 1,
                 include: {
-                  extraction: true,
+                  extraction: {
+                    include: {
+                      chunks: {
+                        orderBy: [{ chunkIndex: "asc" }],
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -751,6 +898,8 @@ function buildEntrySourceHash(context: NonNullable<Awaited<ReturnType<typeof get
       isFinalMarked: link.evidence.isFinalMarked,
       extractionStatus: link.evidence.versions[0]?.extraction?.status ?? null,
       extractionHash: link.evidence.versions[0]?.extraction?.contentHash ?? null,
+      extractionEngineVersion: link.evidence.versions[0]?.extraction?.engineVersion ?? null,
+      extractionChunkIds: link.evidence.versions[0]?.extraction?.chunks.map((chunk) => chunk.id) ?? [],
     })),
     metrics: context.metricRecipes.map((recipe) => ({
       metricId: recipe.sourceMetricId,
@@ -791,9 +940,19 @@ function buildExplainSuggestion(context: NonNullable<Awaited<ReturnType<typeof g
       hasScoringRule: !!context.entry.block.scoringRule,
     },
     citations: [
-      buildCitation("block", context.entry.block.blockCode, context.entry.block.title),
+      buildCitation({
+        type: "block",
+        ref: context.entry.block.blockCode,
+        snippet: context.entry.block.title,
+      }),
       ...(requiredEvidence.length > 0
-        ? [buildCitation("expected_evidence", context.entry.block.blockCode, requiredEvidence.join(", "))]
+        ? [
+            buildCitation({
+              type: "expected_evidence",
+              ref: context.entry.block.blockCode,
+              snippet: requiredEvidence.join(", "),
+            }),
+          ]
         : []),
     ],
     groundingStatus: "FULLY_GROUNDED",
@@ -816,7 +975,13 @@ function buildReviewSuggestion(context: NonNullable<Awaited<ReturnType<typeof ge
       metricRules: {},
     } satisfies BlockAssistantConfig);
   const findings: Array<{ severity: "high" | "medium" | "low"; message: string }> = [];
-  const citations = [buildCitation("block", context.entry.block.blockCode, context.entry.block.title)];
+  const citations: CopilotCitation[] = [
+    buildCitation({
+      type: "block",
+      ref: context.entry.block.blockCode,
+      snippet: context.entry.block.title,
+    }),
+  ];
   const requiredEvidence = collectExpectedEvidenceDocTypes(context.entry.block.expectedEvidence);
   const linkedDocTypes = new Set(
     context.entry.evidenceLinks
@@ -832,10 +997,23 @@ function buildReviewSuggestion(context: NonNullable<Awaited<ReturnType<typeof ge
       severity: "high",
       message: `Missing required evidence types: ${missingRequiredEvidenceTypes.join(", ")}.`,
     });
-    citations.push(buildCitation("expected_evidence", context.entry.block.blockCode, missingRequiredEvidenceTypes.join(", ")));
+    citations.push(
+      buildCitation({
+        type: "expected_evidence",
+        ref: context.entry.block.blockCode,
+        snippet: missingRequiredEvidenceTypes.join(", "),
+      }),
+    );
   }
   if (context.entry.evidenceLinks.some((link) => !link.evidence.versions[0]?.isFinal && !link.evidence.isFinalMarked)) {
     findings.push({ severity: "medium", message: "One or more linked evidence items have no final version marked." });
+  }
+  const relevantChunks = selectRelevantEvidenceChunks(context);
+  if (relevantChunks.length === 0 && context.entry.evidenceLinks.length > 0) {
+    findings.push({
+      severity: "medium",
+      message: "Evidence is linked, but no extracted evidence chunks are currently available for grounded review.",
+    });
   }
   if (config.reviewFocus === "DATA_ACCURACY") {
     const numericValues = context.entry.responses
@@ -874,6 +1052,18 @@ function buildReviewSuggestion(context: NonNullable<Awaited<ReturnType<typeof ge
       message: `Linked institutional metrics are stale: ${staleMetrics.map((recipe) => recipe.sourceMetric?.code ?? "metric").join(", ")}.`,
     });
   }
+  citations.push(
+    ...relevantChunks.slice(0, 3).map(({ latestVersionId, chunk }) =>
+      buildCitation({
+        type: "evidence_chunk",
+        ref: chunk.id,
+        snippet: redactPromptText(chunk.plainText.slice(0, 200)),
+        confidence: chunk.confidence ?? 0.86,
+        evidenceVersionId: latestVersionId,
+        chunkId: chunk.id,
+      }),
+    ),
+  );
 
   const content =
     findings.length > 0
@@ -887,7 +1077,12 @@ function buildReviewSuggestion(context: NonNullable<Awaited<ReturnType<typeof ge
       missingRequiredEvidenceTypes,
     },
     citations,
-    groundingStatus: context.entry.evidenceLinks.length > 0 ? "METADATA_ONLY" : "PARTIALLY_GROUNDED",
+    groundingStatus:
+      relevantChunks.length > 0
+        ? "PARTIALLY_GROUNDED"
+        : context.entry.evidenceLinks.length > 0
+          ? "METADATA_ONLY"
+          : "NO_EVIDENCE",
     confidence: findings.some((finding) => finding.severity === "high") ? 0.82 : 0.9,
   };
 }
@@ -933,11 +1128,29 @@ function buildDraftSuggestion(context: NonNullable<Awaited<ReturnType<typeof get
       metricLines,
     },
     citations: [
-      buildCitation("block", context.entry.block.blockCode, context.entry.block.title),
-      ...evidenceTitles.map((title) => buildCitation("evidence", title, title, 0.85)),
-      ...metricLines.map((line) => buildCitation("metric", context.entry.block.blockCode, line, 0.88)),
+      buildCitation({
+        type: "block",
+        ref: context.entry.block.blockCode,
+        snippet: context.entry.block.title,
+      }),
+      ...evidenceTitles.map((title) =>
+        buildCitation({
+          type: "evidence",
+          ref: title,
+          snippet: title,
+          confidence: 0.85,
+        }),
+      ),
+      ...metricLines.map((line) =>
+        buildCitation({
+          type: "metric",
+          ref: context.entry.block.blockCode,
+          snippet: line,
+          confidence: 0.88,
+        }),
+      ),
     ],
-    groundingStatus: evidenceTitles.length > 0 || metricLines.length > 0 ? "PARTIALLY_GROUNDED" : "METADATA_ONLY",
+    groundingStatus: evidenceTitles.length > 0 || metricLines.length > 0 ? "PARTIALLY_GROUNDED" : "NO_EVIDENCE",
     confidence: 0.8,
   };
 }
@@ -992,8 +1205,8 @@ async function createEntrySuggestion(input: {
           ? buildReviewSuggestion(context)
           : buildDraftSuggestion(context);
 
-  const suggestion = await prisma.accreditationAssistantSuggestion.create({
-    data: {
+  const suggestion = await createSuggestionWithCitations(
+    {
       workspaceId: context.entry.workspaceId,
       entryId: context.entry.id,
       scope: SuggestionScope.BLOCK_ENTRY,
@@ -1020,7 +1233,8 @@ async function createEntrySuggestion(input: {
             } as Prisma.InputJsonValue),
       createdByUserId: input.actorUserId,
     },
-  });
+    generated.citations,
+  );
 
   return { status: "success", suggestion: decorateSuggestion(suggestion), cached: false } satisfies SuccessResult<{ suggestion: ReturnType<typeof decorateSuggestion<typeof suggestion>>; cached: boolean }>;
 }
@@ -1182,10 +1396,26 @@ export async function generateWorkspaceWatchlistSuggestion(
       : "No major workspace risks are currently flagged. Continue routine review and evidence finalization.";
 
   const allowedCitations = [
-    buildCitation("readiness", workspaceId, `Blockers: ${readiness.report.blockersCount}`),
-    buildCitation("completeness", workspaceId, `No response blocks: ${completeness.report.summary.noResponseCount}`),
-    buildCitation("evidence", workspaceId, `Blocks missing required evidence: ${inventory.report.summary.blocksMissingRequiredEvidence}`),
-    buildCitation("overlap", workspaceId, `Overlap conflicts: ${overlap.report.summary.conflictingValueCount}`),
+    buildCitation({
+      type: "readiness",
+      ref: workspaceId,
+      snippet: `Blockers: ${readiness.report.blockersCount}`,
+    }),
+    buildCitation({
+      type: "completeness",
+      ref: workspaceId,
+      snippet: `No response blocks: ${completeness.report.summary.noResponseCount}`,
+    }),
+    buildCitation({
+      type: "evidence",
+      ref: workspaceId,
+      snippet: `Blocks missing required evidence: ${inventory.report.summary.blocksMissingRequiredEvidence}`,
+    }),
+    buildCitation({
+      type: "overlap",
+      ref: workspaceId,
+      snippet: `Overlap conflicts: ${overlap.report.summary.conflictingValueCount}`,
+    }),
   ];
 
   let suggestionContent = content;
@@ -1226,7 +1456,7 @@ Return JSON only with:
   "content": string,
   "citations": [{"type": string, "ref": string}],
   "confidence": number,
-  "groundingStatus": "FULLY_GROUNDED" | "PARTIALLY_GROUNDED" | "METADATA_ONLY" | "INSUFFICIENT_GROUNDING",
+  "groundingStatus": "FULLY_GROUNDED" | "PARTIALLY_GROUNDED" | "METADATA_ONLY" | "NO_EVIDENCE" | "INSUFFICIENT_GROUNDING",
   "structuredPayload": object
 }
 Only cite from the allowed citations list.`,
@@ -1291,8 +1521,8 @@ Only cite from the allowed citations list.`,
     }
   }
 
-  const suggestion = await prisma.accreditationAssistantSuggestion.create({
-    data: {
+  const suggestion = await createSuggestionWithCitations(
+    {
       workspaceId,
       scope: SuggestionScope.WORKSPACE,
       type: SuggestionType.RISK,
@@ -1314,7 +1544,8 @@ Only cite from the allowed citations list.`,
       executionMeta,
       createdByUserId: actorUserId,
     },
-  });
+    suggestionCitations,
+  );
 
   return { status: "success", suggestion: decorateSuggestion(suggestion), cached: false } satisfies SuccessResult<{ suggestion: ReturnType<typeof decorateSuggestion<typeof suggestion>>; cached: boolean }>;
 }
@@ -1336,6 +1567,11 @@ export async function listEntryAssistantSuggestions(
   const suggestions = await prisma.accreditationAssistantSuggestion.findMany({
     where: {
       entryId,
+    },
+    include: {
+      normalizedCitations: {
+        orderBy: [{ createdAt: "asc" }],
+      },
     },
     orderBy: [{ createdAt: "desc" }],
   });
@@ -1370,16 +1606,42 @@ export async function updateAssistantSuggestionStatus(
             acceptedAt: new Date(),
             acceptedByUserId: actorUserId,
           }
-        : {
-            status: SuggestionStatus.DISMISSED,
-            dismissedAt: new Date(),
-            dismissedByUserId: actorUserId,
-          },
+        : parsed.data.action === "dismiss"
+          ? {
+              status: SuggestionStatus.DISMISSED,
+              dismissedAt: new Date(),
+              dismissedByUserId: actorUserId,
+            }
+          : parsed.data.action === "mark_useful"
+            ? {
+                feedbackValue: SuggestionFeedbackValue.USEFUL,
+                feedbackNotes: parsed.data.notes ?? null,
+                feedbackByUserId: actorUserId,
+                feedbackAt: new Date(),
+              }
+            : parsed.data.action === "mark_not_useful"
+              ? {
+                  feedbackValue: SuggestionFeedbackValue.NOT_USEFUL,
+                  feedbackNotes: parsed.data.notes ?? null,
+                  feedbackByUserId: actorUserId,
+                  feedbackAt: new Date(),
+                }
+              : {
+                  feedbackValue: null,
+                  feedbackNotes: null,
+                  feedbackByUserId: null,
+                  feedbackAt: null,
+                },
+    include: {
+      normalizedCitations: {
+        orderBy: [{ createdAt: "asc" }],
+      },
+    },
   });
   return { status: "success", suggestion: decorateSuggestion(updated) } satisfies SuccessResult<{ suggestion: ReturnType<typeof decorateSuggestion<typeof updated>> }>;
 }
 
-export async function extractEvidenceVersionForCopilot(
+async function requireEvidenceVersionReadAccess(
   evidenceVersionId: string,
   tenantId: string,
   actorUserId: string,
@@ -1420,74 +1682,262 @@ export async function extractEvidenceVersionForCopilot(
   if (!canReadWorkspace(permission)) {
     return { status: "error", message: "You do not have access to this evidence version." } satisfies ErrorResult;
   }
+  return { evidenceVersion, permission };
+}
 
-  const readResult = await readEvidenceText(
-    evidenceVersion.fileUrl,
-    evidenceVersion.fileName,
-    evidenceVersion.fileType ?? null,
+async function markEvidenceSuggestionsStale(
+  evidenceVersionId: string,
+  workspaceId: string,
+  staleReason: string,
+) {
+  await prisma.accreditationAssistantSuggestion.updateMany({
+    where: {
+      workspaceId,
+      status: SuggestionStatus.ACTIVE,
+      OR: [
+        {
+          normalizedCitations: {
+            some: {
+              evidenceVersionId,
+            },
+          },
+        },
+        {
+          entry: {
+            evidenceLinks: {
+              some: {
+                evidence: {
+                  versions: {
+                    some: { id: evidenceVersionId },
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
+    data: {
+      status: SuggestionStatus.STALE,
+      staleReason,
+    },
+  });
+}
+
+function decorateExtraction<T extends { chunks?: Array<{ id: string }> | null }>(extraction: T) {
+  return {
+    ...extraction,
+    chunkCount: extraction.chunks?.length ?? 0,
+  };
+}
+
+export async function extractEvidenceVersionForCopilot(
+  evidenceVersionId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const featureError = await ensureTenantCopilotFeatureEnabled(tenantId);
+  if (featureError) {
+    return featureError;
+  }
+  const access = await requireEvidenceVersionReadAccess(evidenceVersionId, tenantId, actorUserId, actorRole);
+  if ("status" in access) {
+    return access;
+  }
+
+  const readResult = await extractEvidenceContent(
+    access.evidenceVersion.fileUrl,
+    access.evidenceVersion.fileName,
+    access.evidenceVersion.fileType ?? null,
   );
   const extractedText = readResult.text?.trim() ?? null;
   const contentHash = extractedText ? buildHash(extractedText) : null;
-  const extraction = evidenceVersion.extraction
-    ? await prisma.evidenceVersionExtraction.update({
-        where: { evidenceVersionId },
-        data: {
-          status: readResult.status,
-          extractedText,
-          structuredChunks: extractedText
-            ? [
-                {
-                  heading: evidenceVersion.fileName,
-                  text: extractedText.slice(0, 12000),
-                },
-              ]
-            : Prisma.JsonNull,
-          fileType: evidenceVersion.fileType,
-          contentHash,
-          processingMeta: {
-            mode: "local_text_extraction",
-            reason: readResult.reason,
-          } as Prisma.InputJsonValue,
-          processedAt: new Date(),
-        },
-      })
-    : await prisma.evidenceVersionExtraction.create({
-        data: {
-          evidenceVersionId,
-          status: readResult.status,
-          extractedText,
-          structuredChunks: extractedText
-            ? [
-                {
-                  heading: evidenceVersion.fileName,
-                  text: extractedText.slice(0, 12000),
-                },
-              ]
-            : Prisma.JsonNull,
-          fileType: evidenceVersion.fileType,
-          contentHash,
-          processingMeta: {
-            mode: "local_text_extraction",
-            reason: readResult.reason,
-          } as Prisma.InputJsonValue,
-          processedAt: new Date(),
-        },
-      });
+  const chunkDrafts = extractedText ? buildEvidenceChunks(extractedText, access.evidenceVersion.fileName) : [];
+  const previousExtraction = access.evidenceVersion.extraction;
+  const extraction = await prisma.$transaction(async (tx) => {
+    const savedExtraction = previousExtraction
+      ? await tx.evidenceVersionExtraction.update({
+          where: { evidenceVersionId },
+          data: {
+            status: readResult.status,
+            extractedText,
+            structuredChunks:
+              chunkDrafts.length > 0
+                ? (chunkDrafts.map((chunk) => ({
+                    chunkIndex: chunk.chunkIndex,
+                    sectionHeading: chunk.sectionHeading,
+                    text: chunk.plainText,
+                    tokenEstimate: chunk.tokenEstimate,
+                  })) as Prisma.InputJsonValue)
+                : Prisma.JsonNull,
+            fileType: access.evidenceVersion.fileType,
+            contentHash,
+            engineVersion: EVIDENCE_EXTRACTION_ENGINE_VERSION,
+            pageCount: readResult.pageCount,
+            charCount: extractedText?.length ?? null,
+            confidence: readResult.confidence,
+            qualityFlags: readResult.qualityFlags,
+            languageHints: readResult.languageHints,
+            processingMeta: {
+              mode: "evidence_intelligence",
+              reason: readResult.reason,
+              chunkCount: chunkDrafts.length,
+            } as Prisma.InputJsonValue,
+            processedAt: new Date(),
+            chunks: {
+              deleteMany: {},
+              create: chunkDrafts.map((chunk) => ({
+                chunkIndex: chunk.chunkIndex,
+                pageStart: chunk.pageStart,
+                pageEnd: chunk.pageEnd,
+                sectionHeading: chunk.sectionHeading,
+                contentType: chunk.contentType,
+                plainText: chunk.plainText,
+                charCount: chunk.charCount,
+                tokenEstimate: chunk.tokenEstimate,
+                confidence: chunk.confidence,
+                metadata: chunk.metadata as Prisma.InputJsonValue,
+              })),
+            },
+          },
+          include: {
+            chunks: {
+              orderBy: [{ chunkIndex: "asc" }],
+            },
+          },
+        })
+      : await tx.evidenceVersionExtraction.create({
+          data: {
+            evidenceVersionId,
+            status: readResult.status,
+            extractedText,
+            structuredChunks:
+              chunkDrafts.length > 0
+                ? (chunkDrafts.map((chunk) => ({
+                    chunkIndex: chunk.chunkIndex,
+                    sectionHeading: chunk.sectionHeading,
+                    text: chunk.plainText,
+                    tokenEstimate: chunk.tokenEstimate,
+                  })) as Prisma.InputJsonValue)
+                : Prisma.JsonNull,
+            fileType: access.evidenceVersion.fileType,
+            contentHash,
+            engineVersion: EVIDENCE_EXTRACTION_ENGINE_VERSION,
+            pageCount: readResult.pageCount,
+            charCount: extractedText?.length ?? null,
+            confidence: readResult.confidence,
+            qualityFlags: readResult.qualityFlags,
+            languageHints: readResult.languageHints,
+            processingMeta: {
+              mode: "evidence_intelligence",
+              reason: readResult.reason,
+              chunkCount: chunkDrafts.length,
+            } as Prisma.InputJsonValue,
+            processedAt: new Date(),
+            chunks: {
+              create: chunkDrafts.map((chunk) => ({
+                chunkIndex: chunk.chunkIndex,
+                pageStart: chunk.pageStart,
+                pageEnd: chunk.pageEnd,
+                sectionHeading: chunk.sectionHeading,
+                contentType: chunk.contentType,
+                plainText: chunk.plainText,
+                charCount: chunk.charCount,
+                tokenEstimate: chunk.tokenEstimate,
+                confidence: chunk.confidence,
+                metadata: chunk.metadata as Prisma.InputJsonValue,
+              })),
+            },
+          },
+          include: {
+            chunks: {
+              orderBy: [{ chunkIndex: "asc" }],
+            },
+          },
+        });
+    return savedExtraction;
+  });
 
-  if (evidenceVersion.extraction?.contentHash !== contentHash) {
-    await prisma.accreditationAssistantSuggestion.updateMany({
-      where: {
-        citations: {
-          path: ["0", "ref"],
-          equals: evidenceVersionId,
-        },
-        status: SuggestionStatus.ACTIVE,
-      },
-      data: {
-        status: SuggestionStatus.STALE,
-      },
-    });
+  const staleReason =
+    previousExtraction?.engineVersion && previousExtraction.engineVersion !== EVIDENCE_EXTRACTION_ENGINE_VERSION
+      ? "extraction_engine_upgraded"
+      : previousExtraction?.contentHash !== contentHash
+        ? "evidence_reprocessed"
+        : previousExtraction?.status !== readResult.status
+          ? "extraction_status_changed"
+          : null;
+
+  if (staleReason) {
+    await markEvidenceSuggestionsStale(
+      evidenceVersionId,
+      access.evidenceVersion.evidence.workspaceId,
+      staleReason,
+    );
   }
 
-  return { status: "success", extraction } satisfies SuccessResult<{ extraction: typeof extraction }>;
+  return {
+    status: "success",
+    extraction: decorateExtraction(extraction),
+  } satisfies SuccessResult<{ extraction: ReturnType<typeof decorateExtraction<typeof extraction>> }>;
+}
+
+export async function getEvidenceVersionExtractionDetails(
+  evidenceVersionId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const featureError = await ensureTenantCopilotFeatureEnabled(tenantId);
+  if (featureError) {
+    return featureError;
+  }
+  const access = await requireEvidenceVersionReadAccess(evidenceVersionId, tenantId, actorUserId, actorRole);
+  if ("status" in access) {
+    return access;
+  }
+
+  const extraction = await prisma.evidenceVersionExtraction.findUnique({
+    where: { evidenceVersionId },
+    include: {
+      chunks: {
+        orderBy: [{ chunkIndex: "asc" }],
+      },
+    },
+  });
+
+  return {
+    status: "success",
+    extraction: extraction ? decorateExtraction(extraction) : null,
+  } satisfies SuccessResult<{ extraction: ReturnType<typeof decorateExtraction> | null }>;
+}
+
+export async function listEvidenceVersionChunks(
+  evidenceVersionId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const featureError = await ensureTenantCopilotFeatureEnabled(tenantId);
+  if (featureError) {
+    return featureError;
+  }
+  const access = await requireEvidenceVersionReadAccess(evidenceVersionId, tenantId, actorUserId, actorRole);
+  if ("status" in access) {
+    return access;
+  }
+
+  const extraction = await prisma.evidenceVersionExtraction.findUnique({
+    where: { evidenceVersionId },
+    include: {
+      chunks: {
+        orderBy: [{ chunkIndex: "asc" }],
+      },
+    },
+  });
+
+  return {
+    status: "success",
+    chunks: extraction?.chunks ?? [],
+  } satisfies SuccessResult<{ chunks: NonNullable<typeof extraction>["chunks"] }>;
 }

@@ -487,6 +487,9 @@ enum SuggestionType {
   DRAFT
   RISK
   QUESTION_CHECKLIST
+  REVIEW_EVIDENCE
+  REVIEW_COMMENT
+  RISK_ASSESSMENT
 }
 
 enum SuggestionStatus {
@@ -496,12 +499,31 @@ enum SuggestionStatus {
   STALE
 }
 
+enum SuggestionFeedbackValue {
+  USEFUL
+  NOT_USEFUL
+}
+
 enum EvidenceExtractionStatus {
   PENDING
   PROCESSING
   SUCCESS
+  PARTIAL
   FAILED
   UNSUPPORTED
+  STALE
+}
+
+enum EvidenceExtractionQualityFlag {
+  TEXT_NATIVE
+  OCR_USED
+  LOW_CONFIDENCE
+  TABLES_DETECTED
+  TABLES_PARTIAL
+  UNSUPPORTED_FORMAT
+  TOO_LARGE
+  PASSWORD_PROTECTED
+  METADATA_ONLY
 }
 
 enum AssessmentPeriodState {
@@ -769,61 +791,61 @@ enum ResignationStatus {
 }
 
 model Tenant {
-  id                             String                          @id @default(cuid())
-  name                           String
-  code                           String                          @unique
-  legalOrganizationName          String
-  organizationType               String
-  primaryDomains                 String[]
-  subscriptionPlan               String
-  subscriptionStartDate          DateTime?
-  subscriptionEndDate            DateTime?
-  entitlementState               TenantEntitlementState          @default(TRIAL_ACTIVE)
-  lifecycleState                 TenantLifecycleState            @default(DRAFT)
-  ownerUserId                    String?
-  createdByUserId                String?
-  createdAt                      DateTime                        @default(now())
-  updatedAt                      DateTime                        @updatedAt
-  memberships                    Membership[]
-  invitations                    Invitation[]
-  uploadBatches                  UploadBatch[]
-  auditLogs                      AuditLog[]
-  structureVersions              OrgStructureVersion[]
-  orgUnits                       OrgUnit[]
-  kraCategories                  KraCategoryDefinition[]
-  assessmentPeriods              AssessmentPeriod[]
-  kraDefinitions                 KraDefinition[]
-  targetAllocations              TargetAllocation[]
-  achievements                   Achievement[]
-  policy                         TenantPolicy?
-  roleDefinitions                OrgRoleDefinition[]
-  notifications                  Notification[]
-  contributorRewardEvents        ContributorRewardEvent[]
-  personnelPolicy                TenantPersonnelPolicy?
-  leaveTypeDefinitions           LeaveTypeDefinition[]
-  leaveRecords                   LeaveRecord[]
-  transferRecords                TransferRecord[]
-  resignationRecords             ResignationRecord[]
-  personnelActions               PersonnelAction[]
-  actingAssignments              ActingAssignment[]
-  benefitTypes                   BenefitType[]
-  contributorRoles               ContributorRole[]
-  externalContribTemplates       ExternalContributorTemplate[]
-  permissionAssignments          TenantPermissionAssignment[]
-  kpiTemplates                   KpiTemplate[]
-  contributorRewards             ContributorReward[]
-  journalCatalogRecords          JournalCatalogRecord[]
-  journalImportBatches           JournalImportBatch[]
-  serviceEntitlements            TenantServiceEntitlement[]
-  featureEntitlements            TenantFeatureEntitlement[]
-  accreditationBodies            AccreditationBody[]
-  assessmentWorkspaces           AssessmentWorkspace[]
+  id                         String                        @id @default(cuid())
+  name                       String
+  code                       String                        @unique
+  legalOrganizationName      String
+  organizationType           String
+  primaryDomains             String[]
+  subscriptionPlan           String
+  subscriptionStartDate      DateTime?
+  subscriptionEndDate        DateTime?
+  entitlementState           TenantEntitlementState        @default(TRIAL_ACTIVE)
+  lifecycleState             TenantLifecycleState          @default(DRAFT)
+  ownerUserId                String?
+  createdByUserId            String?
+  createdAt                  DateTime                      @default(now())
+  updatedAt                  DateTime                      @updatedAt
+  memberships                Membership[]
+  invitations                Invitation[]
+  uploadBatches              UploadBatch[]
+  auditLogs                  AuditLog[]
+  structureVersions          OrgStructureVersion[]
+  orgUnits                   OrgUnit[]
+  kraCategories              KraCategoryDefinition[]
+  assessmentPeriods          AssessmentPeriod[]
+  kraDefinitions             KraDefinition[]
+  targetAllocations          TargetAllocation[]
+  achievements               Achievement[]
+  policy                     TenantPolicy?
+  roleDefinitions            OrgRoleDefinition[]
+  notifications              Notification[]
+  contributorRewardEvents    ContributorRewardEvent[]
+  personnelPolicy            TenantPersonnelPolicy?
+  leaveTypeDefinitions       LeaveTypeDefinition[]
+  leaveRecords               LeaveRecord[]
+  transferRecords            TransferRecord[]
+  resignationRecords         ResignationRecord[]
+  personnelActions           PersonnelAction[]
+  actingAssignments          ActingAssignment[]
+  benefitTypes               BenefitType[]
+  contributorRoles           ContributorRole[]
+  externalContribTemplates   ExternalContributorTemplate[]
+  permissionAssignments      TenantPermissionAssignment[]
+  kpiTemplates               KpiTemplate[]
+  contributorRewards         ContributorReward[]
+  journalCatalogRecords      JournalCatalogRecord[]
+  journalImportBatches       JournalImportBatch[]
+  serviceEntitlements        TenantServiceEntitlement[]
+  featureEntitlements        TenantFeatureEntitlement[]
+  accreditationBodies        AccreditationBody[]
+  assessmentWorkspaces       AssessmentWorkspace[]
   kpiAccreditationBlockLinks KpiAccreditationBlockLink[]
-  dataBankDomains                DataBankDomain[]
-  dataBankSourceDefinitions      DataBankSourceDefinition[]
-  metricSourceLinks              MetricSourceLink[]
-  sourceMetricDefinitions        SourceMetricDefinition[]
-  blockProjectionRecipes         BlockProjectionRecipe[]
+  dataBankDomains            DataBankDomain[]
+  dataBankSourceDefinitions  DataBankSourceDefinition[]
+  metricSourceLinks          MetricSourceLink[]
+  sourceMetricDefinitions    SourceMetricDefinition[]
+  blockProjectionRecipes     BlockProjectionRecipe[]
 
   @@index([lifecycleState, entitlementState])
 }
@@ -881,10 +903,10 @@ model TenantFeatureEntitlement {
 }
 
 model User {
-  id                                 String                       @id @default(cuid())
+  id                                 String                             @id @default(cuid())
   firstName                          String
   lastName                           String
-  officialEmail                      String                       @unique
+  officialEmail                      String                             @unique
   alternateEmail                     String?
   phoneNumber                        String?
   allowedLoginMethods                Json?
@@ -893,42 +915,42 @@ model User {
   passwordSetAt                      DateTime?
   passwordChangedAt                  DateTime?
   lastLoginAt                        DateTime?
-  lifecycleState                     UserLifecycleState           @default(DRAFT)
-  mustResetPassword                  Boolean                      @default(false)
-  isSuperadmin                       Boolean                      @default(false)
-  failedLoginCount                   Int                          @default(0)
+  lifecycleState                     UserLifecycleState                 @default(DRAFT)
+  mustResetPassword                  Boolean                            @default(false)
+  isSuperadmin                       Boolean                            @default(false)
+  failedLoginCount                   Int                                @default(0)
   lockedUntil                        DateTime?
   memberships                        Membership[]
-  achievementContributions           AchievementContributor[]     @relation("AchievementContributorUser")
-  contributorRewards                 ContributorReward[]          @relation("ContributorRewardUser")
+  achievementContributions           AchievementContributor[]           @relation("AchievementContributorUser")
+  contributorRewards                 ContributorReward[]                @relation("ContributorRewardUser")
   contributorRewardEvents            ContributorRewardEvent[]
   invitations                        Invitation[]
   socialAccounts                     SocialAccount[]
   passwordResetTokens                PasswordResetToken[]
   orgAssignments                     UserOrgAssignment[]
   orgRoleAssignments                 OrgRoleAssignment[]
-  tenantPermissionAssignments        TenantPermissionAssignment[] @relation("TenantPermissionAssignmentUser")
-  grantedTenantPermissionAssignments TenantPermissionAssignment[] @relation("TenantPermissionAssignmentCreatedBy")
-  managerLines                       ReportingLine[]              @relation("OrgManagerLines")
-  memberLines                        ReportingLine[]              @relation("OrgMemberLines")
-  targetAllocations                  TargetAllocation[]           @relation("TargetUser")
+  tenantPermissionAssignments        TenantPermissionAssignment[]       @relation("TenantPermissionAssignmentUser")
+  grantedTenantPermissionAssignments TenantPermissionAssignment[]       @relation("TenantPermissionAssignmentCreatedBy")
+  managerLines                       ReportingLine[]                    @relation("OrgManagerLines")
+  memberLines                        ReportingLine[]                    @relation("OrgMemberLines")
+  targetAllocations                  TargetAllocation[]                 @relation("TargetUser")
   notifications                      Notification[]
   workspaceCollaborations            WorkspaceCollaborator[]
   workspaceSectionAssignments        WorkspaceSectionAssignment[]
-  workspaceSectionReviewsApproved    WorkspaceSectionReview[]      @relation("WorkspaceSectionReviewApprovedBy")
-  workspaceSectionReviewsSubmitted   WorkspaceSectionReview[]      @relation("WorkspaceSectionReviewSubmittedBy")
+  workspaceSectionReviewsApproved    WorkspaceSectionReview[]           @relation("WorkspaceSectionReviewApprovedBy")
+  workspaceSectionReviewsSubmitted   WorkspaceSectionReview[]           @relation("WorkspaceSectionReviewSubmittedBy")
   workspaceSectionReviewEvents       WorkspaceSectionReviewEvent[]
   workspaceSectionReviewerDecisions  WorkspaceSectionReviewerDecision[]
-  workspaceDiscussionThreads         WorkspaceDiscussionThread[]   @relation("WorkspaceDiscussionThreadAuthor")
-  workspaceDiscussionMessages        WorkspaceDiscussionMessage[]  @relation("WorkspaceDiscussionMessageAuthor")
-  workspaceDiscussionResolutions     WorkspaceDiscussionThread[]   @relation("WorkspaceDiscussionThreadResolvedBy")
+  workspaceDiscussionThreads         WorkspaceDiscussionThread[]        @relation("WorkspaceDiscussionThreadAuthor")
+  workspaceDiscussionMessages        WorkspaceDiscussionMessage[]       @relation("WorkspaceDiscussionMessageAuthor")
+  workspaceDiscussionResolutions     WorkspaceDiscussionThread[]        @relation("WorkspaceDiscussionThreadResolvedBy")
   workspaceGuestInvites              WorkspaceGuestInvite[]
-  workspaceFreezeLogsFrozen          WorkspaceFreezeLog[]          @relation("WorkspaceFreezeLogFrozenBy")
-  workspaceFreezeLogsUnfrozen        WorkspaceFreezeLog[]          @relation("WorkspaceFreezeLogUnfrozenBy")
-  keyReviewKpis                      KpiDefinition[]              @relation("KpiKeyReviewer")
-  finalReviewKpis                    KpiDefinition[]              @relation("KpiFinalReviewer")
-  createdAt                          DateTime                     @default(now())
-  updatedAt                          DateTime                     @updatedAt
+  workspaceFreezeLogsFrozen          WorkspaceFreezeLog[]               @relation("WorkspaceFreezeLogFrozenBy")
+  workspaceFreezeLogsUnfrozen        WorkspaceFreezeLog[]               @relation("WorkspaceFreezeLogUnfrozenBy")
+  keyReviewKpis                      KpiDefinition[]                    @relation("KpiKeyReviewer")
+  finalReviewKpis                    KpiDefinition[]                    @relation("KpiFinalReviewer")
+  createdAt                          DateTime                           @default(now())
+  updatedAt                          DateTime                           @updatedAt
 
   @@index([lifecycleState])
 }
@@ -1242,19 +1264,19 @@ model AccreditationBody {
 }
 
 model AccreditationBodyVersion {
-  id                String                           @id @default(cuid())
+  id                String                               @id @default(cuid())
   bodyId            String
   sourceVersionId   String?
   versionCode       String
   versionName       String
   assistantPackKey  String?
-  copilotMode       CopilotMode                     @default(DETERMINISTIC_ONLY)
+  copilotMode       CopilotMode                          @default(DETERMINISTIC_ONLY)
   llmProfileId      String?
   llmConfig         Json?
-  engineVersion     Int                              @default(1)
+  engineVersion     Int                                  @default(1)
   scoreBase         Float
   convertedScaleMax Float?
-  conversionType    AccreditationScoreConversionType @default(NONE)
+  conversionType    AccreditationScoreConversionType     @default(NONE)
   conversionFactor  Float?
   effectiveFrom     DateTime?
   effectiveTo       DateTime?
@@ -1262,14 +1284,14 @@ model AccreditationBodyVersion {
   publishedAt       DateTime?
   publishedByUserId String?
   supersededAt      DateTime?
-  isLocked          Boolean                          @default(false)
-  isActive          Boolean                          @default(true)
-  createdAt         DateTime                         @default(now())
-  updatedAt         DateTime                         @updatedAt
-  body              AccreditationBody                @relation(fields: [bodyId], references: [id], onDelete: Cascade)
-  sourceVersion     AccreditationBodyVersion?        @relation("AccreditationVersionForks", fields: [sourceVersionId], references: [id], onDelete: SetNull)
-  forkedVersions    AccreditationBodyVersion[]       @relation("AccreditationVersionForks")
-  llmProfile        PlatformLlmProfile?             @relation(fields: [llmProfileId], references: [id], onDelete: SetNull)
+  isLocked          Boolean                              @default(false)
+  isActive          Boolean                              @default(true)
+  createdAt         DateTime                             @default(now())
+  updatedAt         DateTime                             @updatedAt
+  body              AccreditationBody                    @relation(fields: [bodyId], references: [id], onDelete: Cascade)
+  sourceVersion     AccreditationBodyVersion?            @relation("AccreditationVersionForks", fields: [sourceVersionId], references: [id], onDelete: SetNull)
+  forkedVersions    AccreditationBodyVersion[]           @relation("AccreditationVersionForks")
+  llmProfile        PlatformLlmProfile?                  @relation(fields: [llmProfileId], references: [id], onDelete: SetNull)
   blocks            CriterionBlock[]
   profiles          AccreditationProfile[]
   gradeBands        AccreditationGradeBand[]
@@ -1283,23 +1305,23 @@ model AccreditationBodyVersion {
 }
 
 model PlatformLlmModel {
-  id                         String                    @id @default(cuid())
-  code                       String                    @unique
-  displayName                String
-  provider                   PlatformLlmProvider
-  contextWindow              Int
-  maxOutputTokens            Int?
-  supportsVision             Boolean                   @default(false)
-  supportsStreaming          Boolean                   @default(false)
-  supportsStructuredOutputs  Boolean                   @default(false)
-  supportsReasoning          Boolean                   @default(false)
-  inputCostPer1M             Int                       @default(0)
-  outputCostPer1M            Int                       @default(0)
-  isActive                   Boolean                   @default(true)
-  isDefault                  Boolean                   @default(false)
-  createdAt                  DateTime                  @default(now())
-  updatedAt                  DateTime                  @updatedAt
-  primaryProfiles            PlatformLlmProfile[]      @relation("PlatformLlmProfilePrimaryModel")
+  id                        String               @id @default(cuid())
+  code                      String               @unique
+  displayName               String
+  provider                  PlatformLlmProvider
+  contextWindow             Int
+  maxOutputTokens           Int?
+  supportsVision            Boolean              @default(false)
+  supportsStreaming         Boolean              @default(false)
+  supportsStructuredOutputs Boolean              @default(false)
+  supportsReasoning         Boolean              @default(false)
+  inputCostPer1M            Int                  @default(0)
+  outputCostPer1M           Int                  @default(0)
+  isActive                  Boolean              @default(true)
+  isDefault                 Boolean              @default(false)
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+  primaryProfiles           PlatformLlmProfile[] @relation("PlatformLlmProfilePrimaryModel")
 
   @@index([provider, isActive])
 }
@@ -1344,25 +1366,24 @@ model AccreditationProfile {
   @@unique([versionId, profileCode])
 }
 
-
 model CriterionBlock {
-  id                    String                    @id @default(cuid())
+  id                    String                       @id @default(cuid())
   versionId             String
   parentId              String?
   blockCode             String
   lineageKey            String?
   blockType             CriterionBlockType
-  visibility            CriterionBlockVisibility  @default(VISIBLE_INPUT)
-  contributesToTotal    Boolean                   @default(true)
-  isSectionRoot         Boolean                   @default(false)
+  visibility            CriterionBlockVisibility     @default(VISIBLE_INPUT)
+  contributesToTotal    Boolean                      @default(true)
+  isSectionRoot         Boolean                      @default(false)
   title                 String
   description           String?
-  dataType              CriterionDataType         @default(QUANTITATIVE)
-  yearAggregation       CriterionYearAggregation  @default(AVERAGE)
+  dataType              CriterionDataType            @default(QUANTITATIVE)
+  yearAggregation       CriterionYearAggregation     @default(AVERAGE)
   yearAggregationConfig Json?
   maxScore              Float?
-  sortOrder             Int                       @default(0)
-  depth                 Int                       @default(0)
+  sortOrder             Int                          @default(0)
+  depth                 Int                          @default(0)
   unitOfMeasure         String?
   inputSchema           Json?
   outputSchema          Json?
@@ -1374,14 +1395,14 @@ model CriterionBlock {
   assistantConfig       Json?
   dependencyRules       Json?
   sourceLinks           Json?
-  isLeaf                Boolean                   @default(false)
-  isActive              Boolean                   @default(true)
+  isLeaf                Boolean                      @default(false)
+  isActive              Boolean                      @default(true)
   createdByUserId       String?
-  createdAt             DateTime                  @default(now())
-  updatedAt             DateTime                  @updatedAt
-  version               AccreditationBodyVersion  @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  parent                CriterionBlock?           @relation("CriterionBlockTree", fields: [parentId], references: [id], onDelete: SetNull)
-  children              CriterionBlock[]          @relation("CriterionBlockTree")
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+  version               AccreditationBodyVersion     @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  parent                CriterionBlock?              @relation("CriterionBlockTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children              CriterionBlock[]             @relation("CriterionBlockTree")
   scoringSlabs          AccreditationScoringSlab[]
   profileWeights        AccreditationProfileWeight[]
   thresholdRules        AccreditationThresholdRule[]
@@ -1399,26 +1420,26 @@ model CriterionBlock {
 }
 
 model AccreditationProfileWeight {
-  id            String                 @id @default(cuid())
+  id            String               @id @default(cuid())
   profileId     String
   blockId       String
   maxScore      Float
   weightPercent Float?
-  profile       AccreditationProfile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  block         CriterionBlock         @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  profile       AccreditationProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  block         CriterionBlock       @relation(fields: [blockId], references: [id], onDelete: Cascade)
 
   @@unique([profileId, blockId])
 }
 
 model AccreditationScoringSlab {
-  id            String                 @id @default(cuid())
+  id            String         @id @default(cuid())
   blockId       String
   rangeMin      Float?
   rangeMax      Float?
   rangeLabel    String?
   pointsAwarded Float
-  sortOrder     Int                    @default(0)
-  block         CriterionBlock         @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  sortOrder     Int            @default(0)
+  block         CriterionBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
 
   @@index([blockId, sortOrder])
 }
@@ -1451,47 +1472,47 @@ model AccreditationThresholdRule {
 }
 
 model AssessmentWorkspace {
-  id                    String                    @id @default(cuid())
-  tenantId              String
-  versionId             String
-  profileId             String
-  title                 String
-  description           String?
-  periodStart           DateTime
-  periodEnd             DateTime
-  targetGrade           String?
-  status                AssessmentWorkspaceStatus @default(DRAFT)
-  overallRawScore       Float?
-  overallConvertedScore Float?
-  resolvedGrade         String?
-  resolvedOutcome       String?
-  isScoreStale          Boolean                   @default(true)
-  lastSuccessfulScoreAt DateTime?
-  lastFrozenSnapshotId  String?
-  frozenAt              DateTime?
-  frozenByUserId        String?
-  createdByUserId       String
-  createdAt             DateTime                  @default(now())
-  updatedAt             DateTime                  @updatedAt
-  tenant                Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  version               AccreditationBodyVersion  @relation(fields: [versionId], references: [id], onDelete: Restrict)
-  profile               AccreditationProfile      @relation(fields: [profileId], references: [id], onDelete: Restrict)
-  entries               BlockEntry[]
-  milestones            WorkspaceMilestone[]
-  collaborators         WorkspaceCollaborator[]
-  sectionAssignments    WorkspaceSectionAssignment[]
-  sectionReviews        WorkspaceSectionReview[]
-  discussionThreads     WorkspaceDiscussionThread[]
-  guestInvites          WorkspaceGuestInvite[]
-  guestParticipants     WorkspaceGuestParticipant[]
-  freezeLogs            WorkspaceFreezeLog[]
-  evidence              BlockEvidence[]
-  snapshots             ScoreSnapshot[]
-  dvvQueries            DvvQuery[]
-  peerRecommendations   PeerRecommendation[]
-  assistantSuggestions  AccreditationAssistantSuggestion[]
-  projectionRecipes     BlockProjectionRecipe[]      @relation("ProjectionTargetWorkspace")
-  sourceProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionSourceWorkspace")
+  id                      String                             @id @default(cuid())
+  tenantId                String
+  versionId               String
+  profileId               String
+  title                   String
+  description             String?
+  periodStart             DateTime
+  periodEnd               DateTime
+  targetGrade             String?
+  status                  AssessmentWorkspaceStatus          @default(DRAFT)
+  overallRawScore         Float?
+  overallConvertedScore   Float?
+  resolvedGrade           String?
+  resolvedOutcome         String?
+  isScoreStale            Boolean                            @default(true)
+  lastSuccessfulScoreAt   DateTime?
+  lastFrozenSnapshotId    String?
+  frozenAt                DateTime?
+  frozenByUserId          String?
+  createdByUserId         String
+  createdAt               DateTime                           @default(now())
+  updatedAt               DateTime                           @updatedAt
+  tenant                  Tenant                             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  version                 AccreditationBodyVersion           @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  profile                 AccreditationProfile               @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  entries                 BlockEntry[]
+  milestones              WorkspaceMilestone[]
+  collaborators           WorkspaceCollaborator[]
+  sectionAssignments      WorkspaceSectionAssignment[]
+  sectionReviews          WorkspaceSectionReview[]
+  discussionThreads       WorkspaceDiscussionThread[]
+  guestInvites            WorkspaceGuestInvite[]
+  guestParticipants       WorkspaceGuestParticipant[]
+  freezeLogs              WorkspaceFreezeLog[]
+  evidence                BlockEvidence[]
+  snapshots               ScoreSnapshot[]
+  dvvQueries              DvvQuery[]
+  peerRecommendations     PeerRecommendation[]
+  assistantSuggestions    AccreditationAssistantSuggestion[]
+  projectionRecipes       BlockProjectionRecipe[]            @relation("ProjectionTargetWorkspace")
+  sourceProjectionRecipes BlockProjectionRecipe[]            @relation("ProjectionSourceWorkspace")
 
   @@index([tenantId, status])
   @@index([tenantId, versionId])
@@ -1518,34 +1539,34 @@ model WorkspaceMilestone {
 }
 
 model BlockEntry {
-  id                   String                 @id @default(cuid())
-  workspaceId          String
-  blockId              String
-  status               BlockEntryStatus       @default(BLANK)
-  computedScore        Float?
-  manualOverride       Float?
-  manualOverrideForced Boolean                @default(false)
-  finalScore           Float?
-  executionStatus      String?
-  lastComputedAt       DateTime?
-  executionMeta        Json?
-  lastExecutionHash    String?
-  remarks              String?
-  lastUpdatedByUserId  String?
-  lastUpdatedAt        DateTime?
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  workspace            AssessmentWorkspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  block                CriterionBlock         @relation(fields: [blockId], references: [id], onDelete: Restrict)
-  responses            BlockEntryResponse[]
-  evidenceLinks        EvidenceEntryLink[]
-  changeLog            BlockEntryChange[]
-  discussionThreads    WorkspaceDiscussionThread[]
-  tableInstances       BlockEntryTableInstance[]
-  assistantSuggestions AccreditationAssistantSuggestion[]
-  targetProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionTargetEntry")
-  sourceProjectionRecipes BlockProjectionRecipe[]    @relation("ProjectionSourceEntry")
-  projectionTargets    BlockProjectionTarget[]
+  id                      String                             @id @default(cuid())
+  workspaceId             String
+  blockId                 String
+  status                  BlockEntryStatus                   @default(BLANK)
+  computedScore           Float?
+  manualOverride          Float?
+  manualOverrideForced    Boolean                            @default(false)
+  finalScore              Float?
+  executionStatus         String?
+  lastComputedAt          DateTime?
+  executionMeta           Json?
+  lastExecutionHash       String?
+  remarks                 String?
+  lastUpdatedByUserId     String?
+  lastUpdatedAt           DateTime?
+  createdAt               DateTime                           @default(now())
+  updatedAt               DateTime                           @updatedAt
+  workspace               AssessmentWorkspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  block                   CriterionBlock                     @relation(fields: [blockId], references: [id], onDelete: Restrict)
+  responses               BlockEntryResponse[]
+  evidenceLinks           EvidenceEntryLink[]
+  changeLog               BlockEntryChange[]
+  discussionThreads       WorkspaceDiscussionThread[]
+  tableInstances          BlockEntryTableInstance[]
+  assistantSuggestions    AccreditationAssistantSuggestion[]
+  targetProjectionRecipes BlockProjectionRecipe[]            @relation("ProjectionTargetEntry")
+  sourceProjectionRecipes BlockProjectionRecipe[]            @relation("ProjectionSourceEntry")
+  projectionTargets       BlockProjectionTarget[]
 
   @@unique([workspaceId, blockId])
   @@index([workspaceId])
@@ -1553,44 +1574,44 @@ model BlockEntry {
 }
 
 model BlockEntryResponse {
-  id              String                  @id @default(cuid())
-  entryId         String
-  scopeKey        String                  @default("DEFAULT")
-  year            Int?
-  responseData    Json
+  id               String                    @id @default(cuid())
+  entryId          String
+  scopeKey         String                    @default("DEFAULT")
+  year             Int?
+  responseData     Json
   responseMetadata Json?
-  computedOutput  Json?
-  computedScore   Float?
-  dataSource      BlockEntryValueSource   @default(MANUAL)
-  sourceRef       String?
-  remarks         String?
-  enteredByUserId String?
-  enteredAt       DateTime?
-  updatedByUserId String?
-  createdAt       DateTime                @default(now())
-  updatedAt       DateTime                @updatedAt
-  entry           BlockEntry              @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  tableInstances  BlockEntryTableInstance[]
+  computedOutput   Json?
+  computedScore    Float?
+  dataSource       BlockEntryValueSource     @default(MANUAL)
+  sourceRef        String?
+  remarks          String?
+  enteredByUserId  String?
+  enteredAt        DateTime?
+  updatedByUserId  String?
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  entry            BlockEntry                @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  tableInstances   BlockEntryTableInstance[]
 
   @@unique([entryId, scopeKey])
   @@index([entryId, year])
 }
 
 model BlockEntryTableInstance {
-  id                   String                 @id @default(cuid())
-  entryId              String
-  responseId           String
-  year                 Int?
-  scopeKey             String
-  fieldKey             String
-  fieldLabel           String?
-  rowCount             Int                    @default(0)
-  createdByUserId      String?
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  entry                BlockEntry             @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  response             BlockEntryResponse     @relation(fields: [responseId], references: [id], onDelete: Cascade)
-  rows                 BlockEntryTableRow[]
+  id                      String                  @id @default(cuid())
+  entryId                 String
+  responseId              String
+  year                    Int?
+  scopeKey                String
+  fieldKey                String
+  fieldLabel              String?
+  rowCount                Int                     @default(0)
+  createdByUserId         String?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  entry                   BlockEntry              @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  response                BlockEntryResponse      @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  rows                    BlockEntryTableRow[]
   sourceProjectionRecipes BlockProjectionRecipe[] @relation("ProjectionSourceTable")
 
   @@unique([responseId, fieldKey])
@@ -1599,14 +1620,14 @@ model BlockEntryTableInstance {
 }
 
 model BlockEntryTableRow {
-  id                   String                   @id @default(cuid())
+  id                   String                  @id @default(cuid())
   instanceId           String
   rowIndex             Int
   rowKey               String?
   dimensions           Json?
-  dimensionFingerprint String                   @default("__NONE__")
-  createdAt            DateTime                 @default(now())
-  updatedAt            DateTime                 @updatedAt
+  dimensionFingerprint String                  @default("__NONE__")
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
   instance             BlockEntryTableInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   cells                BlockEntryTableCell[]
 
@@ -1615,7 +1636,7 @@ model BlockEntryTableRow {
 }
 
 model BlockEntryTableCell {
-  id           String                 @id @default(cuid())
+  id           String             @id @default(cuid())
   rowId        String
   columnKey    String
   numberValue  Float?
@@ -1623,9 +1644,9 @@ model BlockEntryTableCell {
   booleanValue Boolean?
   dateValue    DateTime?
   jsonValue    Json?
-  createdAt    DateTime               @default(now())
-  updatedAt    DateTime               @updatedAt
-  row          BlockEntryTableRow         @relation(fields: [rowId], references: [id], onDelete: Cascade)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  row          BlockEntryTableRow @relation(fields: [rowId], references: [id], onDelete: Cascade)
 
   @@unique([rowId, columnKey])
 }
@@ -1651,33 +1672,34 @@ model BlockEvidence {
 }
 
 model EvidenceVersion {
-  id               String            @id @default(cuid())
-  evidenceId       String
-  versionNumber    Int
-  fileName         String
-  fileUrl          String
-  fileSize         Int?
-  fileType         String?
-  remark           String?
-  isFinal          Boolean           @default(false)
-  uploadedByUserId String
-  uploadedAt       DateTime          @default(now())
-  evidence         BlockEvidence          @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
-  extraction       EvidenceVersionExtraction?
+  id                  String                       @id @default(cuid())
+  evidenceId          String
+  versionNumber       Int
+  fileName            String
+  fileUrl             String
+  fileSize            Int?
+  fileType            String?
+  remark              String?
+  isFinal             Boolean                      @default(false)
+  uploadedByUserId    String
+  uploadedAt          DateTime                     @default(now())
+  evidence            BlockEvidence                @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  extraction          EvidenceVersionExtraction?
+  suggestionCitations EvidenceSuggestionCitation[]
 
   @@unique([evidenceId, versionNumber])
   @@index([evidenceId, uploadedAt])
 }
 
 model DvvQuery {
-  id                      String               @id @default(cuid())
+  id                      String              @id @default(cuid())
   workspaceId             String
-  linkedBlockIds          String[]             @default([])
+  linkedBlockIds          String[]            @default([])
   queryNumber             String
-  queryText               String               @db.Text
-  responseText            String?              @db.Text
-  status                  DvvQueryStatus       @default(RECEIVED)
-  priority                DvvQueryPriority     @default(MEDIUM)
+  queryText               String              @db.Text
+  responseText            String?             @db.Text
+  status                  DvvQueryStatus      @default(RECEIVED)
+  priority                DvvQueryPriority    @default(MEDIUM)
   assignedToUserId        String?
   assignedToExternalName  String?
   assignedToExternalEmail String?
@@ -1686,22 +1708,22 @@ model DvvQuery {
   respondedAt             DateTime?
   responseAttachments     Json?
   createdByUserId         String
-  createdAt               DateTime             @default(now())
-  updatedAt               DateTime             @updatedAt
-  workspace               AssessmentWorkspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  workspace               AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, status])
   @@index([workspaceId, priority])
 }
 
 model PeerRecommendation {
-  id                      String                  @id @default(cuid())
+  id                      String                 @id @default(cuid())
   workspaceId             String
-  linkedBlockIds          String[]                @default([])
-  recommendationText      String                  @db.Text
-  priority                RecommendationPriority  @default(MEDIUM)
-  actionPlan              String?                 @db.Text
-  status                  RecommendationStatus    @default(RECEIVED)
+  linkedBlockIds          String[]               @default([])
+  recommendationText      String                 @db.Text
+  priority                RecommendationPriority @default(MEDIUM)
+  actionPlan              String?                @db.Text
+  status                  RecommendationStatus   @default(RECEIVED)
   assignedToUserId        String?
   assignedToExternalName  String?
   assignedToExternalEmail String?
@@ -1709,73 +1731,127 @@ model PeerRecommendation {
   completedAt             DateTime?
   progressNotes           Json?
   createdByUserId         String
-  createdAt               DateTime                @default(now())
-  updatedAt               DateTime                @updatedAt
-  workspace               AssessmentWorkspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+  workspace               AssessmentWorkspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, status])
   @@index([workspaceId, priority])
 }
 
 model AccreditationAssistantSuggestion {
-  id                String              @id @default(cuid())
-  workspaceId       String
-  entryId           String?
-  scope             SuggestionScope
-  type              SuggestionType
-  assistantPackKey  String
-  profileKey        String?
-  providerCode      String?
-  modelCode         String?
-  promptVersion     String?
-  content           String              @db.Text
-  structuredPayload Json?
-  citations         Json
-  groundingStatus   String
-  confidence        Float?
-  sourceHash        String?
-  executionMeta     Json?
-  status            SuggestionStatus    @default(ACTIVE)
-  acceptedByUserId  String?
-  acceptedAt        DateTime?
-  dismissedByUserId String?
-  dismissedAt       DateTime?
-  createdByUserId   String
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  workspace         AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  entry             BlockEntry?         @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  id                  String                       @id @default(cuid())
+  workspaceId         String
+  entryId             String?
+  scope               SuggestionScope
+  type                SuggestionType
+  assistantPackKey    String
+  profileKey          String?
+  providerCode        String?
+  modelCode           String?
+  promptVersion       String?
+  content             String                       @db.Text
+  structuredPayload   Json?
+  citations           Json
+  groundingStatus     String
+  confidence          Float?
+  sourceHash          String?
+  executionMeta       Json?
+  status              SuggestionStatus             @default(ACTIVE)
+  staleReason         String?
+  acceptedByUserId    String?
+  acceptedAt          DateTime?
+  dismissedByUserId   String?
+  dismissedAt         DateTime?
+  feedbackValue       SuggestionFeedbackValue?
+  feedbackNotes       String?                      @db.Text
+  feedbackByUserId    String?
+  feedbackAt          DateTime?
+  createdByUserId     String
+  createdAt           DateTime                     @default(now())
+  updatedAt           DateTime                     @updatedAt
+  workspace           AssessmentWorkspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entry               BlockEntry?                  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  normalizedCitations EvidenceSuggestionCitation[]
 
   @@index([workspaceId, scope, type, status])
   @@index([entryId, type, status])
 }
 
 model EvidenceVersionExtraction {
-  id                String                   @id @default(cuid())
-  evidenceVersionId String                   @unique
-  status            EvidenceExtractionStatus @default(PENDING)
+  id                String                          @id @default(cuid())
+  evidenceVersionId String                          @unique
+  status            EvidenceExtractionStatus        @default(PENDING)
   contentHash       String?
-  extractedText     String?                  @db.Text
+  engineVersion     String?
+  extractedText     String?                         @db.Text
   structuredChunks  Json?
   pageCount         Int?
   fileType          String?
+  charCount         Int?
+  confidence        Float?
+  qualityFlags      EvidenceExtractionQualityFlag[] @default([])
+  languageHints     String[]                        @default([])
   processingMeta    Json?
   processedAt       DateTime?
-  createdAt         DateTime                 @default(now())
-  updatedAt         DateTime                 @updatedAt
-  evidenceVersion   EvidenceVersion          @relation(fields: [evidenceVersionId], references: [id], onDelete: Cascade)
+  createdAt         DateTime                        @default(now())
+  updatedAt         DateTime                        @updatedAt
+  evidenceVersion   EvidenceVersion                 @relation(fields: [evidenceVersionId], references: [id], onDelete: Cascade)
+  chunks            EvidenceVersionChunk[]
 
   @@index([status])
 }
 
+model EvidenceVersionChunk {
+  id             String                       @id @default(cuid())
+  extractionId   String
+  chunkIndex     Int
+  pageStart      Int?
+  pageEnd        Int?
+  sectionHeading String?
+  contentType    String                       @default("TEXT")
+  plainText      String                       @db.Text
+  charCount      Int
+  tokenEstimate  Int?
+  confidence     Float?
+  metadata       Json?
+  createdAt      DateTime                     @default(now())
+  extraction     EvidenceVersionExtraction    @relation(fields: [extractionId], references: [id], onDelete: Cascade)
+  citations      EvidenceSuggestionCitation[]
+
+  @@unique([extractionId, chunkIndex])
+  @@index([extractionId, chunkIndex])
+  @@index([extractionId, contentType])
+}
+
+model EvidenceSuggestionCitation {
+  id                String                           @id @default(cuid())
+  suggestionId      String
+  citationType      String
+  evidenceVersionId String?
+  chunkId           String?
+  metricCode        String?
+  responseFieldKey  String?
+  renderedSnippet   String?                          @db.Text
+  confidence        Float?
+  createdAt         DateTime                         @default(now())
+  suggestion        AccreditationAssistantSuggestion @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
+  evidenceVersion   EvidenceVersion?                 @relation(fields: [evidenceVersionId], references: [id], onDelete: SetNull)
+  chunk             EvidenceVersionChunk?            @relation(fields: [chunkId], references: [id], onDelete: SetNull)
+
+  @@index([suggestionId])
+  @@index([evidenceVersionId])
+  @@index([chunkId])
+}
+
 model EvidenceEntryLink {
-  id             String            @id @default(cuid())
+  id             String        @id @default(cuid())
   evidenceId     String
   entryId        String
   linkedByUserId String
-  linkedAt       DateTime          @default(now())
-  evidence       BlockEvidence          @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
-  entry          BlockEntry             @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  linkedAt       DateTime      @default(now())
+  evidence       BlockEvidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  entry          BlockEntry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
 
   @@unique([evidenceId, entryId])
   @@index([entryId])
@@ -1798,7 +1874,7 @@ model WorkspaceCollaborator {
 }
 
 model BlockEntryChange {
-  id              String         @id @default(cuid())
+  id              String     @id @default(cuid())
   entryId         String
   year            Int?
   fieldChanged    String
@@ -1807,14 +1883,14 @@ model BlockEntryChange {
   changeMeta      Json?
   reason          String?
   changedByUserId String
-  changedAt       DateTime       @default(now())
-  entry           BlockEntry             @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  changedAt       DateTime   @default(now())
+  entry           BlockEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
 
   @@index([entryId, changedAt])
 }
 
 model ScoreSnapshot {
-  id                    String              @id @default(cuid())
+  id                    String               @id @default(cuid())
   workspaceId           String
   snapshotName          String?
   overallRawScore       Float
@@ -1825,8 +1901,8 @@ model ScoreSnapshot {
   thresholdResult       Json?
   dataSourceSnapshot    Json?
   takenByUserId         String
-  takenAt               DateTime            @default(now())
-  workspace             AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  takenAt               DateTime             @default(now())
+  workspace             AssessmentWorkspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   freezeLogs            WorkspaceFreezeLog[]
 
   @@index([workspaceId, takenAt])
@@ -1856,80 +1932,80 @@ model WorkspaceSectionAssignment {
 }
 
 model WorkspaceSectionReview {
-  id                String                             @id @default(cuid())
-  workspaceId       String
-  sectionBlockId    String
-  status            WorkspaceSectionReviewStatus      @default(NOT_STARTED)
-  submittedByUserId String?
-  submittedAt       DateTime?
-  approvedByUserId  String?
-  approvedAt        DateTime?
+  id                  String                             @id @default(cuid())
+  workspaceId         String
+  sectionBlockId      String
+  status              WorkspaceSectionReviewStatus       @default(NOT_STARTED)
+  submittedByUserId   String?
+  submittedAt         DateTime?
+  approvedByUserId    String?
+  approvedAt          DateTime?
   lastChangedByUserId String?
-  lastChangedAt     DateTime?
-  createdAt         DateTime                           @default(now())
-  updatedAt         DateTime                           @updatedAt
-  workspace         AssessmentWorkspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  sectionBlock      CriterionBlock                     @relation(fields: [sectionBlockId], references: [id], onDelete: Cascade)
-  submittedByUser   User?                              @relation("WorkspaceSectionReviewSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
-  approvedByUser    User?                              @relation("WorkspaceSectionReviewApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
-  reviewerDecisions WorkspaceSectionReviewerDecision[]
-  events            WorkspaceSectionReviewEvent[]
+  lastChangedAt       DateTime?
+  createdAt           DateTime                           @default(now())
+  updatedAt           DateTime                           @updatedAt
+  workspace           AssessmentWorkspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sectionBlock        CriterionBlock                     @relation(fields: [sectionBlockId], references: [id], onDelete: Cascade)
+  submittedByUser     User?                              @relation("WorkspaceSectionReviewSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  approvedByUser      User?                              @relation("WorkspaceSectionReviewApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  reviewerDecisions   WorkspaceSectionReviewerDecision[]
+  events              WorkspaceSectionReviewEvent[]
 
   @@unique([workspaceId, sectionBlockId])
   @@index([workspaceId, status])
 }
 
 model WorkspaceSectionReviewerDecision {
-  id            String                                @id @default(cuid())
-  reviewId      String
+  id             String                                 @id @default(cuid())
+  reviewId       String
   reviewerUserId String
-  status        WorkspaceSectionReviewerDecisionStatus @default(PENDING)
-  confirmedAt   DateTime?
-  createdAt     DateTime                              @default(now())
-  updatedAt     DateTime                              @updatedAt
-  review        WorkspaceSectionReview                @relation(fields: [reviewId], references: [id], onDelete: Cascade)
-  reviewer      User                                  @relation(fields: [reviewerUserId], references: [id], onDelete: Cascade)
+  status         WorkspaceSectionReviewerDecisionStatus @default(PENDING)
+  confirmedAt    DateTime?
+  createdAt      DateTime                               @default(now())
+  updatedAt      DateTime                               @updatedAt
+  review         WorkspaceSectionReview                 @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  reviewer       User                                   @relation(fields: [reviewerUserId], references: [id], onDelete: Cascade)
 
   @@unique([reviewId, reviewerUserId])
   @@index([reviewId, status])
 }
 
 model WorkspaceSectionReviewEvent {
-  id              String                       @id @default(cuid())
-  reviewId        String
-  fromStatus      WorkspaceSectionReviewStatus?
-  toStatus        WorkspaceSectionReviewStatus
-  actorUserId     String
-  comment         String?
-  metadata        Json?
-  createdAt       DateTime                     @default(now())
-  review          WorkspaceSectionReview       @relation(fields: [reviewId], references: [id], onDelete: Cascade)
-  actorUser       User                         @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+  id          String                        @id @default(cuid())
+  reviewId    String
+  fromStatus  WorkspaceSectionReviewStatus?
+  toStatus    WorkspaceSectionReviewStatus
+  actorUserId String
+  comment     String?
+  metadata    Json?
+  createdAt   DateTime                      @default(now())
+  review      WorkspaceSectionReview        @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  actorUser   User                          @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
 
   @@index([reviewId, createdAt])
 }
 
 model WorkspaceDiscussionThread {
-  id                  String                   @id @default(cuid())
-  workspaceId         String
-  scope               WorkspaceDiscussionScope
-  sectionBlockId      String?
-  entryId             String?
-  createdByUserId     String?
-  guestParticipantId  String?
-  title               String
-  isResolved          Boolean                  @default(false)
-  resolvedAt          DateTime?
-  resolvedByUserId    String?
-  createdAt           DateTime                 @default(now())
-  updatedAt           DateTime                 @updatedAt
-  workspace           AssessmentWorkspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  sectionBlock        CriterionBlock?          @relation(fields: [sectionBlockId], references: [id], onDelete: Cascade)
-  entry               BlockEntry?          @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  createdByUser       User?                    @relation("WorkspaceDiscussionThreadAuthor", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  guestParticipant    WorkspaceGuestParticipant? @relation(fields: [guestParticipantId], references: [id], onDelete: SetNull)
-  resolvedByUser      User?                    @relation("WorkspaceDiscussionThreadResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
-  messages            WorkspaceDiscussionMessage[]
+  id                 String                       @id @default(cuid())
+  workspaceId        String
+  scope              WorkspaceDiscussionScope
+  sectionBlockId     String?
+  entryId            String?
+  createdByUserId    String?
+  guestParticipantId String?
+  title              String
+  isResolved         Boolean                      @default(false)
+  resolvedAt         DateTime?
+  resolvedByUserId   String?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  workspace          AssessmentWorkspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sectionBlock       CriterionBlock?              @relation(fields: [sectionBlockId], references: [id], onDelete: Cascade)
+  entry              BlockEntry?                  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  createdByUser      User?                        @relation("WorkspaceDiscussionThreadAuthor", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  guestParticipant   WorkspaceGuestParticipant?   @relation(fields: [guestParticipantId], references: [id], onDelete: SetNull)
+  resolvedByUser     User?                        @relation("WorkspaceDiscussionThreadResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+  messages           WorkspaceDiscussionMessage[]
 
   @@index([workspaceId, scope, updatedAt])
   @@index([workspaceId, sectionBlockId])
@@ -1937,82 +2013,82 @@ model WorkspaceDiscussionThread {
 }
 
 model WorkspaceDiscussionMessage {
-  id                 String                   @id @default(cuid())
+  id                 String                       @id @default(cuid())
   threadId           String
   authorUserId       String?
   guestParticipantId String?
   parentMessageId    String?
   body               String
   mentionedUserIds   String[]
-  isPostApproval     Boolean                  @default(false)
-  createdAt          DateTime                 @default(now())
-  thread             WorkspaceDiscussionThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  authorUser         User?                    @relation("WorkspaceDiscussionMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
-  guestParticipant   WorkspaceGuestParticipant? @relation(fields: [guestParticipantId], references: [id], onDelete: SetNull)
-  parentMessage      WorkspaceDiscussionMessage? @relation("WorkspaceDiscussionReplies", fields: [parentMessageId], references: [id], onDelete: Cascade)
+  isPostApproval     Boolean                      @default(false)
+  createdAt          DateTime                     @default(now())
+  thread             WorkspaceDiscussionThread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  authorUser         User?                        @relation("WorkspaceDiscussionMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  guestParticipant   WorkspaceGuestParticipant?   @relation(fields: [guestParticipantId], references: [id], onDelete: SetNull)
+  parentMessage      WorkspaceDiscussionMessage?  @relation("WorkspaceDiscussionReplies", fields: [parentMessageId], references: [id], onDelete: Cascade)
   replies            WorkspaceDiscussionMessage[] @relation("WorkspaceDiscussionReplies")
 
   @@index([threadId, createdAt])
 }
 
 model WorkspaceGuestInvite {
-  id                 String                    @id @default(cuid())
+  id              String                     @id @default(cuid())
+  workspaceId     String
+  sectionBlockId  String?
+  email           String
+  firstName       String?
+  lastName        String?
+  role            WorkspaceGuestRole
+  status          WorkspaceGuestInviteStatus @default(PENDING)
+  tokenHash       String                     @unique
+  expiresAt       DateTime
+  invitedByUserId String
+  acceptedAt      DateTime?
+  revokedAt       DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  workspace       AssessmentWorkspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sectionBlock    CriterionBlock?            @relation(fields: [sectionBlockId], references: [id], onDelete: SetNull)
+  invitedByUser   User                       @relation(fields: [invitedByUserId], references: [id], onDelete: Cascade)
+  participant     WorkspaceGuestParticipant?
+
+  @@unique([workspaceId, email, status])
+  @@index([workspaceId, status, expiresAt])
+}
+
+model WorkspaceGuestParticipant {
+  id                 String                       @id @default(cuid())
   workspaceId        String
-  sectionBlockId     String?
+  inviteId           String?                      @unique
   email              String
   firstName          String?
   lastName           String?
   role               WorkspaceGuestRole
-  status             WorkspaceGuestInviteStatus @default(PENDING)
-  tokenHash          String                    @unique
-  expiresAt          DateTime
-  invitedByUserId    String
-  acceptedAt         DateTime?
-  revokedAt          DateTime?
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
-  workspace          AssessmentWorkspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  sectionBlock      CriterionBlock?           @relation(fields: [sectionBlockId], references: [id], onDelete: SetNull)
-  invitedByUser      User                      @relation(fields: [invitedByUserId], references: [id], onDelete: Cascade)
-  participant        WorkspaceGuestParticipant?
-
-  @@index([workspaceId, status, expiresAt])
-  @@unique([workspaceId, email, status])
-}
-
-model WorkspaceGuestParticipant {
-  id                  String                       @id @default(cuid())
-  workspaceId         String
-  inviteId            String?                      @unique
-  email               String
-  firstName           String?
-  lastName            String?
-  role                WorkspaceGuestRole
-  accessRevokedAt     DateTime?
-  createdAt           DateTime                     @default(now())
-  updatedAt           DateTime                     @updatedAt
-  workspace           AssessmentWorkspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  invite              WorkspaceGuestInvite?        @relation(fields: [inviteId], references: [id], onDelete: SetNull)
-  sectionAssignments  WorkspaceSectionAssignment[]
-  discussionThreads   WorkspaceDiscussionThread[]
-  discussionMessages  WorkspaceDiscussionMessage[]
+  accessRevokedAt    DateTime?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  workspace          AssessmentWorkspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invite             WorkspaceGuestInvite?        @relation(fields: [inviteId], references: [id], onDelete: SetNull)
+  sectionAssignments WorkspaceSectionAssignment[]
+  discussionThreads  WorkspaceDiscussionThread[]
+  discussionMessages WorkspaceDiscussionMessage[]
 
   @@unique([workspaceId, email])
   @@index([workspaceId, role])
 }
 
 model DataBankDomain {
-  id              String   @id @default(cuid())
+  id              String                     @id @default(cuid())
   tenantId        String
   code            String
   name            String
   description     String?
-  sortOrder       Int      @default(0)
-  isSystemDefined Boolean  @default(false)
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sortOrder       Int                        @default(0)
+  isSystemDefined Boolean                    @default(false)
+  isActive        Boolean                    @default(true)
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  tenant          Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sources         DataBankSourceDefinition[]
   metrics         SourceMetricDefinition[]
 
@@ -2021,29 +2097,29 @@ model DataBankDomain {
 }
 
 model DataBankSourceDefinition {
-  id                      String                   @id @default(cuid())
-  tenantId                String
-  domainId                String?
-  code                    String
-  name                    String
-  description             String?
-  kind                    DataSourceKind
-  shape                   DataSourceShape
-  datasetSchema           Json?
-  adapterKey              String?
-  adapterConfig           Json?
-  supportsYearWise        Boolean                  @default(true)
-  supportsScopeBreakdown  Boolean                  @default(false)
-  isSystemDefined         Boolean                  @default(false)
-  isActive                Boolean                  @default(true)
-  sortOrder               Int                      @default(0)
-  createdByUserId         String?
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-  tenant                  Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  domain                  DataBankDomain?          @relation(fields: [domainId], references: [id], onDelete: SetNull)
-  snapshots               DataBankSourceSnapshot[]
-  metricLinks             MetricSourceLink[]
+  id                     String                   @id @default(cuid())
+  tenantId               String
+  domainId               String?
+  code                   String
+  name                   String
+  description            String?
+  kind                   DataSourceKind
+  shape                  DataSourceShape
+  datasetSchema          Json?
+  adapterKey             String?
+  adapterConfig          Json?
+  supportsYearWise       Boolean                  @default(true)
+  supportsScopeBreakdown Boolean                  @default(false)
+  isSystemDefined        Boolean                  @default(false)
+  isActive               Boolean                  @default(true)
+  sortOrder              Int                      @default(0)
+  createdByUserId        String?
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+  tenant                 Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  domain                 DataBankDomain?          @relation(fields: [domainId], references: [id], onDelete: SetNull)
+  snapshots              DataBankSourceSnapshot[]
+  metricLinks            MetricSourceLink[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive, sortOrder])
@@ -2051,17 +2127,17 @@ model DataBankSourceDefinition {
 }
 
 model DataBankSourceSnapshot {
-  id                   String                 @id @default(cuid())
+  id                   String                     @id @default(cuid())
   sourceId             String
   observedYear         Int?
-  scopeKey             String                 @default("INSTITUTION")
+  scopeKey             String                     @default("INSTITUTION")
   dimensions           Json?
-  dimensionFingerprint String                 @default("__NONE__")
+  dimensionFingerprint String                     @default("__NONE__")
   numberValue          Float?
-  textValue            String?                @db.Text
+  textValue            String?                    @db.Text
   jsonValue            Json?
-  maturity             DataBankValueMaturity  @default(UNKNOWN)
-  coverageStatus       DataBankCoverageStatus @default(NONE)
+  maturity             DataBankValueMaturity      @default(UNKNOWN)
+  coverageStatus       DataBankCoverageStatus     @default(NONE)
   coveragePercent      Float?
   confidenceNote       String?
   sourceRevisionHash   String?
@@ -2073,10 +2149,10 @@ model DataBankSourceSnapshot {
   verifiedAt           DateTime?
   evidenceMeta         Json?
   lastRefreshedAt      DateTime?
-  isStale              Boolean                @default(false)
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  source               DataBankSourceDefinition @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  isStale              Boolean                    @default(false)
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  source               DataBankSourceDefinition   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   datasetRows          DataBankSourceDatasetRow[]
 
   @@unique([sourceId, scopeKey, dimensionFingerprint])
@@ -2085,14 +2161,14 @@ model DataBankSourceSnapshot {
 }
 
 model DataBankSourceDatasetRow {
-  id         String   @id @default(cuid())
+  id         String                 @id @default(cuid())
   snapshotId String
   rowIndex   Int
   rowKey     String?
   rowData    Json
   sourceRef  String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
   snapshot   DataBankSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
 
   @@unique([snapshotId, rowIndex])
@@ -2100,35 +2176,35 @@ model DataBankSourceDatasetRow {
 }
 
 model SourceMetricDefinition {
-  id                String                  @id @default(cuid())
-  tenantId          String
-  domainId          String?
-  code              String
-  name              String
-  description       String?
-  valueType         SourceMetricValueType   @default(NUMBER)
-  shape             DataBankMetricShape     @default(SCALAR)
-  unitOfMeasure     String?
-  helpText          String?
-  precision         Int?
-  allowedDimensions Json?
-  datasetSchema     Json?
-  computeConfig     Json?
-  supportsYearWise  Boolean                 @default(true)
-  supportsScopeBreakdown Boolean            @default(false)
-  usedByBodyCodes   String[]                @default([])
-  isSystemDefined   Boolean                 @default(false)
-  isRequiredHint    Boolean                 @default(false)
-  isActive          Boolean                 @default(true)
-  sortOrder         Int                     @default(0)
-  createdByUserId   String?
-  createdAt         DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
-  tenant            Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  domain            DataBankDomain?         @relation(fields: [domainId], references: [id], onDelete: SetNull)
-  observations      SourceMetricObservation[]
-  projectionRecipes BlockProjectionRecipe[] @relation("ProjectionRecipeSourceMetric")
-  sourceLinks       MetricSourceLink[]
+  id                     String                    @id @default(cuid())
+  tenantId               String
+  domainId               String?
+  code                   String
+  name                   String
+  description            String?
+  valueType              SourceMetricValueType     @default(NUMBER)
+  shape                  DataBankMetricShape       @default(SCALAR)
+  unitOfMeasure          String?
+  helpText               String?
+  precision              Int?
+  allowedDimensions      Json?
+  datasetSchema          Json?
+  computeConfig          Json?
+  supportsYearWise       Boolean                   @default(true)
+  supportsScopeBreakdown Boolean                   @default(false)
+  usedByBodyCodes        String[]                  @default([])
+  isSystemDefined        Boolean                   @default(false)
+  isRequiredHint         Boolean                   @default(false)
+  isActive               Boolean                   @default(true)
+  sortOrder              Int                       @default(0)
+  createdByUserId        String?
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+  tenant                 Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  domain                 DataBankDomain?           @relation(fields: [domainId], references: [id], onDelete: SetNull)
+  observations           SourceMetricObservation[]
+  projectionRecipes      BlockProjectionRecipe[]   @relation("ProjectionRecipeSourceMetric")
+  sourceLinks            MetricSourceLink[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -2136,20 +2212,20 @@ model SourceMetricDefinition {
 }
 
 model SourceMetricObservation {
-  id                   String               @id @default(cuid())
+  id                   String                    @id @default(cuid())
   metricId             String
   observedYear         Int?
-  scopeKey             String               @default("DEFAULT")
+  scopeKey             String                    @default("DEFAULT")
   dimensions           Json?
-  dimensionFingerprint String               @default("__NONE__")
+  dimensionFingerprint String                    @default("__NONE__")
   numberValue          Float?
   textValue            String?
   jsonValue            Json?
-  sourceType           String               @default("MANUAL")
+  sourceType           String                    @default("MANUAL")
   sourceRef            String?
   sourceRevisionHash   String?
-  maturity             DataBankValueMaturity @default(UNKNOWN)
-  coverageStatus       DataBankCoverageStatus @default(NONE)
+  maturity             DataBankValueMaturity     @default(UNKNOWN)
+  coverageStatus       DataBankCoverageStatus    @default(NONE)
   coveragePercent      Float?
   confidenceNote       String?
   recordedByUserId     String?
@@ -2158,11 +2234,11 @@ model SourceMetricObservation {
   verifiedAt           DateTime?
   evidenceMeta         Json?
   lastRefreshedAt      DateTime?
-  isStale              Boolean              @default(false)
+  isStale              Boolean                   @default(false)
   refreshBlockedReason String?
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
-  metric               SourceMetricDefinition @relation(fields: [metricId], references: [id], onDelete: Cascade)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  metric               SourceMetricDefinition    @relation(fields: [metricId], references: [id], onDelete: Cascade)
   refreshSuggestions   MetricRefreshSuggestion[]
 
   @@unique([metricId, scopeKey, dimensionFingerprint])
@@ -2171,23 +2247,23 @@ model SourceMetricObservation {
 }
 
 model MetricSourceLink {
-  id                       String                     @id @default(cuid())
-  tenantId                 String
-  metricId                 String
-  sourceId                 String
-  precedence               Int                        @default(100)
-  resolutionMode           MetricSourceResolutionMode
-  transformConfig          Json?
-  isPrimary                Boolean                    @default(false)
-  autoApplyWhenUnknown     Boolean                    @default(true)
-  createSuggestionOnConflict Boolean                  @default(true)
-  isActive                 Boolean                    @default(true)
-  createdAt                DateTime                   @default(now())
-  updatedAt                DateTime                   @updatedAt
-  tenant                   Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  metric                   SourceMetricDefinition     @relation(fields: [metricId], references: [id], onDelete: Cascade)
-  source                   DataBankSourceDefinition   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  refreshSuggestions       MetricRefreshSuggestion[]
+  id                         String                     @id @default(cuid())
+  tenantId                   String
+  metricId                   String
+  sourceId                   String
+  precedence                 Int                        @default(100)
+  resolutionMode             MetricSourceResolutionMode
+  transformConfig            Json?
+  isPrimary                  Boolean                    @default(false)
+  autoApplyWhenUnknown       Boolean                    @default(true)
+  createSuggestionOnConflict Boolean                    @default(true)
+  isActive                   Boolean                    @default(true)
+  createdAt                  DateTime                   @default(now())
+  updatedAt                  DateTime                   @updatedAt
+  tenant                     Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  metric                     SourceMetricDefinition     @relation(fields: [metricId], references: [id], onDelete: Cascade)
+  source                     DataBankSourceDefinition   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  refreshSuggestions         MetricRefreshSuggestion[]
 
   @@unique([metricId, sourceId])
   @@index([tenantId, metricId, isActive, precedence])
@@ -2195,24 +2271,24 @@ model MetricSourceLink {
 }
 
 model MetricRefreshSuggestion {
-  id                         String                  @id @default(cuid())
-  metricObservationId        String
-  metricSourceLinkId         String?
-  status                     RefreshSuggestionStatus @default(PENDING)
-  candidateNumberValue       Float?
-  candidateTextValue         String?
-  candidateJsonValue         Json?
-  candidateMaturity          DataBankValueMaturity   @default(REPORTED)
-  candidateCoverageStatus    DataBankCoverageStatus?
-  candidateCoveragePercent   Float?
-  sourceRevisionHash         String?
-  sourceRef                  String?
-  note                       String?
-  detectedAt                 DateTime                @default(now())
-  resolvedAt                 DateTime?
-  resolvedByUserId           String?
-  metricObservation          SourceMetricObservation @relation(fields: [metricObservationId], references: [id], onDelete: Cascade)
-  metricSourceLink           MetricSourceLink?       @relation(fields: [metricSourceLinkId], references: [id], onDelete: SetNull)
+  id                       String                  @id @default(cuid())
+  metricObservationId      String
+  metricSourceLinkId       String?
+  status                   RefreshSuggestionStatus @default(PENDING)
+  candidateNumberValue     Float?
+  candidateTextValue       String?
+  candidateJsonValue       Json?
+  candidateMaturity        DataBankValueMaturity   @default(REPORTED)
+  candidateCoverageStatus  DataBankCoverageStatus?
+  candidateCoveragePercent Float?
+  sourceRevisionHash       String?
+  sourceRef                String?
+  note                     String?
+  detectedAt               DateTime                @default(now())
+  resolvedAt               DateTime?
+  resolvedByUserId         String?
+  metricObservation        SourceMetricObservation @relation(fields: [metricObservationId], references: [id], onDelete: Cascade)
+  metricSourceLink         MetricSourceLink?       @relation(fields: [metricSourceLinkId], references: [id], onDelete: SetNull)
 
   @@index([metricObservationId, status])
   @@index([metricSourceLinkId, status])
@@ -2260,76 +2336,76 @@ model BlockProjectionRecipe {
 }
 
 model BlockProjectionRun {
-  id                 String               @id @default(cuid())
+  id                 String                @id @default(cuid())
   recipeId           String
   runType            ProjectionRunType
   status             ProjectionRunStatus
   previewSummary     Json?
-  appliedCount       Int                  @default(0)
+  appliedCount       Int                   @default(0)
   errorMessage       String?
   sourceRevisionHash String?
   createdByUserId    String
-  createdAt          DateTime             @default(now())
+  createdAt          DateTime              @default(now())
   recipe             BlockProjectionRecipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
 
   @@index([recipeId, createdAt])
 }
 
 model BlockProjectionTarget {
-  id                    String                @id @default(cuid())
-  recipeId              String
-  targetEntryId         String
-  targetYear            Int?
-  targetScopeKey        String
-  targetPath            String
-  sourceYear            Int?
-  sourceScopeKey        String?
-  sourceRevisionHash    String?
+  id                      String                @id @default(cuid())
+  recipeId                String
+  targetEntryId           String
+  targetYear              Int?
+  targetScopeKey          String
+  targetPath              String
+  sourceYear              Int?
+  sourceScopeKey          String?
+  sourceRevisionHash      String?
   materializedNumberValue Float?
-  materializedTextValue String?
-  importedByUserId      String
-  importedAt            DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
-  recipe                BlockProjectionRecipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
-  targetEntry           BlockEntry            @relation(fields: [targetEntryId], references: [id], onDelete: Cascade)
+  materializedTextValue   String?
+  importedByUserId        String
+  importedAt              DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+  recipe                  BlockProjectionRecipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  targetEntry             BlockEntry            @relation(fields: [targetEntryId], references: [id], onDelete: Cascade)
 
   @@unique([recipeId, targetEntryId, targetScopeKey, targetPath])
   @@index([targetEntryId, importedAt])
 }
 
 model WorkspaceFreezeLog {
-  id                      String              @id @default(cuid())
-  workspaceId             String
-  snapshotId              String?
-  frozenAt                DateTime
-  frozenByUserId          String
-  warningAcknowledgments  Json?
-  changesSummary          Json?
-  unfrozenAt              DateTime?
-  unfrozenByUserId        String?
-  unfreezeReason          String?
-  createdAt               DateTime            @default(now())
-  updatedAt               DateTime            @updatedAt
-  workspace               AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  snapshot                ScoreSnapshot?      @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
-  frozenByUser            User                @relation("WorkspaceFreezeLogFrozenBy", fields: [frozenByUserId], references: [id], onDelete: Cascade)
-  unfrozenByUser          User?               @relation("WorkspaceFreezeLogUnfrozenBy", fields: [unfrozenByUserId], references: [id], onDelete: SetNull)
+  id                     String              @id @default(cuid())
+  workspaceId            String
+  snapshotId             String?
+  frozenAt               DateTime
+  frozenByUserId         String
+  warningAcknowledgments Json?
+  changesSummary         Json?
+  unfrozenAt             DateTime?
+  unfrozenByUserId       String?
+  unfreezeReason         String?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  workspace              AssessmentWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  snapshot               ScoreSnapshot?      @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  frozenByUser           User                @relation("WorkspaceFreezeLogFrozenBy", fields: [frozenByUserId], references: [id], onDelete: Cascade)
+  unfrozenByUser         User?               @relation("WorkspaceFreezeLogUnfrozenBy", fields: [unfrozenByUserId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, frozenAt])
 }
 
 model KpiAccreditationBlockLink {
-  id              String                 @id @default(cuid())
+  id              String         @id @default(cuid())
   tenantId        String
   kpiDefinitionId String
   blockId         String
   notes           String?
   createdByUserId String?
-  createdAt       DateTime               @default(now())
-  updatedAt       DateTime               @updatedAt
-  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  kpiDefinition   KpiDefinition          @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
-  block           CriterionBlock         @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kpiDefinition   KpiDefinition  @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
+  block           CriterionBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
 
   @@unique([kpiDefinitionId, blockId])
   @@index([tenantId, kpiDefinitionId])
@@ -2622,21 +2698,21 @@ model KpiDefinition {
   createdAt                              DateTime                  @default(now())
   updatedAt                              DateTime                  @updatedAt
 
-  kraDefinition               KraDefinition                   @relation(fields: [kraDefinitionId], references: [id], onDelete: Cascade)
-  startingUnit                OrgUnit                         @relation("KpiStartingUnit", fields: [startingUnitId], references: [id], onDelete: Restrict)
-  keyUnit                     OrgUnit?                        @relation("KpiKeyUnit", fields: [keyUnitId], references: [id], onDelete: SetNull)
-  finalUnit                   OrgUnit?                        @relation("KpiFinalUnit", fields: [finalUnitId], references: [id], onDelete: SetNull)
-  keyReviewerUser             User?                           @relation("KpiKeyReviewer", fields: [keyReviewerUserId], references: [id], onDelete: SetNull)
-  finalReviewerUser           User?                           @relation("KpiFinalReviewer", fields: [finalReviewerUserId], references: [id], onDelete: SetNull)
-  targetAllocations           TargetAllocation[]
-  achievements                Achievement[]
-  targetUnits                 KpiTargetUnit[]
-  stages                      KpiStageDefinition[]
-  applicableRoles             KpiApplicableRole[]
-  contributorConfig           KpiContributorConfig?
-  rewardTiers                 KpiRewardTier[]
-  rewardComponents            KpiRewardComponent[]
-  contributorRewards          ContributorReward[]
+  kraDefinition           KraDefinition               @relation(fields: [kraDefinitionId], references: [id], onDelete: Cascade)
+  startingUnit            OrgUnit                     @relation("KpiStartingUnit", fields: [startingUnitId], references: [id], onDelete: Restrict)
+  keyUnit                 OrgUnit?                    @relation("KpiKeyUnit", fields: [keyUnitId], references: [id], onDelete: SetNull)
+  finalUnit               OrgUnit?                    @relation("KpiFinalUnit", fields: [finalUnitId], references: [id], onDelete: SetNull)
+  keyReviewerUser         User?                       @relation("KpiKeyReviewer", fields: [keyReviewerUserId], references: [id], onDelete: SetNull)
+  finalReviewerUser       User?                       @relation("KpiFinalReviewer", fields: [finalReviewerUserId], references: [id], onDelete: SetNull)
+  targetAllocations       TargetAllocation[]
+  achievements            Achievement[]
+  targetUnits             KpiTargetUnit[]
+  stages                  KpiStageDefinition[]
+  applicableRoles         KpiApplicableRole[]
+  contributorConfig       KpiContributorConfig?
+  rewardTiers             KpiRewardTier[]
+  rewardComponents        KpiRewardComponent[]
+  contributorRewards      ContributorReward[]
   accreditationBlockLinks KpiAccreditationBlockLink[]
 
   @@index([kraDefinitionId])
@@ -3375,4 +3451,3 @@ model PersonnelAction {
   @@index([tenantId, membershipId, createdAt])
   @@index([tenantId, actionType, effectiveDate])
 }
-
