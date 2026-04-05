@@ -10,8 +10,10 @@ import {
   SourceMetricValueType,
 } from "@prisma/client";
 import { createHash } from "node:crypto";
+import * as XLSX from "xlsx";
 import { z } from "zod";
 import { evaluateFormula, parseFormulaDependencyBlockCodes } from "./block-formula-evaluator";
+import { getInstitutionalDataAdapter, listInstitutionalDataAdapters } from "./institutional-data-adapters";
 import { prisma } from "@/lib/prisma";
 import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import { hasTenantServiceEnabled } from "@/lib/tenant-services/service";
@@ -112,7 +114,7 @@ const dataBankSnapshotInputSchema = z.object({
   }
 });
 
-const institutionalMetricInputSchema = z.object({
+const institutionalMetricBaseSchema = z.object({
   domainId: z.string().trim().min(1).nullable().optional(),
   code: z.string().trim().min(1).max(80),
   name: z.string().trim().min(2).max(160),
@@ -132,7 +134,12 @@ const institutionalMetricInputSchema = z.object({
   isRequiredHint: z.boolean().optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
-}).superRefine((value, ctx) => {
+});
+
+function refineInstitutionalMetricInput(
+  value: z.infer<typeof institutionalMetricBaseSchema>,
+  ctx: z.RefinementCtx,
+) {
   if (value.shape === DataBankMetricShape.COMPUTED) {
     if (!value.computeConfig?.formula) {
       ctx.addIssue({
@@ -149,7 +156,9 @@ const institutionalMetricInputSchema = z.object({
       });
     }
   }
-});
+}
+
+const institutionalMetricInputSchema = institutionalMetricBaseSchema.superRefine(refineInstitutionalMetricInput);
 
 const transformConfigSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("DIRECT") }),
@@ -208,6 +217,62 @@ const refreshSuggestionResolutionSchema = z.object({
 const seedCatalogInputSchema = z.object({
   includeRecommendedSources: z.boolean().optional(),
 });
+
+const dataBankSourceUpdateSchema = dataBankSourceInputSchema
+  .partial()
+  .extend({
+    code: z.string().trim().min(1).max(80).optional(),
+    name: z.string().trim().min(2).max(160).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "Provide at least one field to update.",
+  });
+
+const institutionalMetricUpdateSchema = institutionalMetricBaseSchema
+  .partial()
+  .extend({
+    code: z.string().trim().min(1).max(80).optional(),
+    name: z.string().trim().min(2).max(160).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide at least one field to update.",
+      });
+      return;
+    }
+    if (value.shape === DataBankMetricShape.COMPUTED || value.computeConfig !== undefined || value.valueType !== undefined) {
+      refineInstitutionalMetricInput(
+        {
+          ...value,
+          valueType: value.valueType ?? SourceMetricValueType.NUMBER,
+          shape: value.shape ?? DataBankMetricShape.SCALAR,
+        } as z.infer<typeof institutionalMetricBaseSchema>,
+        ctx,
+      );
+    }
+  });
+
+const dataBankDatasetImportSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+  fileContentBase64: z.string().trim().min(1),
+  observedYear: z.number().int().nullable().optional(),
+  scopeKey: z.string().trim().min(1).max(120).nullable().optional(),
+  dimensions: dimensionsSchema.optional(),
+  replaceRows: z.boolean().optional(),
+});
+
+type ParsedDatasetImport = {
+  rowCount: number;
+  columns: string[];
+  sampleRows: Array<Record<string, unknown>>;
+  datasetRows: Array<{
+    rowIndex: number;
+    rowKey: string | null;
+    rowData: Record<string, unknown>;
+  }>;
+};
 
 function normalizeNullableString(value: string | null | undefined) {
   const normalized = value?.trim();
@@ -290,6 +355,70 @@ function buildObservationScopeKey(observedYear: number | null | undefined, scope
     return normalizedScopeKey;
   }
   return observedYear === null || observedYear === undefined ? "DEFAULT" : `YEAR:${observedYear}`;
+}
+
+function normalizeSpreadsheetValue(value: unknown): Prisma.JsonValue {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeSpreadsheetValue(item)) as Prisma.JsonArray;
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, normalizeSpreadsheetValue(item)]),
+    ) as Prisma.JsonObject;
+  }
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  return String(value);
+}
+
+function parseDatasetImport(input: z.infer<typeof dataBankDatasetImportSchema>): ParsedDatasetImport {
+  const workbook = XLSX.read(Buffer.from(input.fileContentBase64, "base64"), { type: "buffer", cellDates: true });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    throw new Error("Import file does not contain any sheets.");
+  }
+
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+    defval: null,
+    raw: true,
+  });
+  if (rows.length === 0) {
+    throw new Error("Import file does not contain any data rows.");
+  }
+
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row).map((key) => key.trim()).filter(Boolean)))];
+  if (columns.length === 0) {
+    throw new Error("Import file does not contain any usable columns.");
+  }
+
+  const datasetRows = rows.map((row, index) => {
+    const rowData = Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [key.trim(), normalizeSpreadsheetValue(value)]),
+    );
+    const rowKeyCandidate = rowData.rowKey ?? rowData.id ?? rowData.code ?? rowData.employeeId ?? rowData.achievementId;
+    return {
+      rowIndex: index,
+      rowKey: rowKeyCandidate == null ? null : String(rowKeyCandidate),
+      rowData,
+    };
+  });
+
+  return {
+    rowCount: datasetRows.length,
+    columns,
+    sampleRows: datasetRows.slice(0, 5).map((row) => row.rowData),
+    datasetRows,
+  };
 }
 
 function rowMatchesFilter(rowData: Prisma.JsonObject, filter: Record<string, unknown> | undefined) {
@@ -995,15 +1124,19 @@ export async function listInstitutionalDataSources(
     return { status: "error", message: accessError } satisfies ErrorResult;
   }
 
-  const sources = await prisma.dataBankSourceDefinition.findMany({
-    where: { tenantId, isActive: true },
-    include: {
-      domain: true,
-      _count: {
-        select: {
-          snapshots: true,
-          metricLinks: true,
+    const sources = await prisma.dataBankSourceDefinition.findMany({
+      where: { tenantId, isActive: true },
+      include: {
+        domain: true,
+        snapshots: {
+          orderBy: [{ updatedAt: "desc" }],
+          take: 1,
         },
+        _count: {
+          select: {
+            snapshots: true,
+            metricLinks: true,
+          },
       },
     },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -1062,6 +1195,162 @@ export async function createInstitutionalDataSource(
   });
 
   return { status: "success", message: "Institutional data source created.", source } satisfies SuccessResult<{ source: typeof source }>;
+}
+
+export async function getInstitutionalDataSource(
+  sourceId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const source = await prisma.dataBankSourceDefinition.findFirst({
+    where: { id: sourceId, tenantId },
+    include: {
+      domain: true,
+      snapshots: {
+        orderBy: [{ observedYear: "desc" }, { updatedAt: "desc" }],
+        include: {
+          datasetRows: {
+            orderBy: { rowIndex: "asc" },
+            take: 25,
+          },
+        },
+        take: 20,
+      },
+      metricLinks: {
+        where: { isActive: true },
+        orderBy: [{ precedence: "asc" }, { createdAt: "asc" }],
+        include: {
+          metric: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              shape: true,
+              valueType: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!source) {
+    return { status: "error", message: "Institutional data source not found." } satisfies ErrorResult;
+  }
+
+  return {
+    status: "success",
+    source,
+    adapters: listInstitutionalDataAdapters(),
+  } satisfies SuccessResult<{ source: typeof source; adapters: ReturnType<typeof listInstitutionalDataAdapters> }>;
+}
+
+export async function updateInstitutionalDataSource(
+  sourceId: string,
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const parsed = dataBankSourceUpdateSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid source update." } satisfies ErrorResult;
+  }
+
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const existing = await prisma.dataBankSourceDefinition.findFirst({
+    where: { id: sourceId, tenantId },
+    select: { id: true },
+  });
+  if (!existing) {
+    return { status: "error", message: "Institutional data source not found." } satisfies ErrorResult;
+  }
+
+  if (parsed.data.domainId) {
+    const domain = await prisma.dataBankDomain.findFirst({
+      where: { id: parsed.data.domainId, tenantId },
+      select: { id: true },
+    });
+    if (!domain) {
+      return { status: "error", message: "Institutional data domain not found." } satisfies ErrorResult;
+    }
+  }
+
+  const source = await prisma.dataBankSourceDefinition.update({
+    where: { id: sourceId },
+    data: {
+      ...(parsed.data.domainId !== undefined ? { domainId: normalizeNullableString(parsed.data.domainId) } : {}),
+      ...(parsed.data.code !== undefined ? { code: parsed.data.code } : {}),
+      ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+      ...(parsed.data.description !== undefined ? { description: normalizeNullableString(parsed.data.description) } : {}),
+      ...(parsed.data.kind !== undefined ? { kind: parsed.data.kind } : {}),
+      ...(parsed.data.shape !== undefined ? { shape: parsed.data.shape } : {}),
+      ...(parsed.data.datasetSchema !== undefined
+        ? { datasetSchema: parsed.data.datasetSchema as Prisma.InputJsonValue }
+        : {}),
+      ...(parsed.data.adapterKey !== undefined ? { adapterKey: normalizeNullableString(parsed.data.adapterKey) } : {}),
+      ...(parsed.data.adapterConfig !== undefined
+        ? { adapterConfig: parsed.data.adapterConfig as Prisma.InputJsonValue }
+        : {}),
+      ...(parsed.data.supportsYearWise !== undefined ? { supportsYearWise: parsed.data.supportsYearWise } : {}),
+      ...(parsed.data.supportsScopeBreakdown !== undefined
+        ? { supportsScopeBreakdown: parsed.data.supportsScopeBreakdown }
+        : {}),
+      ...(parsed.data.isSystemDefined !== undefined ? { isSystemDefined: parsed.data.isSystemDefined } : {}),
+      ...(parsed.data.isActive !== undefined ? { isActive: parsed.data.isActive } : {}),
+      ...(parsed.data.sortOrder !== undefined ? { sortOrder: parsed.data.sortOrder } : {}),
+    },
+    include: {
+      domain: true,
+    },
+  });
+
+  return {
+    status: "success",
+    message: "Institutional data source updated.",
+    source,
+  } satisfies SuccessResult<{ source: typeof source }>;
+}
+
+export async function listInstitutionalDataSourceSnapshots(
+  sourceId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const source = await prisma.dataBankSourceDefinition.findFirst({
+    where: { id: sourceId, tenantId },
+    select: { id: true },
+  });
+  if (!source) {
+    return { status: "error", message: "Institutional data source not found." } satisfies ErrorResult;
+  }
+
+  const snapshots = await prisma.dataBankSourceSnapshot.findMany({
+    where: { sourceId },
+    include: {
+      datasetRows: {
+        orderBy: { rowIndex: "asc" },
+        take: 25,
+      },
+    },
+    orderBy: [{ observedYear: "desc" }, { updatedAt: "desc" }],
+  });
+  return { status: "success", snapshots } satisfies SuccessResult<{ snapshots: typeof snapshots }>;
 }
 
 export async function upsertInstitutionalDataSourceSnapshot(
@@ -1197,6 +1486,10 @@ export async function listInstitutionalMetrics(
     where: { tenantId, isActive: true },
     include: {
       domain: true,
+      observations: {
+        orderBy: [{ observedYear: "desc" }, { updatedAt: "desc" }],
+        take: 1,
+      },
       _count: {
         select: {
           observations: true,
@@ -1277,6 +1570,497 @@ export async function createInstitutionalMetric(
   });
 
   return { status: "success", message: "Institutional metric created.", metric } satisfies SuccessResult<{ metric: typeof metric }>;
+}
+
+export async function getInstitutionalMetric(
+  metricId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const metric = await prisma.sourceMetricDefinition.findFirst({
+    where: { id: metricId, tenantId },
+    include: {
+      domain: true,
+      observations: {
+        orderBy: [{ observedYear: "desc" }, { updatedAt: "desc" }],
+        take: 20,
+      },
+      sourceLinks: {
+        where: { isActive: true },
+        orderBy: [{ precedence: "asc" }, { createdAt: "asc" }],
+        include: {
+          source: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              kind: true,
+              shape: true,
+              adapterKey: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!metric) {
+    return { status: "error", message: "Institutional metric not found." } satisfies ErrorResult;
+  }
+
+  return { status: "success", metric } satisfies SuccessResult<{ metric: typeof metric }>;
+}
+
+export async function updateInstitutionalMetric(
+  metricId: string,
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const parsed = institutionalMetricUpdateSchema.safeParse(input);
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid institutional metric update." } satisfies ErrorResult;
+  }
+
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const existing = await prisma.sourceMetricDefinition.findFirst({
+    where: { id: metricId, tenantId },
+    select: { code: true, shape: true, computeConfig: true },
+  });
+  if (!existing) {
+    return { status: "error", message: "Institutional metric not found." } satisfies ErrorResult;
+  }
+
+  if (parsed.data.domainId) {
+    const domain = await prisma.dataBankDomain.findFirst({
+      where: { id: parsed.data.domainId, tenantId },
+      select: { id: true },
+    });
+    if (!domain) {
+      return { status: "error", message: "Institutional data domain not found." } satisfies ErrorResult;
+    }
+  }
+
+  const nextShape = parsed.data.shape ?? existing.shape;
+  const nextCode = parsed.data.code ?? existing.code;
+  const nextComputeConfig =
+    parsed.data.computeConfig === undefined
+      ? ((asJsonObject(existing.computeConfig)?.formula
+          ? { formula: asJsonObject(existing.computeConfig)?.formula as string }
+          : null))
+      : (parsed.data.computeConfig ?? null);
+
+  const graphError = await validateComputedMetricGraph(tenantId, {
+    code: nextCode,
+    shape: nextShape,
+    computeConfig: nextComputeConfig,
+  });
+  if (graphError) {
+    return { status: "error", message: graphError } satisfies ErrorResult;
+  }
+
+  const metric = await prisma.sourceMetricDefinition.update({
+    where: { id: metricId },
+    data: {
+      ...(parsed.data.domainId !== undefined ? { domainId: normalizeNullableString(parsed.data.domainId) } : {}),
+      ...(parsed.data.code !== undefined ? { code: parsed.data.code } : {}),
+      ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+      ...(parsed.data.description !== undefined ? { description: normalizeNullableString(parsed.data.description) } : {}),
+      ...(parsed.data.valueType !== undefined ? { valueType: parsed.data.valueType } : {}),
+      ...(parsed.data.shape !== undefined ? { shape: parsed.data.shape } : {}),
+      ...(parsed.data.unitOfMeasure !== undefined ? { unitOfMeasure: normalizeNullableString(parsed.data.unitOfMeasure) } : {}),
+      ...(parsed.data.helpText !== undefined ? { helpText: normalizeNullableString(parsed.data.helpText) } : {}),
+      ...(parsed.data.precision !== undefined ? { precision: parsed.data.precision ?? null } : {}),
+      ...(parsed.data.allowedDimensions !== undefined
+        ? {
+            allowedDimensions:
+              parsed.data.allowedDimensions && Object.keys(parsed.data.allowedDimensions).length > 0
+                ? (parsed.data.allowedDimensions as Prisma.InputJsonObject)
+                : Prisma.DbNull,
+          }
+        : {}),
+      ...(parsed.data.datasetSchema !== undefined
+        ? { datasetSchema: parsed.data.datasetSchema as Prisma.InputJsonValue }
+        : {}),
+      ...(parsed.data.computeConfig !== undefined
+        ? { computeConfig: parsed.data.computeConfig ? (parsed.data.computeConfig as Prisma.InputJsonValue) : Prisma.DbNull }
+        : {}),
+      ...(parsed.data.supportsYearWise !== undefined ? { supportsYearWise: parsed.data.supportsYearWise } : {}),
+      ...(parsed.data.supportsScopeBreakdown !== undefined
+        ? { supportsScopeBreakdown: parsed.data.supportsScopeBreakdown }
+        : {}),
+      ...(parsed.data.usedByBodyCodes !== undefined ? { usedByBodyCodes: parsed.data.usedByBodyCodes } : {}),
+      ...(parsed.data.isSystemDefined !== undefined ? { isSystemDefined: parsed.data.isSystemDefined } : {}),
+      ...(parsed.data.isRequiredHint !== undefined ? { isRequiredHint: parsed.data.isRequiredHint } : {}),
+      ...(parsed.data.isActive !== undefined ? { isActive: parsed.data.isActive } : {}),
+      ...(parsed.data.sortOrder !== undefined ? { sortOrder: parsed.data.sortOrder } : {}),
+    },
+    include: {
+      domain: true,
+    },
+  });
+
+  if (metric.shape === DataBankMetricShape.COMPUTED) {
+    await recomputeComputedMetricsForContext({
+      tenantId,
+      observedYear: null,
+      scopeKey: "DEFAULT",
+      dimensions: {},
+      actorUserId,
+    });
+  }
+
+  return {
+    status: "success",
+    message: "Institutional metric updated.",
+    metric,
+  } satisfies SuccessResult<{ metric: typeof metric }>;
+}
+
+export async function previewInstitutionalDataSourceImport(
+  sourceId: string,
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const parsed = dataBankDatasetImportSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Invalid dataset import preview.",
+    } satisfies ErrorResult;
+  }
+
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const source = await prisma.dataBankSourceDefinition.findFirst({
+    where: {
+      id: sourceId,
+      tenantId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      shape: true,
+    },
+  });
+  if (!source) {
+    return { status: "error", message: "Institutional data source not found." } satisfies ErrorResult;
+  }
+  if (source.shape !== "DATASET") {
+    return { status: "error", message: "Only dataset sources can accept spreadsheet imports." } satisfies ErrorResult;
+  }
+
+  let parsedImport: ParsedDatasetImport;
+  try {
+    parsedImport = parseDatasetImport(parsed.data);
+  } catch (error) {
+    return {
+      status: "error",
+      message: error instanceof Error ? error.message : "Failed to parse import file.",
+    } satisfies ErrorResult;
+  }
+
+  const dimensions = normalizeDimensions(parsed.data.dimensions as DimensionRecord | undefined);
+  const scopeKey = buildObservationScopeKey(parsed.data.observedYear ?? null, parsed.data.scopeKey);
+  const dimensionFingerprint = buildDimensionFingerprint(dimensions);
+  const existingSnapshot = await prisma.dataBankSourceSnapshot.findUnique({
+    where: {
+      sourceId_scopeKey_dimensionFingerprint: {
+        sourceId,
+        scopeKey,
+        dimensionFingerprint,
+      },
+    },
+    include: {
+      _count: {
+        select: {
+          datasetRows: true,
+        },
+      },
+    },
+  });
+
+  return {
+    status: "success",
+    preview: {
+      source: {
+        id: source.id,
+        code: source.code,
+        name: source.name,
+      },
+      rowCount: parsedImport.rowCount,
+      columns: parsedImport.columns,
+      sampleRows: parsedImport.sampleRows,
+      observedYear: parsed.data.observedYear ?? null,
+      scopeKey,
+      dimensions,
+      replaceRows: parsed.data.replaceRows ?? true,
+      existingSnapshot: existingSnapshot
+        ? {
+            id: existingSnapshot.id,
+            rowCount: existingSnapshot._count.datasetRows,
+            lastRefreshedAt: existingSnapshot.lastRefreshedAt,
+            sourceRevisionHash: existingSnapshot.sourceRevisionHash,
+          }
+        : null,
+    },
+  } satisfies SuccessResult<{
+    preview: {
+      source: {
+        id: string;
+        code: string;
+        name: string;
+      };
+      rowCount: number;
+      columns: string[];
+      sampleRows: Array<Record<string, unknown>>;
+      observedYear: number | null;
+      scopeKey: string;
+      dimensions: DimensionRecord;
+      replaceRows: boolean;
+      existingSnapshot: {
+        id: string;
+        rowCount: number;
+        lastRefreshedAt: Date | null;
+        sourceRevisionHash: string | null;
+      } | null;
+    };
+  }>;
+}
+
+export async function importInstitutionalDataSourceDataset(
+  sourceId: string,
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const parsed = dataBankDatasetImportSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Invalid dataset import.",
+    } satisfies ErrorResult;
+  }
+
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const source = await prisma.dataBankSourceDefinition.findFirst({
+    where: {
+      id: sourceId,
+      tenantId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+      shape: true,
+    },
+  });
+  if (!source) {
+    return { status: "error", message: "Institutional data source not found." } satisfies ErrorResult;
+  }
+  if (source.shape !== "DATASET") {
+    return { status: "error", message: "Only dataset sources can accept spreadsheet imports." } satisfies ErrorResult;
+  }
+
+  let parsedImport: ParsedDatasetImport;
+  try {
+    parsedImport = parseDatasetImport(parsed.data);
+  } catch (error) {
+    return {
+      status: "error",
+      message: error instanceof Error ? error.message : "Failed to parse import file.",
+    } satisfies ErrorResult;
+  }
+
+  const result = await upsertInstitutionalDataSourceSnapshot(
+    sourceId,
+    tenantId,
+    {
+      observedYear: parsed.data.observedYear ?? null,
+      scopeKey: parsed.data.scopeKey ?? null,
+      dimensions: parsed.data.dimensions ?? {},
+      jsonValue: {
+        importedFrom: parsed.data.fileName,
+        columns: parsedImport.columns,
+      },
+      entryMode: DataBankSnapshotEntryMode.BULK_IMPORT,
+      datasetRows: parsedImport.datasetRows,
+      replaceRows: parsed.data.replaceRows ?? true,
+    },
+    actorUserId,
+    actorRole,
+  );
+
+  if (result.status === "error") {
+    return result;
+  }
+
+  return {
+    status: "success",
+    message: "Dataset imported.",
+    snapshot: result.snapshot,
+    syncResult: result.syncResult,
+    importSummary: {
+      rowCount: parsedImport.rowCount,
+      columns: parsedImport.columns,
+    },
+  } satisfies SuccessResult<{
+    snapshot: typeof result.snapshot;
+    syncResult: typeof result.syncResult;
+    importSummary: {
+      rowCount: number;
+      columns: string[];
+    };
+  }>;
+}
+
+export async function refreshInstitutionalDataSource(
+  sourceId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const source = await prisma.dataBankSourceDefinition.findFirst({
+    where: {
+      id: sourceId,
+      tenantId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      kind: true,
+      adapterKey: true,
+      adapterConfig: true,
+    },
+  });
+  if (!source) {
+    return { status: "error", message: "Institutional data source not found." } satisfies ErrorResult;
+  }
+  if (source.kind !== "INTERNAL_ADAPTER") {
+    return { status: "error", message: "Only adapter-backed sources can be refreshed." } satisfies ErrorResult;
+  }
+
+  const adapter = getInstitutionalDataAdapter(source.adapterKey);
+  if (!adapter) {
+    return { status: "error", message: "No adapter is registered for this source." } satisfies ErrorResult;
+  }
+
+  const adapterResult = await adapter.refresh({
+    tenantId,
+    source: {
+      id: source.id,
+      code: source.code,
+      name: source.name,
+      adapterKey: source.adapterKey ?? adapter.key,
+      adapterConfig: source.adapterConfig,
+    },
+  });
+
+  const savedSnapshots: Array<{
+    snapshot: Awaited<ReturnType<typeof prisma.dataBankSourceSnapshot.findFirst>>;
+    syncResult: {
+      appliedCount: number;
+      suggestionCount: number;
+      recomputedCount: number;
+    };
+  }> = [];
+
+  let appliedCount = 0;
+  let suggestionCount = 0;
+  let recomputedCount = 0;
+
+  for (const snapshot of adapterResult.snapshots) {
+    const saved = await upsertInstitutionalDataSourceSnapshot(
+      source.id,
+      tenantId,
+      {
+        observedYear: snapshot.observedYear,
+        scopeKey: snapshot.scopeKey,
+        numberValue: snapshot.numberValue,
+        textValue: snapshot.textValue,
+        jsonValue: snapshot.jsonValue,
+        maturity: snapshot.maturity,
+        coverageStatus: snapshot.coverageStatus,
+        coveragePercent: snapshot.coveragePercent,
+        confidenceNote: snapshot.confidenceNote,
+        sourceRef: snapshot.sourceRef,
+        entryMode: snapshot.entryMode ?? DataBankSnapshotEntryMode.ADAPTER_REFRESH,
+        evidenceMeta: snapshot.evidenceMeta,
+        datasetRows: snapshot.datasetRows?.map((row, index) => ({
+          rowIndex: row.rowIndex ?? index,
+          rowKey: row.rowKey ?? null,
+          rowData: row.rowData,
+          sourceRef: row.sourceRef ?? null,
+        })),
+        replaceRows: snapshot.replaceRows ?? true,
+      },
+      actorUserId,
+      actorRole,
+    );
+
+    if (saved.status === "error") {
+      return saved;
+    }
+
+    savedSnapshots.push({ snapshot: saved.snapshot, syncResult: saved.syncResult });
+    appliedCount += saved.syncResult.appliedCount;
+    suggestionCount += saved.syncResult.suggestionCount;
+    recomputedCount += saved.syncResult.recomputedCount;
+  }
+
+  return {
+    status: "success",
+    message: `Refreshed ${savedSnapshots.length} snapshot${savedSnapshots.length === 1 ? "" : "s"}.`,
+    source: {
+      id: source.id,
+      code: source.code,
+      name: source.name,
+      adapterKey: source.adapterKey,
+    },
+    refreshedSnapshotCount: savedSnapshots.length,
+    appliedCount,
+    suggestionCount,
+    recomputedCount,
+  } satisfies SuccessResult<{
+    source: {
+      id: string;
+      code: string;
+      name: string;
+      adapterKey: string | null;
+    };
+    refreshedSnapshotCount: number;
+    appliedCount: number;
+    suggestionCount: number;
+    recomputedCount: number;
+  }>;
 }
 
 export async function upsertMetricSourceLinks(
@@ -1486,7 +2270,7 @@ export async function getInstitutionalDataSummary(tenantId: string, actorUserId:
     return { status: "error", message: accessError } satisfies ErrorResult;
   }
 
-  const [domainCount, sourceCount, snapshotCount, metricCount, computedMetricCount, linkCount, pendingSuggestionCount, maturityBuckets] =
+  const [domainCount, sourceCount, snapshotCount, metricCount, computedMetricCount, linkCount, pendingSuggestionCount, staleMetricCount, maturityBuckets] =
     await Promise.all([
       prisma.dataBankDomain.count({ where: { tenantId, isActive: true } }),
       prisma.dataBankSourceDefinition.count({ where: { tenantId, isActive: true } }),
@@ -1498,6 +2282,12 @@ export async function getInstitutionalDataSummary(tenantId: string, actorUserId:
         where: {
           metricObservation: { metric: { tenantId } },
           status: RefreshSuggestionStatus.PENDING,
+        },
+      }),
+      prisma.sourceMetricObservation.count({
+        where: {
+          metric: { tenantId },
+          isStale: true,
         },
       }),
       prisma.sourceMetricObservation.groupBy({
@@ -1517,6 +2307,7 @@ export async function getInstitutionalDataSummary(tenantId: string, actorUserId:
       computedMetricCount,
       linkCount,
       pendingSuggestionCount,
+      staleMetricCount,
       maturityBuckets: Object.fromEntries(maturityBuckets.map((bucket) => [bucket.maturity, bucket._count.maturity])),
     },
   } satisfies SuccessResult<{
@@ -1528,6 +2319,7 @@ export async function getInstitutionalDataSummary(tenantId: string, actorUserId:
       computedMetricCount: number;
       linkCount: number;
       pendingSuggestionCount: number;
+      staleMetricCount: number;
       maturityBuckets: Record<string, number>;
     };
   }>;
@@ -1637,9 +2429,26 @@ const seededDomainCatalog = [
 ] as const;
 
 const seededSourceCatalog = [
-  { domainCode: "HUMAN_RESOURCES", code: "HR_FACULTY_ROSTER", name: "HR Faculty Roster", kind: "CSV_IMPORT" as const, shape: "DATASET" as const, supportsScopeBreakdown: true },
+  {
+    domainCode: "HUMAN_RESOURCES",
+    code: "HR_FACULTY_ROSTER",
+    name: "HR Faculty Roster",
+    kind: "INTERNAL_ADAPTER" as const,
+    shape: "DATASET" as const,
+    adapterKey: "personnel.membership_roster",
+    supportsScopeBreakdown: true,
+  },
   { domainCode: "STUDENT_AFFAIRS", code: "PLACEMENT_LIST", name: "Placement List", kind: "CSV_IMPORT" as const, shape: "DATASET" as const, supportsScopeBreakdown: true },
   { domainCode: "RESEARCH_INNOVATION", code: "PUBLICATION_REGISTER", name: "Publication Register", kind: "CSV_IMPORT" as const, shape: "DATASET" as const, supportsScopeBreakdown: true },
+  {
+    domainCode: "RESEARCH_INNOVATION",
+    code: "VERIFIED_ACHIEVEMENT_REGISTRY",
+    name: "Verified Achievement Registry",
+    kind: "INTERNAL_ADAPTER" as const,
+    shape: "DATASET" as const,
+    adapterKey: "achievements.verified_registry",
+    supportsScopeBreakdown: true,
+  },
   { domainCode: "FINANCE", code: "ANNUAL_FINANCE_SHEET", name: "Annual Finance Sheet", kind: "MANUAL" as const, shape: "SCALAR" as const, supportsScopeBreakdown: false },
 ] as const;
 
@@ -1720,6 +2529,7 @@ export async function seedInstitutionalDataCatalog(
           name: seededSource.name,
           kind: seededSource.kind,
           shape: seededSource.shape,
+          adapterKey: "adapterKey" in seededSource ? seededSource.adapterKey : null,
           supportsScopeBreakdown: seededSource.supportsScopeBreakdown,
           isSystemDefined: true,
           isActive: true,
@@ -1731,6 +2541,7 @@ export async function seedInstitutionalDataCatalog(
           name: seededSource.name,
           kind: seededSource.kind,
           shape: seededSource.shape,
+          adapterKey: "adapterKey" in seededSource ? seededSource.adapterKey : null,
           supportsScopeBreakdown: seededSource.supportsScopeBreakdown,
           isSystemDefined: true,
         },

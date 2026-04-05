@@ -13,7 +13,8 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-const DATABASE_URL = "postgresql://postgres:123@localhost:5432/logrequest";
+const DATABASE_URL =
+  process.env.DATABASE_URL ?? "postgresql://postgres:123@localhost:5432/logrequest";
 const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD ?? "Demo@12345";
 const R43_SEED_PREFIX = "seed:r43";
 // Keep these identifiers stable unless the seeded smoke/regression tests are updated too.

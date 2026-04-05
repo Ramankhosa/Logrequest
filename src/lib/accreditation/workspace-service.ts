@@ -1,6 +1,7 @@
 import {
   AccreditationTemplateLifecycleStatus,
   AssessmentWorkspaceStatus,
+  DataBankMetricShape,
   ProjectionRunStatus,
   ProjectionRunType,
   ProjectionSourceKind,
@@ -440,6 +441,7 @@ const projectionTransformSchema = z.object({
 
 const entryProjectionInputSchema = z
   .object({
+    sourceKind: z.nativeEnum(ProjectionSourceKind).optional(),
     sourceWorkspaceId: z.string().trim().min(1).optional(),
     sourceEntryId: z.string().trim().min(1).optional(),
     sourceMetricId: z.string().trim().min(1).optional(),
@@ -453,6 +455,17 @@ const entryProjectionInputSchema = z
   })
   .superRefine((value, ctx) => {
     if (value.sourceMetricId) {
+      if (
+        value.sourceKind &&
+        value.sourceKind !== ProjectionSourceKind.SOURCE_METRIC &&
+        value.sourceKind !== ProjectionSourceKind.INSTITUTIONAL_DATA_BANK
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Metric projections must use SOURCE_METRIC or INSTITUTIONAL_DATA_BANK sourceKind.",
+          path: ["sourceKind"],
+        });
+      }
       return;
     }
 
@@ -8243,6 +8256,24 @@ function buildProjectionSourceSummary(value: Record<string, unknown>): Prisma.Js
   return value as Prisma.JsonObject;
 }
 
+function isInstitutionalDataMetric(metric: {
+  domainId: string | null;
+  shape: DataBankMetricShape;
+  usedByBodyCodes?: string[] | null;
+  datasetSchema?: Prisma.JsonValue | null;
+  computeConfig?: Prisma.JsonValue | null;
+  sourceLinks?: Array<unknown>;
+}) {
+  return (
+    !!metric.domainId ||
+    metric.shape !== DataBankMetricShape.SCALAR ||
+    (metric.usedByBodyCodes?.length ?? 0) > 0 ||
+    metric.datasetSchema !== null ||
+    metric.computeConfig !== null ||
+    (metric.sourceLinks?.length ?? 0) > 0
+  );
+}
+
 function extractTableCellValue(cell: {
   numberValue: number | null;
   textValue: string | null;
@@ -8316,6 +8347,17 @@ async function collectProjectionSourceGroups(input: {
         isActive: true,
       },
       include: {
+        domain: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+          },
+        },
+        sourceLinks: {
+          where: { isActive: true },
+          select: { id: true },
+        },
         observations: {
           orderBy: [{ observedYear: "asc" }, { createdAt: "asc" }],
         },
@@ -8359,13 +8401,30 @@ async function collectProjectionSourceGroups(input: {
 
     return {
       status: "success",
-      sourceKind: ProjectionSourceKind.SOURCE_METRIC,
+      sourceKind:
+        input.parsed.sourceKind === ProjectionSourceKind.INSTITUTIONAL_DATA_BANK ||
+        isInstitutionalDataMetric(metric)
+          ? ProjectionSourceKind.INSTITUTIONAL_DATA_BANK
+          : ProjectionSourceKind.SOURCE_METRIC,
       sourceSummary: buildProjectionSourceSummary({
         metricId: metric.id,
         code: metric.code,
         name: metric.name,
         valueType: metric.valueType,
         unitOfMeasure: metric.unitOfMeasure,
+        domain: metric.domain
+          ? {
+              id: metric.domain.id,
+              code: metric.domain.code,
+              name: metric.domain.name,
+            }
+          : null,
+        latestObservation: metric.observations.at(-1)
+          ? {
+              observedYear: metric.observations.at(-1)?.observedYear ?? null,
+              scopeKey: metric.observations.at(-1)?.scopeKey ?? null,
+            }
+          : null,
       }),
       groups,
     };
@@ -9388,6 +9447,21 @@ export async function listBlockEntryProjectionSources(
         isActive: true,
       },
       include: {
+        domain: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+          },
+        },
+        observations: {
+          orderBy: [{ observedYear: "desc" }, { updatedAt: "desc" }],
+          take: 1,
+        },
+        sourceLinks: {
+          where: { isActive: true },
+          select: { id: true },
+        },
         _count: {
           select: {
             observations: true,
@@ -9483,10 +9557,35 @@ export async function listBlockEntryProjectionSources(
     }),
   ]);
 
+  const institutionalDataMetrics = sourceMetrics
+    .filter((metric) => isInstitutionalDataMetric(metric))
+    .map((metric) => ({
+      id: metric.id,
+      code: metric.code,
+      name: metric.name,
+      valueType: metric.valueType,
+      unitOfMeasure: metric.unitOfMeasure,
+      domain: metric.domain,
+      latestObservation: metric.observations[0]
+        ? {
+            observedYear: metric.observations[0].observedYear,
+            scopeKey: metric.observations[0].scopeKey,
+            maturity: metric.observations[0].maturity,
+            coverageStatus: metric.observations[0].coverageStatus,
+            coveragePercent: metric.observations[0].coveragePercent,
+            isStale: metric.observations[0].isStale,
+            lastRefreshedAt: metric.observations[0].lastRefreshedAt,
+          }
+        : null,
+      observationCount: metric._count.observations,
+      sourceLinkCount: metric.sourceLinks.length,
+    }));
+
   return {
     status: "success",
     sources: {
-      sourceMetrics,
+      sourceMetrics: sourceMetrics.filter((metric) => !isInstitutionalDataMetric(metric)),
+      institutionalDataMetrics,
       sourceEntries: sourceEntries.map((entry) => ({
         entryId: entry.id,
         workspaceId: entry.workspace.id,
@@ -9525,7 +9624,8 @@ export async function listBlockEntryProjectionSources(
     },
   } satisfies SuccessResult<{
     sources: {
-      sourceMetrics: typeof sourceMetrics;
+      sourceMetrics: Array<(typeof sourceMetrics)[number]>;
+      institutionalDataMetrics: typeof institutionalDataMetrics;
       sourceEntries: Array<{
         entryId: string;
         workspaceId: string;
@@ -9700,6 +9800,7 @@ export async function refreshBlockEntryProjection(
     entryId: recipe.targetEntryId,
     tenantId,
     parsed: {
+      sourceKind: recipe.sourceKind,
       sourceWorkspaceId: recipe.sourceWorkspaceId ?? undefined,
       sourceEntryId: recipe.sourceEntryId ?? undefined,
       sourceMetricId: recipe.sourceMetricId ?? undefined,

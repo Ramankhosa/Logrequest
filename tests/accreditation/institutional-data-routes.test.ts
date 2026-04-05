@@ -6,9 +6,17 @@ const listDataBankDomainsMock = vi.fn();
 const createDataBankDomainMock = vi.fn();
 const listInstitutionalDataSourcesMock = vi.fn();
 const createInstitutionalDataSourceMock = vi.fn();
+const getInstitutionalDataSourceMock = vi.fn();
+const updateInstitutionalDataSourceMock = vi.fn();
+const listInstitutionalDataSourceSnapshotsMock = vi.fn();
 const upsertInstitutionalDataSourceSnapshotMock = vi.fn();
+const previewInstitutionalDataSourceImportMock = vi.fn();
+const importInstitutionalDataSourceDatasetMock = vi.fn();
+const refreshInstitutionalDataSourceMock = vi.fn();
 const listInstitutionalMetricsMock = vi.fn();
 const createInstitutionalMetricMock = vi.fn();
+const getInstitutionalMetricMock = vi.fn();
+const updateInstitutionalMetricMock = vi.fn();
 const upsertMetricSourceLinksMock = vi.fn();
 const listMetricRefreshSuggestionsMock = vi.fn();
 const resolveMetricRefreshSuggestionMock = vi.fn();
@@ -26,9 +34,17 @@ vi.mock("@/lib/accreditation/institutional-data-service", () => ({
   createDataBankDomain: createDataBankDomainMock,
   listInstitutionalDataSources: listInstitutionalDataSourcesMock,
   createInstitutionalDataSource: createInstitutionalDataSourceMock,
+  getInstitutionalDataSource: getInstitutionalDataSourceMock,
+  updateInstitutionalDataSource: updateInstitutionalDataSourceMock,
+  listInstitutionalDataSourceSnapshots: listInstitutionalDataSourceSnapshotsMock,
   upsertInstitutionalDataSourceSnapshot: upsertInstitutionalDataSourceSnapshotMock,
+  previewInstitutionalDataSourceImport: previewInstitutionalDataSourceImportMock,
+  importInstitutionalDataSourceDataset: importInstitutionalDataSourceDatasetMock,
+  refreshInstitutionalDataSource: refreshInstitutionalDataSourceMock,
   listInstitutionalMetrics: listInstitutionalMetricsMock,
   createInstitutionalMetric: createInstitutionalMetricMock,
+  getInstitutionalMetric: getInstitutionalMetricMock,
+  updateInstitutionalMetric: updateInstitutionalMetricMock,
   upsertMetricSourceLinks: upsertMetricSourceLinksMock,
   listMetricRefreshSuggestions: listMetricRefreshSuggestionsMock,
   resolveMetricRefreshSuggestion: resolveMetricRefreshSuggestionMock,
@@ -58,9 +74,17 @@ describe("institutional data routes", () => {
     createDataBankDomainMock.mockResolvedValue({ status: "success", domain: { id: "domain-1" } });
     listInstitutionalDataSourcesMock.mockResolvedValue({ status: "success", sources: [] });
     createInstitutionalDataSourceMock.mockResolvedValue({ status: "success", source: { id: "source-1" } });
+    getInstitutionalDataSourceMock.mockResolvedValue({ status: "success", source: { id: "source-1" } });
+    updateInstitutionalDataSourceMock.mockResolvedValue({ status: "success", source: { id: "source-1" } });
+    listInstitutionalDataSourceSnapshotsMock.mockResolvedValue({ status: "success", snapshots: [] });
     upsertInstitutionalDataSourceSnapshotMock.mockResolvedValue({ status: "success", snapshot: { id: "snapshot-1" } });
+    previewInstitutionalDataSourceImportMock.mockResolvedValue({ status: "success", preview: { rowCount: 2 } });
+    importInstitutionalDataSourceDatasetMock.mockResolvedValue({ status: "success", snapshot: { id: "snapshot-1" } });
+    refreshInstitutionalDataSourceMock.mockResolvedValue({ status: "success", refreshedSnapshotCount: 1 });
     listInstitutionalMetricsMock.mockResolvedValue({ status: "success", metrics: [] });
     createInstitutionalMetricMock.mockResolvedValue({ status: "success", metric: { id: "metric-1" } });
+    getInstitutionalMetricMock.mockResolvedValue({ status: "success", metric: { id: "metric-1" } });
+    updateInstitutionalMetricMock.mockResolvedValue({ status: "success", metric: { id: "metric-1" } });
     upsertMetricSourceLinksMock.mockResolvedValue({ status: "success", links: [] });
     listMetricRefreshSuggestionsMock.mockResolvedValue({ status: "success", suggestions: [] });
     resolveMetricRefreshSuggestionMock.mockResolvedValue({ status: "success", suggestion: { id: "suggestion-1" } });
@@ -70,8 +94,13 @@ describe("institutional data routes", () => {
 
     const domainsRoute = await import("@/app/api/tenant/accreditation/institutional-data/domains/route");
     const sourcesRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/route");
+    const sourceRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/route");
     const snapshotsRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/snapshots/route");
+    const importPreviewRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/dataset/import-preview/route");
+    const importRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/dataset/import/route");
+    const refreshRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/refresh/route");
     const metricsRoute = await import("@/app/api/tenant/accreditation/institutional-data/metrics/route");
+    const metricRoute = await import("@/app/api/tenant/accreditation/institutional-data/metrics/[id]/route");
     const linksRoute = await import("@/app/api/tenant/accreditation/institutional-data/metrics/[id]/links/route");
     const suggestionsRoute = await import("@/app/api/tenant/accreditation/institutional-data/suggestions/route");
     const resolveSuggestionRoute = await import("@/app/api/tenant/accreditation/institutional-data/suggestions/[id]/resolve/route");
@@ -117,6 +146,35 @@ describe("institutional data routes", () => {
       "TENANT_OWNER",
     );
 
+    const sourceDetailResponse = await sourceRoute.GET(new Request("http://localhost"), {
+      params: Promise.resolve({ id: "source-1" }),
+    });
+    expect(sourceDetailResponse.status).toBe(200);
+    expect(getInstitutionalDataSourceMock).toHaveBeenCalledWith("source-1", "tenant-1", "user-1", "TENANT_OWNER");
+
+    const sourcePatchResponse = await sourceRoute.PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Updated Source" }),
+      }),
+      { params: Promise.resolve({ id: "source-1" }) },
+    );
+    expect(sourcePatchResponse.status).toBe(200);
+    expect(updateInstitutionalDataSourceMock).toHaveBeenCalledWith(
+      "source-1",
+      "tenant-1",
+      { name: "Updated Source" },
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const snapshotsListResponse = await snapshotsRoute.GET(new Request("http://localhost"), {
+      params: Promise.resolve({ id: "source-1" }),
+    });
+    expect(snapshotsListResponse.status).toBe(200);
+    expect(listInstitutionalDataSourceSnapshotsMock).toHaveBeenCalledWith("source-1", "tenant-1", "user-1", "TENANT_OWNER");
+
     const snapshotResponse = await snapshotsRoute.PUT(
       new Request("http://localhost", {
         method: "PUT",
@@ -140,6 +198,46 @@ describe("institutional data routes", () => {
       "TENANT_OWNER",
     );
 
+    const previewImportResponse = await importPreviewRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fileName: "faculty.csv", fileContentBase64: "ZHVtbXk=" }),
+      }),
+      { params: Promise.resolve({ id: "source-1" }) },
+    );
+    expect(previewImportResponse.status).toBe(200);
+    expect(previewInstitutionalDataSourceImportMock).toHaveBeenCalledWith(
+      "source-1",
+      "tenant-1",
+      { fileName: "faculty.csv", fileContentBase64: "ZHVtbXk=" },
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const importResponse = await importRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fileName: "faculty.csv", fileContentBase64: "ZHVtbXk=" }),
+      }),
+      { params: Promise.resolve({ id: "source-1" }) },
+    );
+    expect(importResponse.status).toBe(200);
+    expect(importInstitutionalDataSourceDatasetMock).toHaveBeenCalledWith(
+      "source-1",
+      "tenant-1",
+      { fileName: "faculty.csv", fileContentBase64: "ZHVtbXk=" },
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const refreshResponse = await refreshRoute.POST(new Request("http://localhost", { method: "POST" }), {
+      params: Promise.resolve({ id: "source-1" }),
+    });
+    expect(refreshResponse.status).toBe(200);
+    expect(refreshInstitutionalDataSourceMock).toHaveBeenCalledWith("source-1", "tenant-1", "user-1", "TENANT_OWNER");
+
     const metricsResponse = await metricsRoute.GET();
     expect(metricsResponse.status).toBe(200);
     expect(listInstitutionalMetricsMock).toHaveBeenCalledWith("tenant-1", "user-1", "TENANT_OWNER");
@@ -155,6 +253,29 @@ describe("institutional data routes", () => {
     expect(createInstitutionalMetricMock).toHaveBeenCalledWith(
       "tenant-1",
       { code: "FACULTY_TOTAL", name: "Faculty Total", valueType: "NUMBER" },
+      "user-1",
+      "TENANT_OWNER",
+    );
+
+    const metricDetailResponse = await metricRoute.GET(new Request("http://localhost"), {
+      params: Promise.resolve({ id: "metric-1" }),
+    });
+    expect(metricDetailResponse.status).toBe(200);
+    expect(getInstitutionalMetricMock).toHaveBeenCalledWith("metric-1", "tenant-1", "user-1", "TENANT_OWNER");
+
+    const metricPatchResponse = await metricRoute.PATCH(
+      new Request("http://localhost", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Faculty Count" }),
+      }),
+      { params: Promise.resolve({ id: "metric-1" }) },
+    );
+    expect(metricPatchResponse.status).toBe(200);
+    expect(updateInstitutionalMetricMock).toHaveBeenCalledWith(
+      "metric-1",
+      "tenant-1",
+      { name: "Faculty Count" },
       "user-1",
       "TENANT_OWNER",
     );

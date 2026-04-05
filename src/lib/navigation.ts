@@ -45,6 +45,12 @@ export const tenantNavigationGroups: NavigationGroup[] = [
         serviceCode: "ACCREDITATION",
       },
       {
+        href: "/tenant-admin/institutional-data",
+        label: "Institutional Data",
+        icon: "database",
+        serviceCode: "ACCREDITATION",
+      },
+      {
         href: "/workspace/accreditation",
         label: "My Accreditation",
         icon: "award",

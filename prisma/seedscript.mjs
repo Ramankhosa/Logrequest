@@ -5,7 +5,8 @@ import { hash } from "bcryptjs";
 import pg from "pg";
 
 const { Pool } = pg;
-const DATABASE_URL = "postgresql://postgres:123@localhost:5432/logrequest";
+const DATABASE_URL =
+  process.env.DATABASE_URL ?? "postgresql://postgres:123@localhost:5432/logrequest";
 const DEMO_DOMAIN = "demo-university.local.test";
 const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD ?? "Demo@12345";
 

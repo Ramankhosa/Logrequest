@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { WorkspaceProjectionStudio } from "./workspace-projection-studio";
 
 type BodyOption = {
   id: string;
@@ -634,6 +635,14 @@ export function WorkspaceManager() {
                   </div>
                 </div>
               </div>
+
+              <WorkspaceProjectionStudio
+                entries={detail.entries.map((entry) => ({
+                  id: entry.id,
+                  blockCode: entry.blockCode,
+                  blockTitle: entry.blockTitle,
+                }))}
+              />
             </div>
           )}
         </div>

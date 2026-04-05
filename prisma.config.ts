@@ -3,7 +3,9 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
-const PRISMA_DATABASE_URL = "postgresql://postgres:123@localhost:5432/logrequest";
+const PRISMA_DATABASE_URL =
+  process.env.DATABASE_URL ?? "postgresql://postgres:123@localhost:5432/logrequest";
+const PRISMA_SHADOW_DATABASE_URL = process.env.SHADOW_DATABASE_URL;
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
@@ -13,5 +15,6 @@ export default defineConfig({
   },
   datasource: {
     url: PRISMA_DATABASE_URL,
+    shadowDatabaseUrl: PRISMA_SHADOW_DATABASE_URL,
   },
 });

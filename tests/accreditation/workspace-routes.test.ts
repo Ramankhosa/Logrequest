@@ -367,7 +367,7 @@ describe("accreditation workspace routes", () => {
     });
     listBlockEntryProjectionSourcesMock.mockResolvedValue({
       status: "success",
-      sources: { sourceMetrics: [], sourceEntries: [], activeProjections: [] },
+      sources: { sourceMetrics: [], institutionalDataMetrics: [], sourceEntries: [], activeProjections: [] },
     });
     previewBlockEntryProjectionMock.mockResolvedValue({
       status: "success",
@@ -481,6 +481,7 @@ describe("accreditation workspace routes", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          sourceKind: "INSTITUTIONAL_DATA_BANK",
           sourceMetricId: "metric-1",
           filters: { years: [2024] },
           targetPath: "actualValue",
@@ -493,6 +494,7 @@ describe("accreditation workspace routes", () => {
       "entry-1",
       "tenant-1",
       {
+        sourceKind: "INSTITUTIONAL_DATA_BANK",
         sourceMetricId: "metric-1",
         filters: { years: [2024] },
         targetPath: "actualValue",

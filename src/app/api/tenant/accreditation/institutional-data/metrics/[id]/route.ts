@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import {
-  listInstitutionalDataSourceSnapshots,
-  upsertInstitutionalDataSourceSnapshot,
+  getInstitutionalMetric,
+  updateInstitutionalMetric,
 } from "@/lib/accreditation/institutional-data-service";
 import {
   getTenantAccreditationApiSession,
   parseJsonBody,
   tenantApiAccessDeniedResponse,
-} from "../../../../workspace-route-helpers";
+} from "@/app/api/tenant/accreditation/workspace-route-helpers";
 
 export async function GET(
   _request: Request,
@@ -19,11 +19,11 @@ export async function GET(
   }
 
   const { id } = await params;
-  const result = await listInstitutionalDataSourceSnapshots(id, session.tenantId, session.userId, session.role);
+  const result = await getInstitutionalMetric(id, session.tenantId, session.userId, session.role);
   return NextResponse.json(result, { status: result.status === "success" ? 200 : 400 });
 }
 
-export async function PUT(
+export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -38,12 +38,6 @@ export async function PUT(
   }
 
   const { id } = await params;
-  const result = await upsertInstitutionalDataSourceSnapshot(
-    id,
-    session.tenantId,
-    parsed.body,
-    session.userId,
-    session.role,
-  );
+  const result = await updateInstitutionalMetric(id, session.tenantId, parsed.body, session.userId, session.role);
   return NextResponse.json(result, { status: result.status === "success" ? 200 : 400 });
 }

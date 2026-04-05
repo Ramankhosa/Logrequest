@@ -61,6 +61,12 @@ npm run db:generate
 npm run db:migrate
 ```
 
+If your local database was created before the accreditation migration repair, reset it once so the rewritten accreditation migration order can be replayed cleanly:
+
+```bash
+npx prisma migrate reset --force
+```
+
 4. Start the app:
 
 ```bash

@@ -1,4 +1,5 @@
 import {
+  AchievementState,
   CriterionDataType,
   DataBankCoverageStatus,
   DataBankMetricShape,
@@ -18,6 +19,7 @@ import {
 import {
   createAssessmentWorkspace,
   applyBlockEntryProjection,
+  listBlockEntryProjectionSources,
 } from "@/lib/accreditation/workspace-service";
 import {
   createDataBankDomain,
@@ -25,6 +27,7 @@ import {
   createInstitutionalMetric,
   getInstitutionalDataGaps,
   listMetricRefreshSuggestions,
+  refreshInstitutionalDataSource,
   resolveMetricRefreshSuggestion,
   seedInstitutionalDataCatalog,
   upsertInstitutionalDataSourceSnapshot,
@@ -33,10 +36,17 @@ import {
 import {
   cleanupTrackedData,
   createTenantActor,
+  createTestMembership,
+  createTestUser,
   enableTenantService,
   newDbTracker,
   type DbTracker,
 } from "../helpers/db";
+import {
+  createScenarioAllocation,
+  createWorkflowCoreFixture,
+  recordScenarioAchievement,
+} from "../helpers/kra-kpi-db-scenarios";
 
 async function withIsolatedDb(run: (tracker: DbTracker) => Promise<void>) {
   const tracker = newDbTracker();
@@ -162,6 +172,251 @@ async function createWorkspaceFixture(tracker: DbTracker, blockCode: string) {
 }
 
 describe("institutional data service", () => {
+  test("personnel adapter refresh writes a current-state dataset snapshot without inventing year history", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const extraUserA = await createTestUser(tracker, { firstName: "Priya", lastName: "Faculty" });
+      const extraUserB = await createTestUser(tracker, { firstName: "Rohan", lastName: "Faculty" });
+      await createTestMembership({
+        tenantId: tenant.id,
+        userId: extraUserA.id,
+        role: "TENANT_USER",
+        createdByUserId: actor.id,
+      });
+      await createTestMembership({
+        tenantId: tenant.id,
+        userId: extraUserB.id,
+        role: "TENANT_USER",
+        createdByUserId: actor.id,
+      });
+
+      const domain = await createDataBankDomain(
+        tenant.id,
+        { code: "HUMAN_RESOURCES", name: "Human Resources" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(domain).toMatchObject({ status: "success" });
+      if (domain.status !== "success") {
+        throw new Error(domain.message);
+      }
+
+      const source = await createInstitutionalDataSource(
+        tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "PERSONNEL_ADAPTER",
+          name: "Personnel Adapter",
+          kind: "INTERNAL_ADAPTER",
+          shape: "DATASET",
+          adapterKey: "personnel.membership_roster",
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(source).toMatchObject({ status: "success" });
+      if (source.status !== "success") {
+        throw new Error(source.message);
+      }
+
+      const metric = await createInstitutionalMetric(
+        tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "PERSONNEL_TOTAL",
+          name: "Personnel Total",
+          valueType: "NUMBER",
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(metric).toMatchObject({ status: "success" });
+      if (metric.status !== "success") {
+        throw new Error(metric.message);
+      }
+
+      const linkResult = await upsertMetricSourceLinks(
+        metric.metric.id,
+        tenant.id,
+        {
+          links: [
+            {
+              sourceId: source.source.id,
+              resolutionMode: "COUNT_ROWS",
+              transformConfig: { mode: "COUNT_ROWS" },
+            },
+          ],
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(linkResult).toMatchObject({ status: "success" });
+
+      const refreshed = await refreshInstitutionalDataSource(
+        source.source.id,
+        tenant.id,
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(refreshed).toMatchObject({
+        status: "success",
+        refreshedSnapshotCount: 1,
+        appliedCount: 1,
+      });
+
+      const snapshots = await prisma.dataBankSourceSnapshot.findMany({
+        where: { sourceId: source.source.id },
+        include: { datasetRows: true },
+      });
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]?.observedYear).toBeNull();
+      expect(snapshots[0]?.datasetRows.length).toBe(3);
+
+      const observation = await prisma.sourceMetricObservation.findFirstOrThrow({
+        where: { metricId: metric.metric.id },
+      });
+      expect(observation.scopeKey).toBe("DEFAULT");
+      expect(observation.numberValue).toBe(3);
+    });
+  });
+
+  test("achievement adapter only includes verified achievements and groups rows by reporting year", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkflowCoreFixture(tracker, { periodStateAfterSetup: "IN_PROGRESS" });
+      await enableTenantService({
+        tenantId: fixture.tenant.id,
+        serviceCode: TenantServiceCode.ACCREDITATION,
+        actorUserId: fixture.actor.id,
+      });
+
+      const domain = await createDataBankDomain(
+        fixture.tenant.id,
+        { code: "RESEARCH", name: "Research" },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(domain).toMatchObject({ status: "success" });
+      if (domain.status !== "success") {
+        throw new Error(domain.message);
+      }
+
+      const source = await createInstitutionalDataSource(
+        fixture.tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "ACHIEVEMENT_ADAPTER",
+          name: "Achievement Adapter",
+          kind: "INTERNAL_ADAPTER",
+          shape: "DATASET",
+          adapterKey: "achievements.verified_registry",
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(source).toMatchObject({ status: "success" });
+      if (source.status !== "success") {
+        throw new Error(source.message);
+      }
+
+      const metric = await createInstitutionalMetric(
+        fixture.tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "VERIFIED_ACHIEVEMENTS_TOTAL",
+          name: "Verified Achievements Total",
+          valueType: "NUMBER",
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(metric).toMatchObject({ status: "success" });
+      if (metric.status !== "success") {
+        throw new Error(metric.message);
+      }
+
+      await upsertMetricSourceLinks(
+        metric.metric.id,
+        fixture.tenant.id,
+        {
+          links: [
+            {
+              sourceId: source.source.id,
+              resolutionMode: "COUNT_ROWS",
+              transformConfig: { mode: "COUNT_ROWS" },
+            },
+          ],
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+
+      const allocation = await createScenarioAllocation({
+        fixture,
+        kpiId: fixture.kpis.direct.id,
+        assignedToUserId: fixture.users.facultyCse.id,
+        targetValue: 1,
+      });
+
+      const firstAchievement = await recordScenarioAchievement({
+        fixture,
+        kpiId: fixture.kpis.direct.id,
+        targetAllocationId: allocation.id,
+        actorUserId: fixture.users.facultyCse.id,
+        reportingDate: new Date("2024-04-01T00:00:00.000Z"),
+      });
+      expect(firstAchievement).toMatchObject({ status: "success" });
+
+      const secondAchievement = await recordScenarioAchievement({
+        fixture,
+        kpiId: fixture.kpis.direct.id,
+        targetAllocationId: allocation.id,
+        actorUserId: fixture.users.facultyCse.id,
+        reportingDate: new Date("2024-05-01T00:00:00.000Z"),
+      });
+      expect(secondAchievement).toMatchObject({ status: "success" });
+
+      const achievements = await prisma.achievement.findMany({
+        where: { tenantId: fixture.tenant.id },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(achievements.length).toBeGreaterThanOrEqual(2);
+
+      await prisma.achievement.update({
+        where: { id: achievements[0]!.id },
+        data: { state: AchievementState.VERIFIED },
+      });
+      await prisma.achievement.update({
+        where: { id: achievements[1]!.id },
+        data: { state: AchievementState.SUBMITTED },
+      });
+
+      const refreshed = await refreshInstitutionalDataSource(
+        source.source.id,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(refreshed).toMatchObject({
+        status: "success",
+        refreshedSnapshotCount: 1,
+        appliedCount: 1,
+      });
+
+      const snapshot = await prisma.dataBankSourceSnapshot.findFirstOrThrow({
+        where: { sourceId: source.source.id },
+        include: { datasetRows: true },
+      });
+      expect(snapshot.observedYear).toBe(2024);
+      expect(snapshot.datasetRows).toHaveLength(1);
+
+      const observation = await prisma.sourceMetricObservation.findFirstOrThrow({
+        where: { metricId: metric.metric.id },
+      });
+      expect(observation.numberValue).toBe(1);
+    });
+  });
+
   test("seeds the catalog idempotently with recommended links", async () => {
     await withIsolatedDb(async (tracker) => {
       const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
@@ -629,6 +884,32 @@ describe("institutional data service", () => {
       });
       expect(response.responseData).toMatchObject({ value: 4 });
       expect(response.dataSource).toBe("PROJECTED");
+    });
+  });
+
+  test("projection source listing separates institutional metrics from generic source metrics", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkspaceFixture(tracker, "3.2.4");
+      const seedResult = await seedInstitutionalDataCatalog(fixture.tenant.id, { includeRecommendedSources: true }, fixture.actor.id, "TENANT_OWNER");
+      expect(seedResult).toMatchObject({ status: "success" });
+
+      const sources = await listBlockEntryProjectionSources(
+        fixture.entry.id,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(sources).toMatchObject({ status: "success" });
+      if (sources.status !== "success") {
+        throw new Error(sources.message);
+      }
+
+      expect(sources.sources.institutionalDataMetrics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "FACULTY_TOTAL" }),
+        ]),
+      );
+      expect(sources.sources.sourceMetrics.some((metric) => metric.code === "FACULTY_TOTAL")).toBe(false);
     });
   });
 });
