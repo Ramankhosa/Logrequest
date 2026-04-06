@@ -229,6 +229,8 @@ async function mapKpiView(k: any): Promise<KpiDefinitionView> {
     kraState: k.kraDefinition.state,
     title: k.title,
     description: k.description,
+    sourceTemplateCode: k.sourceTemplateCode ?? null,
+    sourceTemplatePackKey: k.sourceTemplatePackKey ?? null,
     measurementType: k.measurementType,
     unitLabel: k.unitLabel,
     weightage: k.weightage,

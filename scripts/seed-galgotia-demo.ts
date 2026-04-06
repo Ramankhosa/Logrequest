@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { hash } from "bcryptjs";
+import { TenantServiceCode } from "@prisma/client";
 import type {
   AchievementState,
   AssessmentPeriodState,
@@ -16,11 +17,19 @@ import type {
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { applyTemplateToKpi, seedSystemKpiTemplates } from "@/lib/kra-kpi/kpi-template-service";
+import { setTenantServiceEntitlement } from "@/lib/tenant-services/service";
 
 const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD ?? "Demo@12345";
-const DEMO_DOMAIN = "galgotias-demo.local.test";
-const DEMO_TENANT_CODE = "GALGOTIA_DEMO";
-const DEMO_TENANT_NAME = "Galgotias University Demo";
+const DEMO_DOMAIN = process.env.SEED_DEMO_DOMAIN ?? "galgotias-demo.local.test";
+const DEMO_TENANT_CODE = process.env.SEED_DEMO_TENANT_CODE ?? "GALGOTIA_DEMO";
+const DEMO_TENANT_NAME = process.env.SEED_DEMO_TENANT_NAME ?? "Galgotias University Demo";
+const DEMO_ROOT_UNIT_NAME = process.env.SEED_DEMO_ROOT_UNIT_NAME ?? "Galgotias University";
+const DEMO_POLYTECHNIC_NAME = process.env.SEED_DEMO_POLYTECHNIC_NAME ?? "Galgotias Polytechnic";
+const DEMO_STRUCTURE_NAME = process.env.SEED_DEMO_STRUCTURE_NAME ?? `${DEMO_TENANT_NAME} Structure`;
+const DEMO_LABEL = process.env.SEED_DEMO_LABEL ?? DEMO_TENANT_NAME;
+const DEMO_EMPLOYEE_PREFIX = process.env.SEED_DEMO_EMPLOYEE_PREFIX ?? "GU-DEMO";
+const ENABLE_ACCREDITATION_SERVICE =
+  process.env.SEED_ENABLE_ACCREDITATION_SERVICE?.trim().toLowerCase() === "true";
 const DEMO_PERIOD = {
   code: "AY2026_27",
   name: "AY 2026-27",
@@ -38,7 +47,7 @@ const UNIT_TYPES = [
 ] as const;
 
 const UNITS = [
-  ["UNIV", "Galgotias University", "ROOT", null, 0],
+  ["UNIV", DEMO_ROOT_UNIT_NAME, "ROOT", null, 0],
   ["SCSE", "School of Computer Science and Engineering", "SCH", "UNIV", 10],
   ["SAI", "School of Artificial Intelligence", "SCH", "UNIV", 20],
   ["SALTM", "School of Agricultural Sciences and Technology Management", "SCH", "UNIV", 30],
@@ -59,7 +68,7 @@ const UNITS = [
   ["SOD", "School of Design", "SCH", "UNIV", 180],
   ["SOH", "School of Hotel Management", "SCH", "UNIV", 190],
   ["SOBT", "School of Biosciences and Technology", "SCH", "UNIV", 200],
-  ["GPOLY", "Galgotias Polytechnic", "SCH", "UNIV", 210],
+  ["GPOLY", DEMO_POLYTECHNIC_NAME, "SCH", "UNIV", 210],
   ["SOVE", "School of Vocational Education", "SCH", "UNIV", 220],
   ["SOEDU", "School of Education", "SCH", "UNIV", 230],
   ["SLLL", "School of Life Long Learning", "SCH", "UNIV", 240],
@@ -120,6 +129,10 @@ type DemoUserPlan = {
   }>;
 };
 
+function demoEmployeeId(serial: number) {
+  return `${DEMO_EMPLOYEE_PREFIX}-${String(serial).padStart(3, "0")}`;
+}
+
 const USER_PLANS: DemoUserPlan[] = [
   {
     key: "owner",
@@ -128,7 +141,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Malhotra",
     membershipRole: "TENANT_OWNER",
     designation: "Vice Chancellor",
-    employeeId: "GU-DEMO-001",
+    employeeId: demoEmployeeId(1),
     primaryUnitCode: "UNIV",
     roleAssignments: [{ unitCode: "UNIV", roleKey: "VICE_CHANCELLOR" }],
   },
@@ -139,7 +152,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Arora",
     membershipRole: "TENANT_ADMIN",
     designation: "Executive Assistant",
-    employeeId: "GU-DEMO-002",
+    employeeId: demoEmployeeId(2),
     primaryUnitCode: "REG",
     roleAssignments: [{ unitCode: "REG", roleKey: "ADMIN_OFFICER" }],
   },
@@ -150,7 +163,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Jain",
     membershipRole: "TENANT_USER",
     designation: "School Director",
-    employeeId: "GU-DEMO-003",
+    employeeId: demoEmployeeId(3),
     primaryUnitCode: "SCSE",
     roleAssignments: [{ unitCode: "SCSE", roleKey: "SCHOOL_DIRECTOR" }],
   },
@@ -161,7 +174,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Tiwari",
     membershipRole: "TENANT_USER",
     designation: "School Director",
-    employeeId: "GU-DEMO-004",
+    employeeId: demoEmployeeId(4),
     primaryUnitCode: "SOE",
     roleAssignments: [{ unitCode: "SOE", roleKey: "SCHOOL_DIRECTOR" }],
   },
@@ -172,7 +185,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Bansal",
     membershipRole: "TENANT_USER",
     designation: "School Director",
-    employeeId: "GU-DEMO-005",
+    employeeId: demoEmployeeId(5),
     primaryUnitCode: "SAI",
     roleAssignments: [{ unitCode: "SAI", roleKey: "SCHOOL_DIRECTOR" }],
   },
@@ -183,7 +196,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Gupta",
     membershipRole: "TENANT_USER",
     designation: "School Director",
-    employeeId: "GU-DEMO-006",
+    employeeId: demoEmployeeId(6),
     primaryUnitCode: "SOB",
     roleAssignments: [{ unitCode: "SOB", roleKey: "SCHOOL_DIRECTOR" }],
   },
@@ -194,7 +207,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Verma",
     membershipRole: "TENANT_USER",
     designation: "Professor",
-    employeeId: "GU-DEMO-007",
+    employeeId: demoEmployeeId(7),
     primaryUnitCode: "SCSE",
     roleAssignments: [{ unitCode: "SCSE", roleKey: "PROFESSOR" }],
   },
@@ -205,7 +218,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Mehra",
     membershipRole: "TENANT_USER",
     designation: "Associate Professor",
-    employeeId: "GU-DEMO-008",
+    employeeId: demoEmployeeId(8),
     primaryUnitCode: "SOE",
     roleAssignments: [{ unitCode: "SOE", roleKey: "ASSOCIATE_PROFESSOR" }],
   },
@@ -216,7 +229,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Sharma",
     membershipRole: "TENANT_USER",
     designation: "Assistant Professor",
-    employeeId: "GU-DEMO-009",
+    employeeId: demoEmployeeId(9),
     primaryUnitCode: "SAI",
     roleAssignments: [{ unitCode: "SAI", roleKey: "ASSISTANT_PROFESSOR" }],
   },
@@ -227,7 +240,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Sethi",
     membershipRole: "TENANT_USER",
     designation: "Research Fellow",
-    employeeId: "GU-DEMO-010",
+    employeeId: demoEmployeeId(10),
     primaryUnitCode: "SCSE",
     roleAssignments: [{ unitCode: "SCSE", roleKey: "RESEARCH_FELLOW" }],
   },
@@ -238,7 +251,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Joshi",
     membershipRole: "TENANT_USER",
     designation: "Administrative Officer",
-    employeeId: "GU-DEMO-011",
+    employeeId: demoEmployeeId(11),
     primaryUnitCode: "REG",
     roleAssignments: [{ unitCode: "REG", roleKey: "ADMIN_OFFICER" }],
   },
@@ -249,7 +262,7 @@ const USER_PLANS: DemoUserPlan[] = [
     lastName: "Nair",
     membershipRole: "TENANT_USER",
     designation: "Administrative Officer",
-    employeeId: "GU-DEMO-012",
+    employeeId: demoEmployeeId(12),
     primaryUnitCode: "ITS",
     roleAssignments: [{ unitCode: "ITS", roleKey: "ADMIN_OFFICER" }],
   },
@@ -433,7 +446,7 @@ async function ensurePublishedStructure(tenantId: string, actorUserId: string) {
     version = await prisma.orgStructureVersion.create({
       data: {
         tenantId,
-        name: "Galgotias Demo Structure",
+        name: DEMO_STRUCTURE_NAME,
         versionNumber: nextVersionNumber + 1,
         state: "PUBLISHED",
         validatedAt: new Date(),
@@ -1195,7 +1208,7 @@ const SEED_ACHIEVEMENTS: SeedAchievementPlan[] = [
     verification: {
       byUserKey: "sai.director",
       at: new Date("2026-06-26T00:00:00.000Z"),
-      note: "Verified against filing acknowledgement with Galgotias University as applicant.",
+      note: `Verified against filing acknowledgement with ${DEMO_ROOT_UNIT_NAME} as applicant.`,
     },
   },
   {
@@ -1309,7 +1322,7 @@ async function ensurePeriod(tenantId: string, actorUserId: string) {
       targetSettingDeadline: DEMO_PERIOD.targetSettingDeadline,
       achievementDeadline: DEMO_PERIOD.achievementDeadline,
       reviewDeadline: DEMO_PERIOD.reviewDeadline,
-      description: "Galgotias demo period seeded with active targets and mixed-stage achievements.",
+      description: `${DEMO_LABEL} period seeded with active targets and mixed-stage achievements.`,
     },
     create: {
       tenantId,
@@ -1323,7 +1336,7 @@ async function ensurePeriod(tenantId: string, actorUserId: string) {
       targetSettingDeadline: DEMO_PERIOD.targetSettingDeadline,
       achievementDeadline: DEMO_PERIOD.achievementDeadline,
       reviewDeadline: DEMO_PERIOD.reviewDeadline,
-      description: "Galgotias demo period seeded with active targets and mixed-stage achievements.",
+      description: `${DEMO_LABEL} period seeded with active targets and mixed-stage achievements.`,
       createdByUserId: actorUserId,
     },
   });
@@ -1491,8 +1504,8 @@ function buildVerificationLog(input: {
         action: input.plan.state,
         note:
           input.plan.state === "VERIFIED"
-            ? input.plan.verification?.note ?? "Verified in seeded Galgotias demo."
-            : input.plan.verification?.rejectionReason ?? "Rejected in seeded Galgotias demo.",
+            ? input.plan.verification?.note ?? `Verified in seeded ${DEMO_LABEL}.`
+            : input.plan.verification?.rejectionReason ?? `Rejected in seeded ${DEMO_LABEL}.`,
         at: input.plan.verification?.at?.toISOString() ?? addDays(input.plan.reportingDate, 4).toISOString(),
       });
     }
@@ -1541,7 +1554,7 @@ async function recreateSubmissionTrail(input: {
       actorName: userName(reporter),
       actorRole: reporterPlan.membershipRole,
       actorUnitName: reporterUnit?.name ?? null,
-      note: "Seeded Galgotias demo achievement.",
+      note: `Seeded ${DEMO_LABEL} achievement.`,
       createdAt: input.plan.reportingDate,
     },
   ];
@@ -1653,7 +1666,7 @@ async function ensureGalgotiaDemoKpis(input: {
       periodId: period.id,
       categoryId: researchCategory.id,
       title: "Research Output and Publications",
-      description: "Galgotias publications, books, conference papers, and PhD outcomes.",
+      description: `${DEMO_LABEL} publications, books, conference papers, and PhD outcomes.`,
       weightage: 45,
       sortOrder: 1,
       createdByUserId: input.ownerUserId,
@@ -1666,7 +1679,7 @@ async function ensureGalgotiaDemoKpis(input: {
       periodId: period.id,
       categoryId: innovationCategory.id,
       title: "Research Projects, Grants and Intellectual Property",
-      description: "Galgotias grant, consultancy, patent, and project-based incentive KPIs.",
+      description: `${DEMO_LABEL} grant, consultancy, patent, and project-based incentive KPIs.`,
       weightage: 35,
       sortOrder: 2,
       createdByUserId: input.ownerUserId,
@@ -1679,7 +1692,7 @@ async function ensureGalgotiaDemoKpis(input: {
       periodId: period.id,
       categoryId: outreachCategory.id,
       title: "Academic Events and Executive Education",
-      description: "Galgotias convenor, training, and executive education incentive KPIs.",
+      description: `${DEMO_LABEL} convenor, training, and executive education incentive KPIs.`,
       weightage: 20,
       sortOrder: 3,
       createdByUserId: input.ownerUserId,
@@ -1700,7 +1713,7 @@ async function ensureGalgotiaDemoKpis(input: {
   for (const plan of KPI_PLANS) {
     const template = templateByCode.get(plan.templateCode);
     if (!template) {
-      throw new Error(`Missing Galgotias template ${plan.templateCode}.`);
+      throw new Error(`Missing demo template ${plan.templateCode}.`);
     }
     const title = ((template.builderPayload as { definition?: { title?: string } }).definition?.title ?? "").trim();
     if (!title) {
@@ -1948,6 +1961,19 @@ async function finalizePeriodState(periodId: string) {
 
 async function main() {
   const { tenant, superadmin, ownerUser } = await ensureTenantAndSuperadmin();
+  if (ENABLE_ACCREDITATION_SERVICE) {
+    const result = await setTenantServiceEntitlement({
+      tenantId: tenant.id,
+      serviceCode: TenantServiceCode.ACCREDITATION,
+      enabled: true,
+      actorUserId: superadmin.id,
+      actorRole: "SUPERADMIN" satisfies Role,
+      notes: `Enabled during ${DEMO_LABEL} seed.`,
+    });
+    if (result.status === "error") {
+      throw new Error(result.message);
+    }
+  }
   const { version, unitMap } = await ensurePublishedStructure(tenant.id, ownerUser.id);
   const roleMap = await ensureRoleDefinitions(tenant.id, ownerUser.id);
   const users = await syncUsers({
@@ -1993,7 +2019,7 @@ async function main() {
     prisma.achievement.count({ where: { tenantId: tenant.id, periodId: period.id } }),
   ]);
 
-  console.log("Galgotias demo seed completed.", {
+  console.log(`${DEMO_TENANT_NAME} seed completed.`, {
     database: "postgresql://postgres:123@localhost:5432/logrequest",
     superadmin: superadmin.officialEmail,
     tenant: {
@@ -2018,13 +2044,13 @@ async function main() {
       allocations: allocationCount,
       achievements: achievementCount,
     },
-    note: "Use `npm run seed:galgotia:templates` if you only want the Galgotias system templates without the full demo tenant.",
+    note: "Use `npm run seed:galgotia:templates` if you only want the seeded system KPI templates without the full demo tenant.",
   });
 }
 
 main()
   .catch((error) => {
-    console.error("Failed to seed Galgotias demo data.");
+    console.error(`Failed to seed ${DEMO_TENANT_NAME} data.`);
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
   })

@@ -81,6 +81,7 @@ const kraKpiErrorStatusMap: Record<string, number> = {
   EXTERNAL_TEMPLATE_ARCHIVED: 400,
   KPI_TEMPLATE_NOT_FOUND: 404,
   KPI_TEMPLATE_WRONG_TENANT: 400,
+  STARTER_TEMPLATE_ALREADY_APPLIED: 409,
   KPI_COPY_SOURCE_NOT_FOUND: 404,
   REWARD_CONFIG_INVALID: 400,
 };
@@ -320,6 +321,8 @@ export type KpiDefinitionView = {
   kraState: KraDefinitionState;
   title: string;
   description: string | null;
+  sourceTemplateCode: string | null;
+  sourceTemplatePackKey: string | null;
   measurementType: KpiMeasurementType;
   unitLabel: string | null;
   weightage: number;

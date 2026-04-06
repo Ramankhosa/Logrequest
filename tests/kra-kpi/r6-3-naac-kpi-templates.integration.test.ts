@@ -8,7 +8,11 @@ import {
 import { prisma } from "@/lib/prisma";
 import { createKra } from "@/lib/kra-kpi/kra-service";
 import { createPeriod } from "@/lib/kra-kpi/period-service";
-import { applyTemplateToKpi, listKpiTemplates } from "@/lib/kra-kpi/kpi-template-service";
+import {
+  applyTemplatePackToKra,
+  applyTemplateToKpi,
+  listKpiTemplates,
+} from "@/lib/kra-kpi/kpi-template-service";
 import {
   cleanupTrackedData,
   createTenantActor,
@@ -162,6 +166,16 @@ describe("R6.3 NAAC KPI starter templates", () => {
     );
     expect(applyResult.status).toBe("success");
 
+    const persistedKpi = await prisma.kpiDefinition.findUniqueOrThrow({
+      where: { id: applyResult.id! },
+      select: {
+        sourceTemplateCode: true,
+        sourceTemplatePackKey: true,
+      },
+    });
+    expect(persistedKpi.sourceTemplateCode).toBe("SYSTEM_NAAC_UNIV_RESEARCH_PUBLICATION");
+    expect(persistedKpi.sourceTemplatePackKey).toBe("NAAC_UNIVERSITY_2019_FACULTY_STARTER");
+
     const linkCount = await prisma.kpiAccreditationBlockLink.count({
       where: {
         tenantId: fixture.tenant.id,
@@ -278,5 +292,120 @@ describe("R6.3 NAAC KPI starter templates", () => {
     expect(links[0]?.block.blockCode).toBe("METRIC_3.4.5");
     expect(links[0]?.block.version.versionCode).toBe("UNIVERSITY_MANUAL_DEC_2019");
     expect(links[0]?.block.version.body.code).toBe("NAAC");
+  });
+
+  test("bulk starter-pack apply creates draft KPIs and skips duplicates", async () => {
+    const fixture = await createNaacTemplateFixture();
+
+    const templates = await listKpiTemplates(fixture.tenant.id);
+    const starterTemplates = templates.filter(
+      (row) =>
+        row.category === "NAAC_STARTER" &&
+        (row.builderPayload as { meta?: { starterPackKey?: string | null } }).meta?.starterPackKey
+          === "NAAC_UNIVERSITY_2019_FACULTY_STARTER",
+    );
+    expect(starterTemplates.length).toBeGreaterThan(2);
+
+    const firstTemplate = starterTemplates[0]!;
+    const secondTemplate = starterTemplates[1]!;
+    const thirdTemplate = starterTemplates[2]!;
+
+    const firstApply = await applyTemplateToKpi(
+      fixture.tenant.id,
+      firstTemplate.id,
+      {
+        kraDefinitionId: fixture.kra.id,
+        startingUnitId: fixture.unit.id,
+      },
+      fixture.actor.id,
+      "TENANT_OWNER",
+    );
+    expect(firstApply.status).toBe("success");
+
+    const bulkResult = await applyTemplatePackToKra(
+      fixture.tenant.id,
+      {
+        kraDefinitionId: fixture.kra.id,
+        starterPackKey: "NAAC_UNIVERSITY_2019_FACULTY_STARTER",
+        startingUnitId: fixture.unit.id,
+        templateIds: [firstTemplate.id, secondTemplate.id, thirdTemplate.id],
+      },
+      fixture.actor.id,
+      "TENANT_OWNER",
+    );
+
+    expect(bulkResult.status).toBe("success");
+    expect(bulkResult.createdCount).toBe(2);
+    expect(bulkResult.createdKpiIds).toHaveLength(2);
+    expect(bulkResult.skippedDuplicates).toHaveLength(1);
+    expect(bulkResult.skippedDuplicates[0]?.templateCode).toBe(firstTemplate.code);
+    expect(bulkResult.failedTemplates).toHaveLength(0);
+
+    const persisted = await prisma.kpiDefinition.findMany({
+      where: {
+        kraDefinitionId: fixture.kra.id,
+        id: { in: bulkResult.createdKpiIds },
+      },
+      select: {
+        id: true,
+        state: true,
+        defaultTarget: true,
+        startingUnitId: true,
+        sourceTemplatePackKey: true,
+      },
+    });
+    expect(persisted).toHaveLength(2);
+    expect(persisted.every((row) => row.state === "DRAFT")).toBe(true);
+    expect(persisted.every((row) => row.defaultTarget === null)).toBe(true);
+    expect(persisted.every((row) => row.startingUnitId === fixture.unit.id)).toBe(true);
+    expect(
+      persisted.every((row) => row.sourceTemplatePackKey === "NAAC_UNIVERSITY_2019_FACULTY_STARTER"),
+    ).toBe(true);
+  });
+
+  test("applying the same starter template twice in the same KRA is blocked", async () => {
+    const fixture = await createNaacTemplateFixture();
+
+    const templates = await listKpiTemplates(fixture.tenant.id);
+    const publicationTemplate = templates.find(
+      (row) => row.code === "SYSTEM_NAAC_UNIV_RESEARCH_PUBLICATION",
+    );
+    expect(publicationTemplate).toBeTruthy();
+
+    const firstApply = await applyTemplateToKpi(
+      fixture.tenant.id,
+      publicationTemplate!.id,
+      {
+        kraDefinitionId: fixture.kra.id,
+        titleOverride: "NAAC Publication KPI",
+        startingUnitId: fixture.unit.id,
+      },
+      fixture.actor.id,
+      "TENANT_OWNER",
+    );
+    expect(firstApply.status).toBe("success");
+
+    const secondApply = await applyTemplateToKpi(
+      fixture.tenant.id,
+      publicationTemplate!.id,
+      {
+        kraDefinitionId: fixture.kra.id,
+        titleOverride: "NAAC Publication KPI Duplicate",
+        startingUnitId: fixture.unit.id,
+      },
+      fixture.actor.id,
+      "TENANT_OWNER",
+    );
+    expect(secondApply.status).toBe("error");
+    expect(secondApply.code).toBe("STARTER_TEMPLATE_ALREADY_APPLIED");
+
+    const persisted = await prisma.kpiDefinition.findMany({
+      where: {
+        kraDefinitionId: fixture.kra.id,
+        sourceTemplateCode: "SYSTEM_NAAC_UNIV_RESEARCH_PUBLICATION",
+      },
+      select: { id: true },
+    });
+    expect(persisted).toHaveLength(1);
   });
 });

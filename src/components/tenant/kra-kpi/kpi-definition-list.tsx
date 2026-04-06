@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Plus,
   Pencil,
@@ -13,12 +13,18 @@ import {
   ChevronRight,
   Zap,
   Undo2,
+  CopyPlus,
+  X,
 } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
 import {
   getMeasurementCapValue,
   type MeasurementConfig,
 } from "@/lib/kra-kpi/shared";
+import {
+  NAAC_TEMPLATE_CATEGORY,
+  NAAC_UNIVERSITY_STARTER_PACK_KEY,
+} from "@/lib/kra-kpi/naac-template-constants";
 import { KpiBuilderForm } from "./kpi-builder-form";
 
 type KpiView = {
@@ -28,6 +34,8 @@ type KpiView = {
   kraState: string;
   title: string;
   description: string | null;
+  sourceTemplateCode?: string | null;
+  sourceTemplatePackKey?: string | null;
   measurementType: string;
   unitLabel: string | null;
   weightage: number;
@@ -56,6 +64,18 @@ type KpiView = {
 };
 
 type UnitOption = { id: string; name: string };
+type TemplateRow = {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  builderPayload?: {
+    meta?: {
+      starterPackKey?: string | null;
+    };
+  };
+};
 
 export function KpiDefinitionList({
   kraDefinitionId,
@@ -79,9 +99,25 @@ export function KpiDefinitionList({
     message: string;
   } | null>(null);
   const [addingNew, setAddingNew] = useState(false);
+  const [starterPackOpen, setStarterPackOpen] = useState(false);
+  const [starterTemplates, setStarterTemplates] = useState<TemplateRow[]>([]);
+  const [starterTemplatesLoading, setStarterTemplatesLoading] = useState(false);
+  const [starterPackError, setStarterPackError] = useState<string | null>(null);
+  const [starterPackStartingUnitId, setStarterPackStartingUnitId] = useState("");
+  const [selectedStarterTemplateIds, setSelectedStarterTemplateIds] = useState<string[]>([]);
+  const [starterPackSubmitting, setStarterPackSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
   const [enabledServices, setEnabledServices] = useState<string[]>([]);
+  const appliedStarterTemplateCodes = useMemo(
+    () =>
+      new Set(
+        kpis
+          .map((kpi) => kpi.sourceTemplateCode)
+          .filter((code): code is string => typeof code === "string" && code.length > 0),
+      ),
+    [kpis],
+  );
 
   const fetchData = useCallback(async () => {
     try {
@@ -144,9 +180,137 @@ export function KpiDefinitionList({
     };
   }, []);
 
+  useEffect(() => {
+    if (!starterPackOpen || starterTemplates.length === 0) {
+      return;
+    }
+    setSelectedStarterTemplateIds((current) =>
+      current.filter((templateId) => {
+        const template = starterTemplates.find((row) => row.id === templateId);
+        return template ? !appliedStarterTemplateCodes.has(template.code) : false;
+      }),
+    );
+  }, [appliedStarterTemplateCodes, starterPackOpen, starterTemplates]);
+
   const showFeedback = (type: "success" | "error", message: string) => {
     setFeedback({ type, message });
     setTimeout(() => setFeedback(null), 3500);
+  };
+
+  const loadStarterPackTemplates = useCallback(async () => {
+    setStarterTemplatesLoading(true);
+    setStarterPackError(null);
+    try {
+      const response = await fetch("/api/tenant/kra-kpi/kpi-templates", {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error("Failed to load KPI starter templates.");
+      }
+      const rows = (await response.json()) as TemplateRow[];
+      const templates = rows.filter((template) => {
+        const starterPackKey = template.builderPayload?.meta?.starterPackKey ?? null;
+        return (
+          starterPackKey === NAAC_UNIVERSITY_STARTER_PACK_KEY &&
+          template.category === NAAC_TEMPLATE_CATEGORY
+        );
+      });
+      setStarterTemplates(templates);
+      setSelectedStarterTemplateIds(
+        templates
+          .filter((template) => !appliedStarterTemplateCodes.has(template.code))
+          .map((template) => template.id),
+      );
+    } catch (loadError) {
+      setStarterPackError(
+        loadError instanceof Error ? loadError.message : "Failed to load KPI starter templates.",
+      );
+    } finally {
+      setStarterTemplatesLoading(false);
+    }
+  }, [appliedStarterTemplateCodes]);
+
+  const openStarterPack = useCallback(() => {
+    setAddingNew(false);
+    setEditingId(null);
+    setStarterPackOpen(true);
+    setStarterPackStartingUnitId((current) => current || units[0]?.id || "");
+    void loadStarterPackTemplates();
+  }, [loadStarterPackTemplates, units]);
+
+  const closeStarterPack = useCallback(() => {
+    setStarterPackOpen(false);
+    setStarterPackError(null);
+    setStarterPackSubmitting(false);
+  }, []);
+
+  const handleStarterTemplateToggle = (templateId: string, checked: boolean) => {
+    setSelectedStarterTemplateIds((current) => {
+      if (checked) {
+        return current.includes(templateId) ? current : [...current, templateId];
+      }
+      return current.filter((value) => value !== templateId);
+    });
+  };
+
+  const handleStarterPackApply = async () => {
+    if (!starterPackStartingUnitId || selectedStarterTemplateIds.length === 0) {
+      return;
+    }
+
+    setStarterPackSubmitting(true);
+    setStarterPackError(null);
+    try {
+      const response = await fetch("/api/tenant/kra-kpi/kpi-template-packs/apply", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          kraDefinitionId,
+          starterPackKey: NAAC_UNIVERSITY_STARTER_PACK_KEY,
+          startingUnitId: starterPackStartingUnitId,
+          templateIds: selectedStarterTemplateIds,
+        }),
+      });
+      const data = (await response.json()) as {
+        status: "success" | "error";
+        message: string;
+        createdCount?: number;
+        skippedDuplicates?: Array<unknown>;
+        failedTemplates?: Array<unknown>;
+      };
+
+      if (!response.ok || data.status === "error") {
+        setStarterPackError(data.message ?? "Failed to apply starter pack.");
+        return;
+      }
+
+      const failureCount = Array.isArray(data.failedTemplates) ? data.failedTemplates.length : 0;
+      const duplicateCount = Array.isArray(data.skippedDuplicates)
+        ? data.skippedDuplicates.length
+        : 0;
+      const createdCount = typeof data.createdCount === "number" ? data.createdCount : 0;
+      const summaryParts = [`Created ${createdCount} starter KPI${createdCount === 1 ? "" : "s"}.`];
+      if (duplicateCount > 0) {
+        summaryParts.push(`Skipped ${duplicateCount} already applied template${duplicateCount === 1 ? "" : "s"}.`);
+      }
+      if (failureCount > 0) {
+        summaryParts.push(`${failureCount} template${failureCount === 1 ? "" : "s"} failed.`);
+      }
+      showFeedback(
+        createdCount > 0 || duplicateCount > 0 ? "success" : "error",
+        summaryParts.join(" "),
+      );
+      closeStarterPack();
+      await fetchData();
+    } catch (applyError) {
+      setStarterPackError(
+        applyError instanceof Error ? applyError.message : "Failed to apply starter pack.",
+      );
+    } finally {
+      setStarterPackSubmitting(false);
+    }
   };
 
   const handleDelete = async (kpi: KpiView) => {
@@ -253,19 +417,40 @@ export function KpiDefinitionList({
           </div>
         </div>
         {!addingNew && (
-          <button
-            type="button"
-            onClick={() => setAddingNew(true)}
-            disabled={noUnitsAvailable}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-            title={
-              noUnitsAvailable
-                ? "Create or publish at least one structure unit before adding KPIs."
-                : "Add KPI"
-            }
-          >
-            <Plus className="h-4 w-4" /> Add KPI
-          </button>
+          <div className="flex items-center gap-2">
+            {!starterPackOpen && (
+              <button
+                type="button"
+                onClick={openStarterPack}
+                disabled={noUnitsAvailable}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                title={
+                  noUnitsAvailable
+                    ? "Create or publish at least one structure unit before applying starter KPIs."
+                    : "Apply Starter Pack"
+                }
+              >
+                <CopyPlus className="h-4 w-4" /> Apply Starter Pack
+              </button>
+            )}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingId(null);
+                  setStarterPackOpen(false);
+                  setAddingNew(true);
+                }}
+              disabled={noUnitsAvailable}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                noUnitsAvailable
+                  ? "Create or publish at least one structure unit before adding KPIs."
+                  : "Add KPI"
+              }
+            >
+              <Plus className="h-4 w-4" /> Add KPI
+            </button>
+          </div>
         )}
       </div>
 
@@ -297,6 +482,137 @@ export function KpiDefinitionList({
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           )}
           {feedback.message}
+        </div>
+      )}
+
+      {starterPackOpen && !noUnitsAvailable && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h4 className="text-sm font-semibold text-slate-900">
+                NAAC University 2019 Faculty Starter
+              </h4>
+              <p className="mt-1 text-xs text-slate-500">
+                Apply ready-made NAAC faculty KPI templates into this KRA. Targets stay blank so your team can plan allocations later.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={closeStarterPack}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:text-slate-800"
+              title="Close starter pack"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,240px)_1fr]">
+            <div className="space-y-2">
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Starting Unit
+              </label>
+              <select
+                value={starterPackStartingUnitId}
+                onChange={(event) => setStarterPackStartingUnitId(event.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
+              >
+                <option value="">Select starting unit...</option>
+                {units.map((unit) => (
+                  <option key={unit.id} value={unit.id}>
+                    {unit.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-400">
+                One shared starting unit is used for all selected starter KPIs in this batch.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {starterPackError && (
+                <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  {starterPackError}
+                </div>
+              )}
+
+              {starterTemplatesLoading ? (
+                <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading starter templates...
+                </div>
+              ) : starterTemplates.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 px-3 py-6 text-sm text-slate-500">
+                  No NAAC starter templates are available.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {starterTemplates.map((template) => {
+                    const alreadyApplied = appliedStarterTemplateCodes.has(template.code);
+                    const checked = selectedStarterTemplateIds.includes(template.id);
+                    return (
+                      <label
+                        key={template.id}
+                        className={`flex items-start gap-3 rounded-xl border px-3 py-3 text-sm ${
+                          alreadyApplied
+                            ? "border-slate-200 bg-slate-50 text-slate-400"
+                            : "border-slate-200 bg-white text-slate-700"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={alreadyApplied}
+                          onChange={(event) => handleStarterTemplateToggle(template.id, event.target.checked)}
+                          className="mt-1 h-4 w-4 rounded border-slate-300"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-semibold text-slate-900">{template.name}</span>
+                            {alreadyApplied && (
+                              <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                                Already applied
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {template.description ?? "Ready-made starter KPI template."}
+                          </p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={closeStarterPack}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleStarterPackApply()}
+                  disabled={
+                    starterPackSubmitting ||
+                    !starterPackStartingUnitId ||
+                    selectedStarterTemplateIds.length === 0
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {starterPackSubmitting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CopyPlus className="h-4 w-4" />
+                  )}
+                  Apply Selected Starter KPIs
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -442,7 +758,10 @@ export function KpiDefinitionList({
                   )}
                   <button
                     type="button"
-                    onClick={() => setEditingId(kpi.id)}
+                    onClick={() => {
+                      setStarterPackOpen(false);
+                      setEditingId(kpi.id);
+                    }}
                     className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-blue-200 hover:text-blue-600"
                     title="Edit"
                   >

@@ -35,6 +35,10 @@ import {
   applyTemplateToDraftPayload,
   createEmptyBuilderPayload,
 } from "@/lib/kra-kpi/kpi-builder-client";
+import {
+  NAAC_TEMPLATE_CATEGORY,
+  NAAC_UNIVERSITY_STARTER_PACK_KEY,
+} from "@/lib/kra-kpi/naac-template-constants";
 
 type UnitOption = { id: string; name: string };
 type WorkflowReviewerOption = {
@@ -483,6 +487,41 @@ export function KpiBuilderForm({
   );
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? null;
+  const starterTemplates = useMemo(
+    () =>
+      templates.filter(
+        (template) =>
+          template.category === NAAC_TEMPLATE_CATEGORY &&
+          template.builderPayload.meta?.starterPackKey === NAAC_UNIVERSITY_STARTER_PACK_KEY,
+      ),
+    [templates],
+  );
+  const tenantTemplates = useMemo(
+    () => templates.filter((template) => !template.isSystem),
+    [templates],
+  );
+  const systemTemplates = useMemo(
+    () =>
+      templates.filter(
+        (template) =>
+          template.isSystem &&
+          !(
+            template.category === NAAC_TEMPLATE_CATEGORY &&
+            template.builderPayload.meta?.starterPackKey === NAAC_UNIVERSITY_STARTER_PACK_KEY
+          ),
+      ),
+    [templates],
+  );
+
+  const describeTemplateOption = (template: TemplateRow) => {
+    if (
+      template.category === NAAC_TEMPLATE_CATEGORY &&
+      template.builderPayload.meta?.starterPackKey === NAAC_UNIVERSITY_STARTER_PACK_KEY
+    ) {
+      return `${template.name} (NAAC Starter)`;
+    }
+    return `${template.name} ${template.isSystem ? "(System)" : "(Tenant)"}`;
+  };
 
   const updateDefinition = <K extends keyof KpiBuilderPayload["definition"]>(
     key: K,
@@ -724,16 +763,45 @@ export function KpiBuilderForm({
               className={inputCls}
             >
               <option value="">Blank KPI</option>
-              {templates.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name} {template.isSystem ? "(System)" : "(Tenant)"}
-                </option>
-              ))}
+              {starterTemplates.length > 0 ? (
+                <optgroup label="NAAC Starter Pack">
+                  {starterTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {describeTemplateOption(template)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {systemTemplates.length > 0 ? (
+                <optgroup label="System Templates">
+                  {systemTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {describeTemplateOption(template)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {tenantTemplates.length > 0 ? (
+                <optgroup label="Tenant Templates">
+                  {tenantTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {describeTemplateOption(template)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
             </select>
             {selectedTemplate ? (
-              <p className="mt-2 text-xs text-slate-500">
-                {selectedTemplate.description ?? "This template preloads fields, roles, policies, tiers, and rewards."}
-              </p>
+              <div className="mt-2 space-y-1 text-xs text-slate-500">
+                {selectedTemplate.category === NAAC_TEMPLATE_CATEGORY ? (
+                  <div className="font-semibold text-amber-700">
+                    NAAC starter template
+                  </div>
+                ) : null}
+                <p>
+                  {selectedTemplate.description ?? "This template preloads fields, roles, policies, tiers, and rewards."}
+                </p>
+              </div>
             ) : null}
             <button
               type="button"

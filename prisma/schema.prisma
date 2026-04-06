@@ -2653,6 +2653,8 @@ model KpiDefinition {
   kraDefinitionId                        String
   title                                  String
   description                            String?
+  sourceTemplateCode                     String?
+  sourceTemplatePackKey                  String?
   // ── Measurement ──
   measurementType                        KpiMeasurementType        @default(NUMERIC)
   unitLabel                              String? // "count", "%", "INR", "days"
@@ -2715,12 +2717,14 @@ model KpiDefinition {
   contributorRewards      ContributorReward[]
   accreditationBlockLinks KpiAccreditationBlockLink[]
 
+  @@unique([kraDefinitionId, sourceTemplateCode])
   @@index([kraDefinitionId])
   @@index([startingUnitId])
   @@index([keyUnitId])
   @@index([finalUnitId])
   @@index([keyReviewerUserId])
   @@index([finalReviewerUserId])
+  @@index([sourceTemplatePackKey])
 }
 
 model BenefitType {

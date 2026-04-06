@@ -52,6 +52,66 @@ function getPayloadAccreditationRefs(payload: KpiBuilderPayload): KpiTemplateAcc
   return payload.meta?.accreditationRefs ?? [];
 }
 
+function getPayloadStarterPackKey(payload: KpiBuilderPayload): string | null {
+  const starterPackKey = payload.meta?.starterPackKey?.trim();
+  return starterPackKey ? starterPackKey : null;
+}
+
+type TemplateStarterProvenance = {
+  sourceTemplateCode: string | null;
+  sourceTemplatePackKey: string | null;
+};
+
+function getTemplateStarterProvenance(input: {
+  templateCode: string;
+  payload: KpiBuilderPayload;
+}): TemplateStarterProvenance {
+  const sourceTemplatePackKey = getPayloadStarterPackKey(input.payload);
+  return {
+    sourceTemplateCode: sourceTemplatePackKey ? input.templateCode : null,
+    sourceTemplatePackKey,
+  };
+}
+
+async function findStarterTemplateDuplicate(input: {
+  kraDefinitionId: string;
+  sourceTemplateCode: string;
+  excludeKpiId?: string | null;
+}) {
+  return prisma.kpiDefinition.findFirst({
+    where: {
+      kraDefinitionId: input.kraDefinitionId,
+      sourceTemplateCode: input.sourceTemplateCode,
+      ...(input.excludeKpiId ? { id: { not: input.excludeKpiId } } : {}),
+    },
+    select: {
+      id: true,
+      title: true,
+    },
+  });
+}
+
+export type ApplyTemplatePackResult = {
+  status: "success" | "error";
+  message: string;
+  createdCount: number;
+  createdKpiIds: string[];
+  skippedDuplicates: Array<{
+    templateId: string;
+    templateCode: string;
+    templateName: string;
+    existingKpiId?: string;
+    existingKpiTitle?: string;
+  }>;
+  failedTemplates: Array<{
+    templateId: string;
+    templateCode: string;
+    templateName: string;
+    message: string;
+    code?: string;
+  }>;
+};
+
 function lifecyclePriority(lifecycleStatus: string): number {
   switch (lifecycleStatus) {
     case "PUBLISHED":
@@ -925,6 +985,27 @@ export async function applyTemplateToKpi(
   await seedDefaultBenefitTypes(tenantId);
 
   const payload = (template.builderPayload as KpiBuilderPayload);
+  const provenance = getTemplateStarterProvenance({
+    templateCode: template.code,
+    payload,
+  });
+
+  if (provenance.sourceTemplateCode) {
+    const duplicate = await findStarterTemplateDuplicate({
+      kraDefinitionId: target.kraDefinitionId,
+      sourceTemplateCode: provenance.sourceTemplateCode,
+      excludeKpiId: target.kpiId ?? null,
+    });
+    if (duplicate) {
+      return {
+        status: "error",
+        message: `Starter template "${template.name}" is already applied to KPI "${duplicate.title}" in this KRA.`,
+        code: "STARTER_TEMPLATE_ALREADY_APPLIED",
+        id: duplicate.id,
+      };
+    }
+  }
+
   const saveResult = await saveKpiBuilder(
     tenantId,
     {
@@ -939,6 +1020,7 @@ export async function applyTemplateToKpi(
     },
     actorUserId,
     actorRole,
+    provenance,
   );
 
   if (saveResult.status !== "success" || !saveResult.id) {
@@ -959,4 +1041,142 @@ export async function applyTemplateToKpi(
   }
 
   return saveResult;
+}
+
+export async function applyTemplatePackToKra(
+  tenantId: string,
+  input: {
+    kraDefinitionId: string;
+    starterPackKey: string;
+    startingUnitId: string;
+    templateIds: string[];
+  },
+  actorUserId: string,
+  actorRole: Role,
+): Promise<ApplyTemplatePackResult> {
+  await seedSystemKpiTemplates();
+
+  const templateIds = Array.from(
+    new Set(input.templateIds.map((templateId) => templateId.trim()).filter(Boolean)),
+  );
+  if (templateIds.length === 0) {
+    return {
+      status: "error",
+      message: "Select at least one starter template to apply.",
+      createdCount: 0,
+      createdKpiIds: [],
+      skippedDuplicates: [],
+      failedTemplates: [],
+    };
+  }
+
+  const templates = await prisma.kpiTemplate.findMany({
+    where: {
+      id: { in: templateIds },
+      OR: [{ tenantId }, { tenantId: null, isSystem: true }],
+      isActive: true,
+    },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      builderPayload: true,
+    },
+  });
+  const templateById = new Map(templates.map((template) => [template.id, template]));
+
+  const createdKpiIds: string[] = [];
+  const skippedDuplicates: ApplyTemplatePackResult["skippedDuplicates"] = [];
+  const failedTemplates: ApplyTemplatePackResult["failedTemplates"] = [];
+
+  for (const templateId of templateIds) {
+    const template = templateById.get(templateId);
+    if (!template) {
+      failedTemplates.push({
+        templateId,
+        templateCode: "",
+        templateName: "",
+        message: "KPI template not found.",
+        code: "KPI_TEMPLATE_NOT_FOUND",
+      });
+      continue;
+    }
+
+    const starterPackKey = getPayloadStarterPackKey(template.builderPayload as KpiBuilderPayload);
+    if (starterPackKey !== input.starterPackKey) {
+      failedTemplates.push({
+        templateId: template.id,
+        templateCode: template.code,
+        templateName: template.name,
+        message: `Template "${template.name}" does not belong to starter pack "${input.starterPackKey}".`,
+        code: "KPI_TEMPLATE_WRONG_TENANT",
+      });
+      continue;
+    }
+
+    const result = await applyTemplateToKpi(
+      tenantId,
+      template.id,
+      {
+        kraDefinitionId: input.kraDefinitionId,
+        startingUnitId: input.startingUnitId,
+      },
+      actorUserId,
+      actorRole,
+    );
+
+    if (result.status === "success" && result.id) {
+      createdKpiIds.push(result.id);
+      continue;
+    }
+
+    if (result.code === "STARTER_TEMPLATE_ALREADY_APPLIED") {
+      const existing = result.id
+        ? await prisma.kpiDefinition.findUnique({
+            where: { id: result.id },
+            select: { id: true, title: true },
+          })
+        : null;
+      skippedDuplicates.push({
+        templateId: template.id,
+        templateCode: template.code,
+        templateName: template.name,
+        existingKpiId: existing?.id,
+        existingKpiTitle: existing?.title,
+      });
+      continue;
+    }
+
+    failedTemplates.push({
+      templateId: template.id,
+      templateCode: template.code,
+      templateName: template.name,
+      message: result.message,
+      code: result.code,
+    });
+  }
+
+  const createdCount = createdKpiIds.length;
+  const messageParts = [
+    `${createdCount} starter KPI${createdCount === 1 ? "" : "s"} created`,
+  ];
+  if (skippedDuplicates.length > 0) {
+    messageParts.push(
+      `${skippedDuplicates.length} duplicate${skippedDuplicates.length === 1 ? "" : "s"} skipped`,
+    );
+  }
+  if (failedTemplates.length > 0) {
+    messageParts.push(
+      `${failedTemplates.length} failed`,
+    );
+  }
+
+  return {
+    status: "success",
+    message: messageParts.join(", "),
+    createdCount,
+    createdKpiIds,
+    skippedDuplicates,
+    failedTemplates,
+  };
 }

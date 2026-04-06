@@ -954,6 +954,10 @@ export async function saveKpiBuilder(
   input: KpiBuilderPayloadInput,
   actorUserId: string,
   actorRole: Role,
+  options?: {
+    sourceTemplateCode?: string | null;
+    sourceTemplatePackKey?: string | null;
+  },
 ): Promise<KraKpiActionResult> {
   if (!(await canManageKpiBuilder(tenantId, actorUserId, actorRole))) {
     return {
@@ -1108,6 +1112,12 @@ export async function saveKpiBuilder(
       kraDefinitionId: payload.definition.kraDefinitionId,
       title: payload.definition.title,
       description: normalizeNullableString(payload.definition.description ?? null),
+      ...(options
+        ? {
+            sourceTemplateCode: normalizeNullableString(options.sourceTemplateCode ?? null),
+            sourceTemplatePackKey: normalizeNullableString(options.sourceTemplatePackKey ?? null),
+          }
+        : {}),
       measurementType: payload.definition.measurementType,
       unitLabel: normalizeNullableString(payload.definition.unitLabel ?? null),
       weightage: payload.definition.weightage,

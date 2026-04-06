@@ -1,9 +1,11 @@
 import "dotenv/config";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { AccreditationScope } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { importSuperadminAccreditationTemplateBundle } from "@/lib/accreditation/template-bundle-import-service";
+import { seedSystemKpiTemplates } from "@/lib/kra-kpi/kpi-template-service";
 
 const defaultSeedDir = path.resolve("prisma/seed-data/accreditation");
 
@@ -23,7 +25,7 @@ function printUsage() {
   );
 }
 
-async function resolveActorUserId() {
+export async function resolveActorUserId() {
   const actorUserId = process.env.ACCREDITATION_TEMPLATE_SEED_ACTOR_USER_ID?.trim();
   if (actorUserId) {
     return actorUserId;
@@ -45,7 +47,7 @@ async function resolveActorUserId() {
   return superadmin.id;
 }
 
-async function resolveSeedFiles(arg: string | undefined) {
+export async function resolveSeedFiles(arg: string | undefined) {
   if (!arg) {
     const entries = await fs.readdir(defaultSeedDir, { withFileTypes: true });
     return entries
@@ -62,20 +64,12 @@ async function resolveSeedFiles(arg: string | undefined) {
   return [explicitPath];
 }
 
-async function main() {
-  const firstArg = process.argv[2];
-  if (firstArg === "--help" || firstArg === "-h") {
-    printUsage();
-    return;
-  }
-
-  const actorUserId = await resolveActorUserId();
-  const files = await resolveSeedFiles(firstArg);
-
-  if (files.length === 0) {
-    console.log("No accreditation template bundles found to seed.");
-    return;
-  }
+export async function seedAccreditationTemplateBundles(
+  files: string[],
+  actorUserId: string,
+) {
+  let seededCount = 0;
+  let skippedCount = 0;
 
   for (const filePath of files) {
     const absolutePath = path.resolve(filePath);
@@ -116,6 +110,7 @@ async function main() {
         console.log(
           `Skipping ${bodyCode} / ${versionCode}: already seeded as version ${existingVersion.id}.`,
         );
+        skippedCount += 1;
         continue;
       }
 
@@ -135,14 +130,57 @@ async function main() {
     console.log(
       `Seeded ${bodyCode} / ${versionCode} -> ${result.version.id} (${result.version.lifecycleStatus})`,
     );
+    seededCount += 1;
   }
+
+  await seedSystemKpiTemplates();
+  const systemTemplateCount = await prisma.kpiTemplate.count({
+    where: {
+      tenantId: null,
+      isSystem: true,
+    },
+  });
+
+  console.log(
+    `Accreditation bundles processed: seeded ${seededCount}, skipped ${skippedCount}.`,
+  );
+  console.log(`System KPI templates ensured: ${systemTemplateCount}.`);
+
+  return {
+    seededCount,
+    skippedCount,
+    systemTemplateCount,
+  };
 }
 
-main()
-  .catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+async function main() {
+  const firstArg = process.argv[2];
+  if (firstArg === "--help" || firstArg === "-h") {
+    printUsage();
+    return;
+  }
+
+  const actorUserId = await resolveActorUserId();
+  const files = await resolveSeedFiles(firstArg);
+
+  if (files.length === 0) {
+    console.log("No accreditation template bundles found to seed.");
+  }
+
+  await seedAccreditationTemplateBundles(files, actorUserId);
+}
+
+const isDirectRun =
+  process.argv[1] != null &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectRun) {
+  main()
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}
