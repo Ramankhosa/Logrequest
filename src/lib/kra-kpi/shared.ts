@@ -15,6 +15,15 @@ import type {
   GradeValue,
 } from "@prisma/client";
 import { z } from "zod";
+import {
+  NAAC_AWARD_TEMPLATE_KEY,
+  NAAC_COLLAB_ACTIVITY_TEMPLATE_KEY,
+  NAAC_ECONTENT_TEMPLATE_KEY,
+  NAAC_EXTENSION_ACTIVITY_TEMPLATE_KEY,
+  NAAC_EXTENSION_AWARD_TEMPLATE_KEY,
+  NAAC_FELLOWSHIP_TEMPLATE_KEY,
+  NAAC_RESEARCH_EVENT_TEMPLATE_KEY,
+} from "./naac-template-constants";
 
 // ── Action Result ────────────────────────────────────────────────────────────
 
@@ -1377,6 +1386,69 @@ export const ACHIEVEMENT_TEMPLATES: Record<string, AchievementTemplate> = {
         marker: "UNIQUE_CHECK",
       },
       { key: "approvalLink", label: "Approval / Agreement Document", type: "URL", required: true, sortOrder: 8 },
+    ],
+  },
+  [NAAC_AWARD_TEMPLATE_KEY]: {
+    label: "Academic Award / Recognition",
+    fields: [
+      { key: "awardTitle", label: "Award / Recognition Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "awardingBody", label: "Awarding Body", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "awardDate", label: "Award Date", type: "DATE", required: true, sortOrder: 2 },
+      { key: "proofLink", label: "Certificate / Citation", type: "URL", required: true, sortOrder: 3 },
+    ],
+  },
+  [NAAC_FELLOWSHIP_TEMPLATE_KEY]: {
+    label: "Fellowship / Financial Support",
+    fields: [
+      { key: "supportTitle", label: "Support Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "sponsoringBody", label: "Sponsoring Body", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "sanctionDate", label: "Sanction Date", type: "DATE", required: true, sortOrder: 2 },
+      { key: "supportProofLink", label: "Support Letter / Proof", type: "URL", required: true, sortOrder: 3 },
+    ],
+  },
+  [NAAC_ECONTENT_TEMPLATE_KEY]: {
+    label: "E-Content Development",
+    fields: [
+      { key: "contentTitle", label: "Content Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "contentType", label: "Content Type", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "publicationDate", label: "Publication Date", type: "DATE", required: true, sortOrder: 2 },
+      { key: "contentLink", label: "Content URL", type: "URL", required: true, sortOrder: 3 },
+    ],
+  },
+  [NAAC_EXTENSION_ACTIVITY_TEMPLATE_KEY]: {
+    label: "Extension / Outreach Activity",
+    fields: [
+      { key: "activityTitle", label: "Activity Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "activityType", label: "Activity Type", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 2 },
+      { key: "activityReportLink", label: "Activity Report", type: "URL", required: true, sortOrder: 3 },
+    ],
+  },
+  [NAAC_EXTENSION_AWARD_TEMPLATE_KEY]: {
+    label: "Extension Award / Recognition",
+    fields: [
+      { key: "awardTitle", label: "Award Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "awardingBody", label: "Awarding Body", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "awardDate", label: "Award Date", type: "DATE", required: true, sortOrder: 2 },
+      { key: "proofLink", label: "Certificate / Citation", type: "URL", required: true, sortOrder: 3 },
+    ],
+  },
+  [NAAC_COLLAB_ACTIVITY_TEMPLATE_KEY]: {
+    label: "Collaborative Activity",
+    fields: [
+      { key: "activityTitle", label: "Activity Title", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "partnerOrganization", label: "Partner Organization", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 2 },
+      { key: "proofLink", label: "Supporting Proof", type: "URL", required: true, sortOrder: 3 },
+    ],
+  },
+  [NAAC_RESEARCH_EVENT_TEMPLATE_KEY]: {
+    label: "Research / IPR / Skill Development Program",
+    fields: [
+      { key: "programName", label: "Program Name", type: "TEXT", required: true, sortOrder: 0 },
+      { key: "programType", label: "Program Type", type: "TEXT", required: true, sortOrder: 1 },
+      { key: "startDate", label: "Start Date", type: "DATE", required: true, sortOrder: 2 },
+      { key: "programReportLink", label: "Program Report", type: "URL", required: true, sortOrder: 3 },
     ],
   },
   FDP_WORKSHOP: {

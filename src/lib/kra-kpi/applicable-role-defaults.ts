@@ -2,6 +2,15 @@ import {
   GALGOTIA_BOOK_CHAPTER_TEMPLATE_KEY,
   GALGOTIA_EDITED_BOOK_TEMPLATE_KEY,
 } from "./galgotia-template-constants";
+import {
+  NAAC_AWARD_TEMPLATE_KEY,
+  NAAC_COLLAB_ACTIVITY_TEMPLATE_KEY,
+  NAAC_ECONTENT_TEMPLATE_KEY,
+  NAAC_EXTENSION_ACTIVITY_TEMPLATE_KEY,
+  NAAC_EXTENSION_AWARD_TEMPLATE_KEY,
+  NAAC_FELLOWSHIP_TEMPLATE_KEY,
+  NAAC_RESEARCH_EVENT_TEMPLATE_KEY,
+} from "./naac-template-constants";
 
 export type TemplateApplicableRoleBaseline = {
   roleCode: string;
@@ -63,6 +72,25 @@ const APPLICABLE_ROLE_BASELINES_BY_TEMPLATE_KEY: Record<
     { roleCode: "CO_AUTHOR", isDefault: false, sortOrder: 1 },
   ],
   GU_EDP_MDP: [
+    { roleCode: "CONVENOR", isDefault: true, sortOrder: 0 },
+    { roleCode: "TEAM_MEMBER", isDefault: false, sortOrder: 1 },
+  ],
+  [NAAC_AWARD_TEMPLATE_KEY]: [{ roleCode: "MEMBER", isDefault: true, sortOrder: 0 }],
+  [NAAC_FELLOWSHIP_TEMPLATE_KEY]: [{ roleCode: "MEMBER", isDefault: true, sortOrder: 0 }],
+  [NAAC_ECONTENT_TEMPLATE_KEY]: [
+    { roleCode: "AUTHOR", isDefault: true, sortOrder: 0 },
+    { roleCode: "CO_AUTHOR", isDefault: false, sortOrder: 1 },
+  ],
+  [NAAC_EXTENSION_ACTIVITY_TEMPLATE_KEY]: [
+    { roleCode: "COORDINATOR", isDefault: true, sortOrder: 0 },
+    { roleCode: "TEAM_MEMBER", isDefault: false, sortOrder: 1 },
+  ],
+  [NAAC_EXTENSION_AWARD_TEMPLATE_KEY]: [{ roleCode: "MEMBER", isDefault: true, sortOrder: 0 }],
+  [NAAC_COLLAB_ACTIVITY_TEMPLATE_KEY]: [
+    { roleCode: "COORDINATOR", isDefault: true, sortOrder: 0 },
+    { roleCode: "TEAM_MEMBER", isDefault: false, sortOrder: 1 },
+  ],
+  [NAAC_RESEARCH_EVENT_TEMPLATE_KEY]: [
     { roleCode: "CONVENOR", isDefault: true, sortOrder: 0 },
     { roleCode: "TEAM_MEMBER", isDefault: false, sortOrder: 1 },
   ],

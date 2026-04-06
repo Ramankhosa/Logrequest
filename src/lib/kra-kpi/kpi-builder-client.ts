@@ -57,6 +57,10 @@ export function createEmptyBuilderPayload(
       policyDateFieldKey: null,
       contributionRoles: null,
     },
+    meta: {
+      starterPackKey: null,
+      accreditationRefs: [],
+    },
     applicableRoles: [],
     contributorConfig: {
       externalContribTemplateId: null,

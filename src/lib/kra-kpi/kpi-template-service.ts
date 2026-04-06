@@ -1,7 +1,14 @@
-import type { Role } from "@prisma/client";
+import {
+  AccreditationScope,
+  type Role,
+  TenantServiceCode,
+} from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { KraKpiActionResult } from "./shared";
-import type { KpiBuilderPayload } from "./builder-shared";
+import type {
+  KpiBuilderPayload,
+  KpiTemplateAccreditationRef,
+} from "./builder-shared";
 import {
   kpiTemplateWriteSchema,
   type KpiTemplateWriteDraft,
@@ -9,10 +16,12 @@ import {
 } from "./builder-shared";
 import { ACHIEVEMENT_TEMPLATES } from "./shared";
 import { GALGOTIA_KPI_TEMPLATES } from "./galgotia-kpi-templates";
+import { NAAC_KPI_TEMPLATES } from "./naac-kpi-templates";
 import { saveKpiBuilder } from "./kpi-builder-service";
 import { seedDefaultBenefitTypes } from "./benefit-type-service";
 import { seedDefaultContributorRoles } from "./contributor-role-service";
 import { hasTenantCapability } from "@/lib/tenant-permissions/service";
+import { hasTenantServiceEnabled } from "@/lib/tenant-services/service";
 
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
@@ -37,6 +46,155 @@ async function canManageKpiTemplates(
     baseRole: actorRole,
     capability: "MANAGE_KPI",
   });
+}
+
+function getPayloadAccreditationRefs(payload: KpiBuilderPayload): KpiTemplateAccreditationRef[] {
+  return payload.meta?.accreditationRefs ?? [];
+}
+
+function lifecyclePriority(lifecycleStatus: string): number {
+  switch (lifecycleStatus) {
+    case "PUBLISHED":
+      return 0;
+    case "VALIDATED":
+      return 1;
+    case "DRAFT":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+async function resolveAccreditationBlockIdForTemplateRef(
+  tenantId: string,
+  ref: KpiTemplateAccreditationRef,
+): Promise<string | null> {
+  const rows = await prisma.criterionBlock.findMany({
+    where: {
+      blockCode: ref.blockCode,
+      isActive: true,
+      isLeaf: true,
+      version: {
+        versionCode: ref.versionCode,
+        isActive: true,
+        body: {
+          code: ref.bodyCode,
+          isActive: true,
+          OR: [
+            { scope: AccreditationScope.GLOBAL, tenantId: null },
+            { scope: AccreditationScope.TENANT, tenantId },
+          ],
+        },
+      },
+    },
+    select: {
+      id: true,
+      createdAt: true,
+      version: {
+        select: {
+          createdAt: true,
+          lifecycleStatus: true,
+          body: {
+            select: {
+              scope: true,
+              tenantId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  rows.sort((left, right) => {
+    const leftTenantOwned = left.version.body.tenantId === tenantId ? 0 : 1;
+    const rightTenantOwned = right.version.body.tenantId === tenantId ? 0 : 1;
+    if (leftTenantOwned !== rightTenantOwned) {
+      return leftTenantOwned - rightTenantOwned;
+    }
+
+    const leftLifecycle = lifecyclePriority(left.version.lifecycleStatus);
+    const rightLifecycle = lifecyclePriority(right.version.lifecycleStatus);
+    if (leftLifecycle !== rightLifecycle) {
+      return leftLifecycle - rightLifecycle;
+    }
+
+    return right.createdAt.getTime() - left.createdAt.getTime();
+  });
+
+  return rows[0]?.id ?? null;
+}
+
+async function autoLinkTemplateAccreditationRefs(input: {
+  tenantId: string;
+  kpiId: string;
+  payload: KpiBuilderPayload;
+  actorUserId: string;
+  actorRole: Role;
+}): Promise<number> {
+  const refs = getPayloadAccreditationRefs(input.payload);
+  if (refs.length === 0) {
+    return 0;
+  }
+
+  const [accreditationEnabled, canManageAccreditation] = await Promise.all([
+    hasTenantServiceEnabled(input.tenantId, TenantServiceCode.ACCREDITATION),
+    hasTenantCapability({
+      tenantId: input.tenantId,
+      userId: input.actorUserId,
+      baseRole: input.actorRole,
+      capability: "MANAGE_ACCREDITATION",
+    }),
+  ]);
+  if (!accreditationEnabled || !canManageAccreditation) {
+    return 0;
+  }
+
+  const dedupedRefs = Array.from(
+    new Map(refs.map((ref) => [`${ref.bodyCode}:${ref.versionCode}:${ref.blockCode}`, ref])).values(),
+  );
+  const resolvedBlockIds = (
+    await Promise.all(
+      dedupedRefs.map((ref) => resolveAccreditationBlockIdForTemplateRef(input.tenantId, ref)),
+    )
+  ).filter((blockId): blockId is string => typeof blockId === "string" && blockId.length > 0);
+
+  if (resolvedBlockIds.length === 0) {
+    return 0;
+  }
+
+  const existingLinks = await prisma.kpiAccreditationBlockLink.findMany({
+    where: {
+      tenantId: input.tenantId,
+      kpiDefinitionId: input.kpiId,
+      blockId: {
+        in: resolvedBlockIds,
+      },
+    },
+    select: {
+      blockId: true,
+    },
+  });
+  const existingBlockIds = new Set(existingLinks.map((row) => row.blockId));
+  const missingBlockIds = resolvedBlockIds.filter((blockId) => !existingBlockIds.has(blockId));
+  if (missingBlockIds.length === 0) {
+    return 0;
+  }
+
+  const created = await prisma.kpiAccreditationBlockLink.createMany({
+    data: missingBlockIds.map((blockId) => ({
+      tenantId: input.tenantId,
+      kpiDefinitionId: input.kpiId,
+      blockId,
+      createdByUserId: input.actorUserId,
+    })),
+    skipDuplicates: true,
+  });
+
+  return created.count;
 }
 
 const PUBLICATION_TIER_ROWS = [
@@ -581,6 +739,7 @@ const SYSTEM_KPI_TEMPLATES: KpiTemplateWriteDraft[] = [
       rewardComponents: [],
     },
   },
+  ...NAAC_KPI_TEMPLATES,
   ...GALGOTIA_KPI_TEMPLATES,
 ];
 
@@ -766,7 +925,7 @@ export async function applyTemplateToKpi(
   await seedDefaultBenefitTypes(tenantId);
 
   const payload = (template.builderPayload as KpiBuilderPayload);
-  return saveKpiBuilder(
+  const saveResult = await saveKpiBuilder(
     tenantId,
     {
       ...payload,
@@ -781,4 +940,23 @@ export async function applyTemplateToKpi(
     actorUserId,
     actorRole,
   );
+
+  if (saveResult.status !== "success" || !saveResult.id) {
+    return saveResult;
+  }
+
+  try {
+    await autoLinkTemplateAccreditationRefs({
+      tenantId,
+      kpiId: saveResult.id,
+      payload,
+      actorUserId,
+      actorRole,
+    });
+  } catch {
+    // Best-effort linking: template application should still succeed even if
+    // the tenant does not have a matching accreditation template seeded yet.
+  }
+
+  return saveResult;
 }

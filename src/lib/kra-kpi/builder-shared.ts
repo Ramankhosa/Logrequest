@@ -253,8 +253,22 @@ export const builderKpiDefinitionSchema = z.object({
   ).nullable().optional(),
 });
 
+export const kpiTemplateAccreditationRefSchema = z.object({
+  bodyCode: z.string().trim().min(1).max(80),
+  versionCode: z.string().trim().min(1).max(120),
+  blockCode: z.string().trim().min(1).max(120),
+  officialMetricCode: z.string().trim().min(1).max(40).nullable().optional(),
+  note: z.string().trim().max(500).nullable().optional(),
+});
+
+export const kpiBuilderMetaSchema = z.object({
+  starterPackKey: z.string().trim().min(1).max(120).nullable().optional(),
+  accreditationRefs: z.array(kpiTemplateAccreditationRefSchema).max(20).default([]),
+});
+
 export const kpiBuilderPayloadSchema = z.object({
   definition: builderKpiDefinitionSchema,
+  meta: kpiBuilderMetaSchema.optional(),
   applicableRoles: z.array(builderApplicableRoleSchema).default([]),
   contributorConfig: builderContributorConfigSchema.default(() => ({
     allowExternalContributors: true,
@@ -274,6 +288,8 @@ export type BuilderRewardDistribution = z.infer<typeof builderRewardDistribution
 export type BuilderRewardComponent = z.infer<typeof builderRewardComponentSchema>;
 export type BuilderRewardTier = z.infer<typeof builderRewardTierSchema>;
 export type BuilderKpiDefinition = z.infer<typeof builderKpiDefinitionSchema>;
+export type KpiTemplateAccreditationRef = z.infer<typeof kpiTemplateAccreditationRefSchema>;
+export type KpiBuilderMeta = z.infer<typeof kpiBuilderMetaSchema>;
 export type KpiBuilderPayload = z.infer<typeof kpiBuilderPayloadSchema>;
 export type KpiBuilderPayloadInput = z.input<typeof kpiBuilderPayloadSchema>;
 

@@ -58,7 +58,11 @@ type SuccessResult<T extends object = Record<string, never>> = {
 } & T;
 
 type ServiceResult<T extends object = Record<string, never>> = SuccessResult<T> | ErrorResult;
-type EntrySuggestionType = Extract<SuggestionType, "GUIDANCE" | "REVIEW" | "DRAFT">;
+type EntrySuggestionType = Extract<SuggestionType, "GUIDANCE" | "REVIEW" | "DRAFT" | "REVIEW_COMMENT">;
+
+const bulkEvidenceExtractionInputSchema = z.object({
+  force: z.boolean().optional(),
+});
 
 function isSuccess<T extends object>(result: ServiceResult<T>): result is SuccessResult<T> {
   return result.status === "success";
@@ -665,7 +669,9 @@ async function generateLlmEntrySuggestion(context: EntryCopilotContext, type: En
       ? "EXPLAIN"
       : type === SuggestionType.REVIEW
         ? "REVIEW"
-        : "DRAFT";
+        : type === SuggestionType.REVIEW_COMMENT
+          ? "REVIEW"
+          : "DRAFT";
   if (!enabledActions.has(actionKey)) {
     return { status: "fallback" as const, reason: `${actionKey} is not enabled for this accreditation version.` };
   }
@@ -676,7 +682,7 @@ async function generateLlmEntrySuggestion(context: EntryCopilotContext, type: En
 
   const systemPrompt = `${pack.systemInstruction}
 
-You are generating a ${actionKey.toLowerCase()} suggestion for one accreditation block.
+You are generating a ${type === SuggestionType.REVIEW_COMMENT ? "reviewer comment" : actionKey.toLowerCase()} suggestion for one accreditation block.
 Return JSON only with this shape:
 {
   "content": string,
@@ -1155,6 +1161,31 @@ function buildDraftSuggestion(context: NonNullable<Awaited<ReturnType<typeof get
   };
 }
 
+function buildReviewerCommentSuggestion(context: NonNullable<Awaited<ReturnType<typeof getEntryCopilotContext>>>) {
+  const review = buildReviewSuggestion(context);
+  const content =
+    review.structuredPayload &&
+    typeof review.structuredPayload === "object" &&
+    Array.isArray((review.structuredPayload as { findings?: unknown[] }).findings)
+      ? ((review.structuredPayload as { findings: Array<{ severity: string; message: string }> }).findings
+          .slice(0, 3)
+          .map((finding, index) => `Reviewer note ${index + 1}: ${finding.message}`)
+          .join("\n") || "Reviewer note: verify the attached evidence and tighten the narrative before approval.")
+      : "Reviewer note: verify the attached evidence and tighten the narrative before approval.";
+
+  return {
+    content,
+    structuredPayload: {
+      commentKind: "REVIEWER_NOTE",
+      derivedFrom: "REVIEW",
+      reviewGroundingStatus: review.groundingStatus,
+    },
+    citations: review.citations,
+    groundingStatus: review.groundingStatus,
+    confidence: Math.max(0.72, review.confidence - 0.04),
+  };
+}
+
 async function createEntrySuggestion(input: {
   entryId: string;
   tenantId: string;
@@ -1203,6 +1234,8 @@ async function createEntrySuggestion(input: {
         ? buildExplainSuggestion(context)
         : input.type === SuggestionType.REVIEW
           ? buildReviewSuggestion(context)
+          : input.type === SuggestionType.REVIEW_COMMENT
+            ? buildReviewerCommentSuggestion(context)
           : buildDraftSuggestion(context);
 
   const suggestion = await createSuggestionWithCitations(
@@ -1281,6 +1314,21 @@ export async function generateEntryDraftSuggestion(
     actorUserId,
     actorRole,
     type: SuggestionType.DRAFT,
+  });
+}
+
+export async function generateEntryReviewerCommentSuggestion(
+  entryId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  return createEntrySuggestion({
+    entryId,
+    tenantId,
+    actorUserId,
+    actorRole,
+    type: SuggestionType.REVIEW_COMMENT,
   });
 }
 
@@ -1880,6 +1928,120 @@ export async function extractEvidenceVersionForCopilot(
     status: "success",
     extraction: decorateExtraction(extraction),
   } satisfies SuccessResult<{ extraction: ReturnType<typeof decorateExtraction<typeof extraction>> }>;
+}
+
+export async function extractWorkspaceEvidenceForCopilot(
+  workspaceId: string,
+  tenantId: string,
+  input: unknown,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const featureError = await ensureTenantCopilotFeatureEnabled(tenantId);
+  if (featureError) {
+    return featureError;
+  }
+  const permission = await getWorkspacePermissionContext({
+    workspaceId,
+    tenantId,
+    actorUserId,
+    actorRole,
+  });
+  if ("status" in permission) {
+    return permission;
+  }
+  if (!canReadWorkspace(permission)) {
+    return { status: "error", message: "You do not have access to this workspace." } satisfies ErrorResult;
+  }
+
+  const parsed = bulkEvidenceExtractionInputSchema.safeParse(input ?? {});
+  if (!parsed.success) {
+    return { status: "error", message: parsed.error.issues[0]?.message ?? "Invalid extraction request." } satisfies ErrorResult;
+  }
+
+  const evidenceItems = await prisma.blockEvidence.findMany({
+    where: { workspaceId },
+    include: {
+      versions: {
+        orderBy: [{ versionNumber: "desc" }],
+        take: 1,
+        include: {
+          extraction: true,
+        },
+      },
+    },
+    orderBy: [{ createdAt: "asc" }],
+  });
+
+  const latestVersions = evidenceItems
+    .map((item) => item.versions[0] ?? null)
+    .filter(
+      (value): value is NonNullable<(typeof evidenceItems)[number]["versions"][number]> => !!value,
+    );
+
+  let processed = 0;
+  let skipped = 0;
+  let failed = 0;
+  const results: Array<{
+    evidenceVersionId: string;
+    status: "processed" | "skipped" | "failed";
+    reason?: string;
+  }> = [];
+
+  for (const version of latestVersions) {
+    const extraction = version.extraction;
+    const isCurrent =
+      extraction &&
+      extraction.engineVersion === EVIDENCE_EXTRACTION_ENGINE_VERSION &&
+      extraction.status !== "STALE" &&
+      extraction.status !== "PENDING" &&
+      extraction.status !== "PROCESSING";
+
+    if (isCurrent && !parsed.data.force) {
+      skipped += 1;
+      results.push({
+        evidenceVersionId: version.id,
+        status: "skipped",
+        reason: "Extraction is already current.",
+      });
+      continue;
+    }
+
+    const result = await extractEvidenceVersionForCopilot(
+      version.id,
+      tenantId,
+      actorUserId,
+      actorRole,
+    );
+    if (result.status === "success") {
+      processed += 1;
+      results.push({
+        evidenceVersionId: version.id,
+        status: "processed",
+      });
+    } else {
+      failed += 1;
+      results.push({
+        evidenceVersionId: version.id,
+        status: "failed",
+        reason: result.message,
+      });
+    }
+  }
+
+  return {
+    status: "success",
+    summary: {
+      total: latestVersions.length,
+      processed,
+      skipped,
+      failed,
+    },
+    results,
+  } satisfies SuccessResult<{
+    summary: { total: number; processed: number; skipped: number; failed: number };
+    results: typeof results;
+  }>;
 }
 
 export async function getEvidenceVersionExtractionDetails(

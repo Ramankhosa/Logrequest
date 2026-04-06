@@ -14,6 +14,7 @@ import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import { hasTenantServiceEnabled } from "@/lib/tenant-services/service";
 import { blockAssistantConfigSchema } from "./copilot-config";
 
+const MAX_ACCREDITATION_BLOCK_TITLE_LENGTH = 600;
 const MAX_BLOCK_DEPTH = 2;
 
 type DbClient = typeof prisma | Prisma.TransactionClient;
@@ -73,7 +74,7 @@ const blockInputSchema = z.object({
   parentId: z.string().trim().min(1).nullable().optional(),
   blockCode: z.string().trim().min(1).max(80),
   blockType: z.nativeEnum(CriterionBlockType).default(CriterionBlockType.METRIC),
-  title: z.string().trim().min(2).max(300),
+  title: z.string().trim().min(2).max(MAX_ACCREDITATION_BLOCK_TITLE_LENGTH),
   description: z.string().trim().max(4000).nullable().optional(),
   dataType: z.nativeEnum(CriterionDataType).default(CriterionDataType.QUANTITATIVE),
   yearAggregation: z
@@ -99,7 +100,7 @@ const blockPatchSchema = z.object({
   parentId: z.string().trim().min(1).nullable().optional(),
   blockCode: z.string().trim().min(1).max(80).optional(),
   blockType: z.nativeEnum(CriterionBlockType).optional(),
-  title: z.string().trim().min(2).max(300).optional(),
+  title: z.string().trim().min(2).max(MAX_ACCREDITATION_BLOCK_TITLE_LENGTH).optional(),
   description: z.string().trim().max(4000).nullable().optional(),
   dataType: z.nativeEnum(CriterionDataType).optional(),
   yearAggregation: z.nativeEnum(CriterionYearAggregation).optional(),

@@ -153,6 +153,19 @@ type EvidenceChunk = {
   confidence: number | null;
 };
 
+type ResponseTarget = {
+  key: string;
+  label: string;
+  year: number | null;
+  scopeKey: string | null;
+};
+
+type CompareRow = {
+  kind: "same" | "changed" | "added" | "removed";
+  current: string;
+  suggested: string;
+};
+
 const inputClassName =
   "w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-slate-900";
 
@@ -177,6 +190,32 @@ function suggestionLabel(type: string) {
   return type.replaceAll("_", " ");
 }
 
+function buildResponseTargetKey(year: number | null, scopeKey: string | null) {
+  return `${year ?? "null"}::${scopeKey ?? "null"}`;
+}
+
+function getEntryResponseTargets(entry: EntryOption | null): ResponseTarget[] {
+  if (!entry) {
+    return [];
+  }
+  if (entry.responses.length === 0) {
+    return [
+      {
+        key: buildResponseTargetKey(null, "PRIMARY"),
+        label: "Primary draft",
+        year: null,
+        scopeKey: "PRIMARY",
+      },
+    ];
+  }
+  return entry.responses.map((response) => ({
+    key: buildResponseTargetKey(response.year ?? null, response.scopeKey ?? null),
+    label: response.year !== null ? `Year ${response.year}` : response.scopeKey,
+    year: response.year ?? null,
+    scopeKey: response.scopeKey ?? null,
+  }));
+}
+
 function formatEntryResponse(entry: EntryOption | null) {
   if (!entry) return "";
   const parts = entry.responses
@@ -196,6 +235,41 @@ function formatEntryResponse(entry: EntryOption | null) {
   return parts.join("\n\n");
 }
 
+function formatSuggestionCitation(citation: AssistantSuggestion["citations"][number]) {
+  const parts = [
+    citation.type ? `[${citation.type.replaceAll("_", " ")}]` : "[citation]",
+    citation.snippet?.trim() || citation.ref?.trim() || "reference",
+  ].filter(Boolean);
+  return parts.join(" ");
+}
+
+function buildCompareRows(current: string, suggested: string): CompareRow[] {
+  const currentParts = current
+    .split(/\n{2,}/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const suggestedParts = suggested
+    .split(/\n{2,}/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const rows: CompareRow[] = [];
+  const max = Math.max(currentParts.length, suggestedParts.length);
+  for (let index = 0; index < max; index += 1) {
+    const left = currentParts[index] ?? "";
+    const right = suggestedParts[index] ?? "";
+    if (left && right && left === right) {
+      rows.push({ kind: "same", current: left, suggested: right });
+    } else if (!left && right) {
+      rows.push({ kind: "added", current: "", suggested: right });
+    } else if (left && !right) {
+      rows.push({ kind: "removed", current: left, suggested: "" });
+    } else {
+      rows.push({ kind: "changed", current: left, suggested: right });
+    }
+  }
+  return rows;
+}
+
 export function WorkspaceReportingCopilotPanel({
   workspaceId,
   workspaceStatus,
@@ -213,6 +287,7 @@ export function WorkspaceReportingCopilotPanel({
   const [watchlist, setWatchlist] = useState<AssistantSuggestion | null>(null);
   const [suggestions, setSuggestions] = useState<AssistantSuggestion[]>([]);
   const [draftPad, setDraftPad] = useState("");
+  const [selectedResponseTargetKey, setSelectedResponseTargetKey] = useState<string | null>(null);
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
   const [extractionsByVersionId, setExtractionsByVersionId] = useState<Record<string, EvidenceExtractionSummary | null>>({});
   const [chunksByVersionId, setChunksByVersionId] = useState<Record<string, EvidenceChunk[]>>({});
@@ -231,6 +306,9 @@ export function WorkspaceReportingCopilotPanel({
     highPriority: number;
   } | null>(null);
   const selectedEntry = entries.find((entry) => entry.id === selectedEntryId) ?? null;
+  const responseTargets = getEntryResponseTargets(selectedEntry);
+  const selectedResponseTarget =
+    responseTargets.find((target) => target.key === selectedResponseTargetKey) ?? responseTargets[0] ?? null;
 
   async function loadCore() {
     const servicesResult = await fetchJson<{ enabledFeatures?: string[] }>("/api/tenant/services");
@@ -383,6 +461,7 @@ export function WorkspaceReportingCopilotPanel({
   useEffect(() => {
     setDraftPad(formatEntryResponse(selectedEntry));
     setSelectedSuggestionId(null);
+    setSelectedResponseTargetKey(responseTargets[0]?.key ?? null);
     if (!copilotEnabled) {
       setExtractionsByVersionId({});
       setChunksByVersionId({});
@@ -429,7 +508,7 @@ export function WorkspaceReportingCopilotPanel({
     }
   }
 
-  async function runEntryCopilot(kind: "explain" | "review" | "draft") {
+  async function runEntryCopilot(kind: "explain" | "review" | "draft" | "reviewer-comment") {
     if (!selectedEntryId) return;
     setBusy(true);
     setMessage(null);
@@ -439,7 +518,10 @@ export function WorkspaceReportingCopilotPanel({
         { method: "POST" },
       );
       await loadSuggestions(selectedEntryId);
-      setMessage({ type: "success", text: `Generated ${kind} suggestion.` });
+      setMessage({
+        type: "success",
+        text: kind === "reviewer-comment" ? "Generated reviewer comment suggestion." : `Generated ${kind} suggestion.`,
+      });
     } catch (error) {
       setMessage({
         type: "error",
@@ -524,6 +606,85 @@ export function WorkspaceReportingCopilotPanel({
     }
   }
 
+  async function runWorkspaceExtraction(force = false) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await fetchJson<{
+        summary: { total: number; processed: number; skipped: number; failed: number };
+      }>(`/api/tenant/accreditation/workspaces/${workspaceId}/evidence/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force }),
+      });
+      await loadCore();
+      await loadEvidenceIntelligence(selectedEntry);
+      if (selectedEntryId) {
+        await loadSuggestions(selectedEntryId);
+      }
+      setMessage({
+        type: "success",
+        text: `Extraction run finished. Processed ${result.summary.processed}, skipped ${result.summary.skipped}, failed ${result.summary.failed}.`,
+      });
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Workspace extraction failed.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveDraftToResponse() {
+    if (!selectedEntryId || !selectedResponseTarget || draftPad.trim().length === 0) {
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      await fetchJson(`/api/tenant/accreditation/entries/${selectedEntryId}/responses`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          year: selectedResponseTarget.year,
+          scopeKey: selectedResponseTarget.scopeKey,
+          textValue: draftPad,
+          responseData: {
+            narrative: draftPad,
+          },
+          reason: "Updated from accreditation copilot draft workspace.",
+        }),
+      });
+      await loadCore();
+      if (selectedEntryId) {
+        await loadSuggestions(selectedEntryId);
+      }
+      setMessage({ type: "success", text: "Saved draft into the block response." });
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to save the draft to the block response.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function insertCitationIntoDraft(citation: AssistantSuggestion["citations"][number]) {
+    const nextText = formatSuggestionCitation(citation);
+    setDraftPad((current) => (current.trim().length > 0 ? `${current}\n\n${nextText}` : nextText));
+  }
+
+  async function copySuggestionContent(content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setMessage({ type: "success", text: "Copied suggestion text to the clipboard." });
+    } catch {
+      setMessage({ type: "error", text: "Clipboard copy failed in this browser context." });
+    }
+  }
+
   async function handleCreateDvv(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!allowWorkflowMutations) return;
@@ -593,6 +754,7 @@ export function WorkspaceReportingCopilotPanel({
     suggestions.find((suggestion) => suggestion.type === "DRAFT" && suggestion.status !== "DISMISSED") ??
     null;
   const currentResponseText = formatEntryResponse(selectedEntry);
+  const compareRows = selectedDraftSuggestion ? buildCompareRows(currentResponseText, draftPad) : [];
 
   return (
     <section className="rounded-[1.75rem] border border-slate-200/80 bg-white/85 p-6">
@@ -765,7 +927,7 @@ export function WorkspaceReportingCopilotPanel({
                 <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
                   Block Copilot
                 </h4>
-                <div className="mt-4 grid gap-3 md:grid-cols-[1fr,auto,auto,auto]">
+                <div className="mt-4 grid gap-3 md:grid-cols-[1fr,auto,auto,auto,auto]">
                   <select
                     className={inputClassName}
                     value={selectedEntryId ?? ""}
@@ -801,6 +963,14 @@ export function WorkspaceReportingCopilotPanel({
                     className="rounded-2xl bg-slate-900 px-4 py-3 text-sm text-white"
                   >
                     Draft
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !selectedEntryId}
+                    onClick={() => void runEntryCopilot("reviewer-comment")}
+                    className="rounded-2xl border border-violet-300 px-4 py-3 text-sm text-violet-700"
+                  >
+                    Reviewer Comment
                   </button>
                 </div>
                 {selectedEntry ? (
@@ -859,6 +1029,16 @@ export function WorkspaceReportingCopilotPanel({
                                 Apply To Draft
                               </button>
                             ) : null}
+                            {suggestion.type === "REVIEW_COMMENT" ? (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void copySuggestionContent(suggestion.content)}
+                                className="rounded-xl border border-violet-300 px-3 py-1 text-xs text-violet-700"
+                              >
+                                Copy Comment
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               disabled={busy}
@@ -900,13 +1080,7 @@ export function WorkspaceReportingCopilotPanel({
                               <button
                                 type="button"
                                 key={`${suggestion.id}-citation-${index}`}
-                                onClick={() => {
-                                  if (suggestion.type === "DRAFT" && citation.snippet) {
-                                    setDraftPad((current) =>
-                                      current.trim().length > 0 ? `${current}\n\n[Citation] ${citation.snippet}` : citation.snippet ?? "",
-                                    );
-                                  }
-                                }}
+                                onClick={() => insertCitationIntoDraft(citation)}
                                 className="rounded-2xl bg-white px-3 py-2 text-left text-[11px] text-slate-600"
                               >
                                 <span className="font-medium text-slate-800">
@@ -930,19 +1104,52 @@ export function WorkspaceReportingCopilotPanel({
                         Draft Workspace
                       </h5>
                       <p className="mt-1 text-xs text-slate-500">
-                        Compare the current response with a selected draft suggestion. This remains local and does not save the official response.
+                        Compare the current response with a selected draft suggestion, insert evidence citations, and save the result through the real entry response path.
                       </p>
                     </div>
-                    {selectedDraftSuggestion ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => setDraftPad(selectedDraftSuggestion.content)}
-                        className="rounded-xl border border-sky-300 px-3 py-1 text-xs text-sky-700"
-                      >
-                        Apply Selected Draft
-                      </button>
-                    ) : null}
+                    <div className="flex flex-wrap gap-2">
+                      {selectedDraftSuggestion ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setDraftPad(selectedDraftSuggestion.content)}
+                          className="rounded-xl border border-sky-300 px-3 py-1 text-xs text-sky-700"
+                        >
+                          Apply Selected Draft
+                        </button>
+                      ) : null}
+                      {allowWorkflowMutations ? (
+                        <button
+                          type="button"
+                          disabled={busy || !selectedEntryId || draftPad.trim().length === 0}
+                          onClick={() => void saveDraftToResponse()}
+                          className="rounded-xl border border-emerald-300 px-3 py-1 text-xs text-emerald-700"
+                        >
+                          Save Draft To Response
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr),auto]">
+                    <select
+                      className={inputClassName}
+                      value={selectedResponseTarget?.key ?? ""}
+                      onChange={(event) => setSelectedResponseTargetKey(event.target.value || null)}
+                    >
+                      {responseTargets.map((target) => (
+                        <option key={target.key} value={target.key}>
+                          {target.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={busy || !selectedDraftSuggestion}
+                      onClick={() => selectedDraftSuggestion && setDraftPad(selectedDraftSuggestion.content)}
+                      className="rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-700"
+                    >
+                      Reset To Suggestion
+                    </button>
                   </div>
                   <div className="mt-4 grid gap-4 xl:grid-cols-2">
                     <div>
@@ -961,11 +1168,70 @@ export function WorkspaceReportingCopilotPanel({
                       />
                     </div>
                   </div>
+                  {selectedDraftSuggestion ? (
+                    <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-4">
+                      <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Compare View</p>
+                      <div className="mt-3 space-y-2">
+                        {compareRows.length === 0 ? (
+                          <p className="text-sm text-slate-500">No draft differences to compare yet.</p>
+                        ) : (
+                          compareRows.map((row, index) => (
+                            <div
+                              key={`${row.kind}-${index}`}
+                              className={`grid gap-3 rounded-xl px-3 py-3 md:grid-cols-2 ${
+                                row.kind === "same"
+                                  ? "bg-white"
+                                  : row.kind === "added"
+                                    ? "bg-emerald-50"
+                                    : row.kind === "removed"
+                                      ? "bg-rose-50"
+                                      : "bg-amber-50"
+                              }`}
+                            >
+                              <div>
+                                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">
+                                  Current
+                                </p>
+                                <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
+                                  {row.current || "—"}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">
+                                  Draft
+                                </p>
+                                <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
+                                  {row.suggested || "—"}
+                                </p>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="mt-6 rounded-2xl border border-slate-200 p-4">
-                  <h5 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
-                    Evidence Intelligence
-                  </h5>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h5 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Evidence Intelligence
+                      </h5>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Extract linked evidence on demand or run a workspace batch refresh before a review cycle.
+                      </p>
+                    </div>
+                    {allowWorkflowMutations ? (
+                      <button
+                        type="button"
+                        disabled={busy || !copilotEnabled}
+                        onClick={() => void runWorkspaceExtraction(false)}
+                        className="rounded-xl border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                      >
+                        Extract Linked Evidence
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="mt-4 space-y-3">
                     {selectedEntry?.latestEvidence.length ? (
                       selectedEntry.latestEvidence.map((evidence) => {

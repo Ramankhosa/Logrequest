@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createCanvas } from "@napi-rs/canvas";
 import {
   CriterionDataType,
   SuggestionStatus,
@@ -24,7 +25,9 @@ import {
 } from "@/lib/accreditation/workspace-service";
 import {
   extractEvidenceVersionForCopilot,
+  extractWorkspaceEvidenceForCopilot,
   generateEntryReviewSuggestion,
+  generateEntryReviewerCommentSuggestion,
   getEvidenceVersionExtractionDetails,
   listEvidenceVersionChunks,
 } from "@/lib/accreditation/accreditation-copilot-service";
@@ -141,18 +144,22 @@ async function createWorkspaceFixture(tracker: DbTracker) {
   if (workspaceResult.status !== "success") {
     throw new Error(workspaceResult.message);
   }
+  const createdWorkspace = workspaceResult.workspace as { id: string };
 
   const entry = await prisma.blockEntry.findFirstOrThrow({
     where: {
-      workspaceId: workspaceResult.workspace.id,
+      workspaceId: createdWorkspace.id,
       blockId: blockResult.block.id,
     },
+  });
+  const workspace = await prisma.assessmentWorkspace.findUniqueOrThrow({
+    where: { id: createdWorkspace.id },
   });
 
   return {
     tenant,
     actor,
-    workspace: workspaceResult.workspace,
+    workspace,
     entry,
   };
 }
@@ -277,9 +284,10 @@ describe("evidence intelligence copilot", () => {
         if (suggestion.status !== "success") {
           throw new Error(suggestion.message);
         }
-        expect(
-          suggestion.suggestion.citations.some((citation) => citation.type === "evidence_chunk"),
-        ).toBe(true);
+        const suggestionCitations = Array.isArray(suggestion.suggestion.citations)
+          ? (suggestion.suggestion.citations as Array<{ type?: string }>)
+          : [];
+        expect(suggestionCitations.some((citation) => citation.type === "evidence_chunk")).toBe(true);
 
         const normalizedCitations = await prisma.evidenceSuggestionCitation.findMany({
           where: {
@@ -313,6 +321,152 @@ describe("evidence intelligence copilot", () => {
         });
         expect(staleSuggestion.status).toBe(SuggestionStatus.STALE);
         expect(staleSuggestion.staleReason).toBe("evidence_reprocessed");
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test("runs image OCR, reviewer comment generation, and workspace bulk extraction summaries", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkspaceFixture(tracker);
+      const tempDir = await mkdtemp(join(tmpdir(), "logrequest-evidence-ocr-"));
+      const imagePath = join(tempDir, "iqac-banner.png");
+      const textPath = join(tempDir, "quality-policy.txt");
+
+      try {
+        const canvas = createCanvas(900, 280);
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, 900, 280);
+        context.fillStyle = "#111827";
+        context.font = "34px sans-serif";
+        context.fillText("Internal Quality Assurance Cell", 40, 90);
+        context.fillText("Annual quality review and action tracking", 40, 150);
+        context.font = "24px sans-serif";
+        context.fillText("Evidence-backed committee minutes and follow up logs", 40, 210);
+        await writeFile(imagePath, canvas.toBuffer("image/png"));
+
+        await writeFile(
+          textPath,
+          "The quality policy confirms annual review cycles and continuous monitoring of action items.",
+          "utf8",
+        );
+
+        const evidence = await createAssessmentWorkspaceEvidence(
+          fixture.workspace.id,
+          fixture.tenant.id,
+          {
+            title: "IQAC Visual Evidence",
+            docType: "MINUTES",
+          },
+          fixture.actor.id,
+          "TENANT_OWNER",
+        );
+        expect(evidence).toMatchObject({ status: "success" });
+        if (evidence.status !== "success") {
+          throw new Error(evidence.message);
+        }
+
+        const imageVersion = await addAssessmentWorkspaceEvidenceVersion(
+          evidence.evidence.id,
+          fixture.tenant.id,
+          {
+            fileName: "iqac-banner.png",
+            fileUrl: imagePath,
+            fileType: "image/png",
+            isFinal: true,
+          },
+          fixture.actor.id,
+          "TENANT_OWNER",
+        );
+        expect(imageVersion).toMatchObject({ status: "success" });
+        if (imageVersion.status !== "success") {
+          throw new Error(imageVersion.message);
+        }
+
+        const textVersion = await addAssessmentWorkspaceEvidenceVersion(
+          evidence.evidence.id,
+          fixture.tenant.id,
+          {
+            fileName: "quality-policy.txt",
+            fileUrl: textPath,
+            fileType: "text/plain",
+            isFinal: false,
+          },
+          fixture.actor.id,
+          "TENANT_OWNER",
+        );
+        expect(textVersion).toMatchObject({ status: "success" });
+        if (textVersion.status !== "success") {
+          throw new Error(textVersion.message);
+        }
+
+        const link = await linkAssessmentWorkspaceEvidence(
+          evidence.evidence.id,
+          fixture.tenant.id,
+          { entryId: fixture.entry.id },
+          fixture.actor.id,
+          "TENANT_OWNER",
+        );
+        expect(link).toMatchObject({ status: "success" });
+
+        const imageExtraction = await extractEvidenceVersionForCopilot(
+          imageVersion.version.id,
+          fixture.tenant.id,
+          fixture.actor.id,
+          "TENANT_OWNER",
+        );
+        expect(imageExtraction).toMatchObject({ status: "success" });
+        if (imageExtraction.status !== "success") {
+          throw new Error(imageExtraction.message);
+        }
+        const extractedText = imageExtraction.extraction.extractedText?.toLowerCase() ?? "";
+        expect(
+          extractedText.includes("quality") ||
+            extractedText.includes("assurance") ||
+            extractedText.includes("review"),
+        ).toBe(true);
+        expect(imageExtraction.extraction.qualityFlags).toContain("OCR_USED");
+
+        const reviewerComment = await generateEntryReviewerCommentSuggestion(
+          fixture.entry.id,
+          fixture.tenant.id,
+          fixture.actor.id,
+          "TENANT_OWNER",
+        );
+        expect(reviewerComment).toMatchObject({ status: "success" });
+        if (reviewerComment.status !== "success") {
+          throw new Error(reviewerComment.message);
+        }
+        expect(reviewerComment.suggestion.type).toBe("REVIEW_COMMENT");
+
+        const bulkFirstPass = await extractWorkspaceEvidenceForCopilot(
+          fixture.workspace.id,
+          fixture.tenant.id,
+          { force: false },
+          fixture.actor.id,
+          "TENANT_OWNER",
+        );
+        expect(bulkFirstPass).toMatchObject({ status: "success" });
+        if (bulkFirstPass.status !== "success") {
+          throw new Error(bulkFirstPass.message);
+        }
+        expect(bulkFirstPass.summary.total).toBeGreaterThan(0);
+        expect(bulkFirstPass.summary.processed + bulkFirstPass.summary.skipped).toBe(bulkFirstPass.summary.total);
+
+        const bulkSecondPass = await extractWorkspaceEvidenceForCopilot(
+          fixture.workspace.id,
+          fixture.tenant.id,
+          { force: false },
+          fixture.actor.id,
+          "TENANT_OWNER",
+        );
+        expect(bulkSecondPass).toMatchObject({ status: "success" });
+        if (bulkSecondPass.status !== "success") {
+          throw new Error(bulkSecondPass.message);
+        }
+        expect(bulkSecondPass.summary.skipped).toBeGreaterThan(0);
       } finally {
         await rm(tempDir, { recursive: true, force: true });
       }

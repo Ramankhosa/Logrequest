@@ -22,10 +22,12 @@ const hasTenantFeatureEnabledMock = vi.fn();
 const generateEntryExplainSuggestionMock = vi.fn();
 const generateEntryReviewSuggestionMock = vi.fn();
 const generateEntryDraftSuggestionMock = vi.fn();
+const generateEntryReviewerCommentSuggestionMock = vi.fn();
 const generateWorkspaceWatchlistSuggestionMock = vi.fn();
 const listEntryAssistantSuggestionsMock = vi.fn();
 const updateAssistantSuggestionStatusMock = vi.fn();
 const extractEvidenceVersionForCopilotMock = vi.fn();
+const extractWorkspaceEvidenceForCopilotMock = vi.fn();
 const getEvidenceVersionExtractionDetailsMock = vi.fn();
 const listEvidenceVersionChunksMock = vi.fn();
 
@@ -56,10 +58,12 @@ vi.mock("@/lib/accreditation/accreditation-copilot-service", () => ({
   generateEntryExplainSuggestion: generateEntryExplainSuggestionMock,
   generateEntryReviewSuggestion: generateEntryReviewSuggestionMock,
   generateEntryDraftSuggestion: generateEntryDraftSuggestionMock,
+  generateEntryReviewerCommentSuggestion: generateEntryReviewerCommentSuggestionMock,
   generateWorkspaceWatchlistSuggestion: generateWorkspaceWatchlistSuggestionMock,
   listEntryAssistantSuggestions: listEntryAssistantSuggestionsMock,
   updateAssistantSuggestionStatus: updateAssistantSuggestionStatusMock,
   extractEvidenceVersionForCopilot: extractEvidenceVersionForCopilotMock,
+  extractWorkspaceEvidenceForCopilot: extractWorkspaceEvidenceForCopilotMock,
   getEvidenceVersionExtractionDetails: getEvidenceVersionExtractionDetailsMock,
   listEvidenceVersionChunks: listEvidenceVersionChunksMock,
 }));
@@ -402,9 +406,15 @@ describe("reporting and copilot routes", () => {
     generateEntryExplainSuggestionMock.mockResolvedValue({ status: "success", suggestion: { id: "s1" } });
     generateEntryReviewSuggestionMock.mockResolvedValue({ status: "success", suggestion: { id: "s2" } });
     generateEntryDraftSuggestionMock.mockResolvedValue({ status: "success", suggestion: { id: "s3" } });
+    generateEntryReviewerCommentSuggestionMock.mockResolvedValue({ status: "success", suggestion: { id: "s4" } });
     listEntryAssistantSuggestionsMock.mockResolvedValue({ status: "success", suggestions: [] });
     updateAssistantSuggestionStatusMock.mockResolvedValue({ status: "success", suggestion: { id: "s1" } });
     extractEvidenceVersionForCopilotMock.mockResolvedValue({ status: "success", extraction: { id: "x1" } });
+    extractWorkspaceEvidenceForCopilotMock.mockResolvedValue({
+      status: "success",
+      summary: { total: 2, processed: 1, skipped: 1, failed: 0 },
+      results: [],
+    });
     getEvidenceVersionExtractionDetailsMock.mockResolvedValue({
       status: "success",
       extraction: { id: "x1", status: "SUCCESS", chunkCount: 2 },
@@ -427,6 +437,9 @@ describe("reporting and copilot routes", () => {
     const draftRoute = await import(
       "@/app/api/tenant/accreditation/entries/[id]/copilot/draft/route"
     );
+    const reviewerCommentRoute = await import(
+      "@/app/api/tenant/accreditation/entries/[id]/copilot/reviewer-comment/route"
+    );
     const suggestionsRoute = await import(
       "@/app/api/tenant/accreditation/entries/[id]/assistant-suggestions/route"
     );
@@ -435,6 +448,9 @@ describe("reporting and copilot routes", () => {
     );
     const extractRoute = await import(
       "@/app/api/tenant/accreditation/evidence-versions/[id]/extract/route"
+    );
+    const workspaceExtractRoute = await import(
+      "@/app/api/tenant/accreditation/workspaces/[id]/evidence/extract/route"
     );
     const extractionDetailRoute = await import(
       "@/app/api/tenant/accreditation/evidence-versions/[id]/extraction/route"
@@ -487,6 +503,16 @@ describe("reporting and copilot routes", () => {
       "TENANT_USER",
     );
 
+    await reviewerCommentRoute.POST(new Request("http://localhost", { method: "POST" }), {
+      params: Promise.resolve({ id: "entry-1" }),
+    });
+    expect(generateEntryReviewerCommentSuggestionMock).toHaveBeenCalledWith(
+      "entry-1",
+      "tenant-1",
+      "user-1",
+      "TENANT_USER",
+    );
+
     const listSuggestionsResponse = await suggestionsRoute.GET(new Request("http://localhost"), {
       params: Promise.resolve({ id: "entry-1" }),
     });
@@ -528,6 +554,29 @@ describe("reporting and copilot routes", () => {
     expect(extractEvidenceVersionForCopilotMock).toHaveBeenCalledWith(
       "evidence-version-1",
       "tenant-1",
+      "user-1",
+      "TENANT_USER",
+    );
+
+    const invalidWorkspaceExtract = await workspaceExtractRoute.POST(
+      new Request("http://localhost", { method: "POST", body: "nope" }),
+      { params: Promise.resolve({ id: "workspace-1" }) },
+    );
+    expect(invalidWorkspaceExtract.status).toBe(400);
+
+    const workspaceExtractResponse = await workspaceExtractRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      }),
+      { params: Promise.resolve({ id: "workspace-1" }) },
+    );
+    expect(workspaceExtractResponse.status).toBe(200);
+    expect(extractWorkspaceEvidenceForCopilotMock).toHaveBeenCalledWith(
+      "workspace-1",
+      "tenant-1",
+      { force: true },
       "user-1",
       "TENANT_USER",
     );

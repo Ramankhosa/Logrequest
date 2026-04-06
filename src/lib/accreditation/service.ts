@@ -12,6 +12,8 @@ import { prisma } from "@/lib/prisma";
 import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import { hasTenantServiceEnabled } from "@/lib/tenant-services/service";
 
+const MAX_ACCREDITATION_BLOCK_TITLE_LENGTH = 600;
+
 const tenantOwnerRole = "TENANT_OWNER" satisfies Role;
 const tenantAdminRole = "TENANT_ADMIN" satisfies Role;
 
@@ -63,7 +65,7 @@ const profileInputSchema = z.object({
 const criterionInputSchema = z.object({
   parentId: z.string().trim().min(1).nullable().optional(),
   blockCode: z.string().trim().min(1).max(80),
-  title: z.string().trim().min(2).max(300),
+  title: z.string().trim().min(2).max(MAX_ACCREDITATION_BLOCK_TITLE_LENGTH),
   description: z.string().trim().max(4000).nullable().optional(),
   dataType: z.nativeEnum(CriterionDataType).default(CriterionDataType.QUANTITATIVE),
   maxScore: z.number().nonnegative().nullable().optional(),
