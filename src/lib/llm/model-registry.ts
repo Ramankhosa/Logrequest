@@ -1,6 +1,7 @@
-import { PlatformLlmProvider, Prisma } from "@prisma/client";
+import { PlatformLlmProvider } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { getProviderFromModelCode } from "./providers/llm-provider";
 import type { ProviderCode, ResolvedLlmProfile } from "./types";
 
 const modelInputSchema = z.object({
@@ -52,16 +53,35 @@ function asProviderCode(provider: PlatformLlmProvider): ProviderCode {
   }
 }
 
-async function ensureModelIdsExist(modelIds: string[]) {
+async function ensureModelIdsExist(modelIds: string[], options?: { requireActive?: boolean }) {
   if (modelIds.length === 0) {
     return null;
   }
   const found = await prisma.platformLlmModel.findMany({
-    where: { id: { in: modelIds } },
+    where: {
+      id: { in: modelIds },
+      ...(options?.requireActive ? { isActive: true } : {}),
+    },
     select: { id: true },
   });
   if (found.length !== new Set(modelIds).size) {
-    return "One or more referenced models were not found.";
+    return options?.requireActive
+      ? "One or more referenced models were not found or are inactive."
+      : "One or more referenced models were not found.";
+  }
+  return null;
+}
+
+function validateProviderAndModelCode(provider: PlatformLlmProvider, modelCode: string) {
+  let inferredProvider: ProviderCode;
+  try {
+    inferredProvider = getProviderFromModelCode(modelCode);
+  } catch {
+    return `Model code "${modelCode}" is not recognized. Use a known provider prefix (gpt/chatgpt, claude, gemini, deepseek, llama/gemma/mixtral).`;
+  }
+  const selectedProvider = asProviderCode(provider);
+  if (inferredProvider !== selectedProvider) {
+    return `Model code "${modelCode}" maps to ${inferredProvider.toUpperCase()}, but selected provider is ${provider}.`;
   }
   return null;
 }
@@ -76,6 +96,10 @@ export async function createPlatformLlmModel(input: unknown) {
   const parsed = modelInputSchema.safeParse(input);
   if (!parsed.success) {
     return { status: "error" as const, message: parsed.error.issues[0]?.message ?? "Invalid model input." };
+  }
+  const providerMismatchError = validateProviderAndModelCode(parsed.data.provider, parsed.data.code);
+  if (providerMismatchError) {
+    return { status: "error" as const, message: providerMismatchError };
   }
 
   try {
@@ -114,6 +138,20 @@ export async function updatePlatformLlmModel(modelId: string, input: unknown) {
   }
 
   try {
+    const existingModel = await prisma.platformLlmModel.findUnique({
+      where: { id: modelId },
+      select: { code: true, provider: true },
+    });
+    if (!existingModel) {
+      return { status: "error" as const, message: "Model not found." };
+    }
+    const providerMismatchError = validateProviderAndModelCode(
+      parsed.data.provider ?? existingModel.provider,
+      parsed.data.code ?? existingModel.code,
+    );
+    if (providerMismatchError) {
+      return { status: "error" as const, message: providerMismatchError };
+    }
     const model = await prisma.$transaction(async (tx) => {
       if (parsed.data.isDefault) {
         await tx.platformLlmModel.updateMany({ where: { isDefault: true }, data: { isDefault: false } });
@@ -159,7 +197,7 @@ export async function createPlatformLlmProfile(input: unknown) {
   }
 
   const fallbackIds = [...new Set(parsed.data.fallbackModelIds ?? [])].filter((id) => id !== parsed.data.primaryModelId);
-  const modelError = await ensureModelIdsExist([parsed.data.primaryModelId, ...fallbackIds]);
+  const modelError = await ensureModelIdsExist([parsed.data.primaryModelId, ...fallbackIds], { requireActive: true });
   if (modelError) {
     return { status: "error" as const, message: modelError };
   }
@@ -210,7 +248,7 @@ export async function updatePlatformLlmProfile(profileId: string, input: unknown
     ...(nextPrimaryModelId ? [nextPrimaryModelId] : []),
     ...(fallbackIds ?? []),
   ];
-  const modelError = await ensureModelIdsExist(modelIdsToCheck);
+  const modelError = await ensureModelIdsExist(modelIdsToCheck, { requireActive: true });
   if (modelError) {
     return { status: "error" as const, message: modelError };
   }

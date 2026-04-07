@@ -17,6 +17,7 @@ function createProviderStub(
 describe("llm provider router", () => {
   test("maps model codes to the expected providers", () => {
     expect(getProviderFromModelCode("gpt-5.2")).toBe("openai");
+    expect(getProviderFromModelCode("chatgpt-4o-latest")).toBe("openai");
     expect(getProviderFromModelCode("claude-3-5-sonnet")).toBe("anthropic");
     expect(getProviderFromModelCode("gemini-2.5-pro")).toBe("google");
     expect(getProviderFromModelCode("deepseek-chat")).toBe("deepseek");

@@ -47,6 +47,99 @@ type ProviderHealth = {
 const inputClassName =
   "w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-slate-900";
 
+const recommendedModelPresets = [
+  {
+    code: "gpt-5.2",
+    displayName: "ChatGPT 5.2",
+    provider: "OPENAI" as const,
+    contextWindow: 256000,
+    maxOutputTokens: 8192,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: true,
+  },
+  {
+    code: "gpt-5-mini",
+    displayName: "ChatGPT 5 Mini",
+    provider: "OPENAI" as const,
+    contextWindow: 128000,
+    maxOutputTokens: 8192,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: true,
+  },
+  {
+    code: "gpt-4o",
+    displayName: "ChatGPT 4o",
+    provider: "OPENAI" as const,
+    contextWindow: 128000,
+    maxOutputTokens: 4096,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: false,
+  },
+  {
+    code: "gpt-4o-mini",
+    displayName: "ChatGPT 4o Mini",
+    provider: "OPENAI" as const,
+    contextWindow: 128000,
+    maxOutputTokens: 4096,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: false,
+  },
+  {
+    code: "gemini-2.5-pro",
+    displayName: "Gemini 2.5 Pro",
+    provider: "GOOGLE" as const,
+    contextWindow: 128000,
+    maxOutputTokens: 8192,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: true,
+  },
+  {
+    code: "gemini-2.5-flash",
+    displayName: "Gemini 2.5 Flash",
+    provider: "GOOGLE" as const,
+    contextWindow: 128000,
+    maxOutputTokens: 8192,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: true,
+  },
+  {
+    code: "gemini-2.0-flash",
+    displayName: "Gemini 2.0 Flash",
+    provider: "GOOGLE" as const,
+    contextWindow: 128000,
+    maxOutputTokens: 4096,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: false,
+  },
+  {
+    code: "gemini-3-pro-preview",
+    displayName: "Gemini 3 Pro Preview",
+    provider: "GOOGLE" as const,
+    contextWindow: 1048576,
+    maxOutputTokens: 8192,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: true,
+  },
+  {
+    code: "gemini-3-pro-preview-thinking",
+    displayName: "Gemini 3 Pro Preview Thinking",
+    provider: "GOOGLE" as const,
+    contextWindow: 1048576,
+    maxOutputTokens: 8192,
+    supportsVision: true,
+    supportsStructuredOutputs: true,
+    supportsReasoning: true,
+  },
+];
+
 function toNullableNumber(value: FormDataEntryValue | null) {
   if (typeof value !== "string" || value.trim().length === 0) {
     return null;
@@ -129,6 +222,42 @@ export function LlmConfigManager() {
     }
   }
 
+  async function addRecommendedModelPresets() {
+    const existingCodes = new Set(models.map((model) => model.code.trim().toLowerCase()));
+    const missingPresets = recommendedModelPresets.filter((preset) => !existingCodes.has(preset.code.toLowerCase()));
+    if (missingPresets.length === 0) {
+      setMessage({ type: "success", text: "Recommended ChatGPT and Gemini presets already exist in the model catalog." });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      for (const preset of missingPresets) {
+        const response = await fetch("/api/superadmin/llm-models", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(preset),
+        });
+        const data = await response.json();
+        if (!response.ok || data.status === "error") {
+          throw new Error(data.message ?? `Failed to add preset ${preset.code}.`);
+        }
+      }
+      setMessage({
+        type: "success",
+        text: `Added ${missingPresets.length} recommended model preset${missingPresets.length > 1 ? "s" : ""}.`,
+      });
+      await load();
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to add recommended model presets.",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   if (loading) {
     return <div className="rounded-3xl border border-slate-200 bg-white/70 p-6 text-sm text-slate-500">Loading LLM configuration...</div>;
   }
@@ -178,21 +307,48 @@ export function LlmConfigManager() {
 
       <div className="grid gap-6 xl:grid-cols-[1.05fr_1fr]">
         <section className="space-y-4 rounded-3xl border border-slate-200 bg-white/80 p-5">
-          <div>
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <h2 className="text-base font-semibold text-slate-900">Models</h2>
-            <p className="text-sm text-slate-500">Platform-managed model catalog available to accreditation body versions.</p>
+            <button
+              type="button"
+              onClick={() => void addRecommendedModelPresets()}
+              disabled={submitting}
+              className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-60"
+            >
+              Add ChatGPT + Gemini presets
+            </button>
           </div>
+          <p className="text-sm text-slate-500">Platform-managed model catalog available to accreditation body versions.</p>
+          <p className="text-xs text-slate-500">
+            Guardrail: Google models should use <code>gemini-*</code>; OpenAI models should use <code>gpt-*</code>, <code>o1-*</code>, or <code>o3-*</code>.
+          </p>
 
           <form
             className="grid gap-3 md:grid-cols-2"
             onSubmit={async (event) => {
               event.preventDefault();
               const form = new FormData(event.currentTarget);
+              const code = String(form.get("code") ?? "").trim();
+              const displayName = String(form.get("displayName") ?? "").trim();
+              const provider = String(form.get("provider") ?? "OPENAI");
+              const contextWindow = Number(form.get("contextWindow") ?? 128000);
+              if (!code || !displayName) {
+                setMessage({ type: "error", text: "Model code and display name are required." });
+                return;
+              }
+              if (!Number.isInteger(contextWindow) || contextWindow < 1) {
+                setMessage({ type: "error", text: "Context window must be a positive whole number." });
+                return;
+              }
+              if (provider === "GOOGLE" && !code.toLowerCase().startsWith("gemini")) {
+                setMessage({ type: "error", text: 'Google provider models must use a code starting with "gemini".' });
+                return;
+              }
               await submitJson("/api/superadmin/llm-models", "POST", {
-                code: String(form.get("code") ?? ""),
-                displayName: String(form.get("displayName") ?? ""),
-                provider: String(form.get("provider") ?? "OPENAI"),
-                contextWindow: Number(form.get("contextWindow") ?? 128000),
+                code,
+                displayName,
+                provider,
+                contextWindow,
                 maxOutputTokens: toNullableNumber(form.get("maxOutputTokens")),
                 supportsVision: form.get("supportsVision") === "on",
                 supportsStructuredOutputs: form.get("supportsStructuredOutputs") === "on",

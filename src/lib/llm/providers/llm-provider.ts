@@ -5,7 +5,12 @@ import type { LlmProvider, ProviderCode, ProviderConfig } from "../types";
 
 export function getProviderFromModelCode(modelCode: string): ProviderCode {
   const normalized = modelCode.toLowerCase();
-  if (normalized.startsWith("gpt") || normalized.startsWith("o1") || normalized.startsWith("o3")) {
+  if (
+    normalized.startsWith("gpt") ||
+    normalized.startsWith("chatgpt") ||
+    normalized.startsWith("o1") ||
+    normalized.startsWith("o3")
+  ) {
     return "openai";
   }
   if (normalized.startsWith("claude")) {

@@ -19,6 +19,7 @@
     "seed:lpu": "npx tsx scripts/seed-lpu-demo.ts",
     "seed:galgotia:templates": "npx tsx scripts/seed-galgotia-kpi-templates.ts",
     "seed:accreditation:templates": "npx tsx scripts/seed-accreditation-templates.ts",
+    "seed:llm:production": "npx tsx scripts/seed-llm-models-production.ts",
     "db:studio": "prisma studio",
     "bootstrap:superadmin": "node scripts/bootstrap-superadmin.mjs"
   },
