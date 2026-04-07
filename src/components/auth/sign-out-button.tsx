@@ -1,10 +1,12 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 import { signOut } from "next-auth/react";
 import { LogOut } from "lucide-react";
 
 export function SignOutButton({ className }: { className?: string }) {
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
   return (
@@ -16,8 +18,11 @@ export function SignOutButton({ className }: { className?: string }) {
       onClick={() => {
         startTransition(async () => {
           await signOut({
+            redirect: false,
             callbackUrl: "/login",
           });
+          router.replace("/login");
+          router.refresh();
         });
       }}
       type="button"

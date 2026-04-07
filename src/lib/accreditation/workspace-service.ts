@@ -718,6 +718,23 @@ function collaboratorRoleSupportsSectionAssignment(
   }
 }
 
+function mapSectionAssignmentRoleToCollaboratorRole(
+  assignmentRole: WorkspaceSectionAssignmentRole,
+): WorkspaceCollaboratorRole {
+  switch (assignmentRole) {
+    case WorkspaceSectionAssignmentRole.SECTION_LEAD:
+    case WorkspaceSectionAssignmentRole.RESPONSIBLE:
+      return WorkspaceCollaboratorRole.RESPONSIBLE;
+    case WorkspaceSectionAssignmentRole.REVIEWER:
+      return WorkspaceCollaboratorRole.REVIEWER;
+    case WorkspaceSectionAssignmentRole.APPROVER:
+      return WorkspaceCollaboratorRole.APPROVER;
+    case WorkspaceSectionAssignmentRole.VIEWER:
+    default:
+      return WorkspaceCollaboratorRole.VIEWER;
+  }
+}
+
 function normalizeReason(value: string | null | undefined) {
   return normalizeNullableString(value);
 }
@@ -5923,6 +5940,31 @@ export async function listAssessmentWorkspaceSections(
       orderBy: [{ role: "asc" }, { createdAt: "asc" }],
     }),
   ]);
+  const assignedByUserIds = [...new Set(assignments.map((assignment) => assignment.assignedByUserId))];
+  const assignedByUsers = assignedByUserIds.length
+    ? await prisma.user.findMany({
+        where: {
+          id: {
+            in: assignedByUserIds,
+          },
+        },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          officialEmail: true,
+        },
+      })
+    : [];
+  const assignedByUserMap = new Map(
+    assignedByUsers.map((user) => [
+      user.id,
+      {
+        name: `${user.firstName} ${user.lastName}`.trim(),
+        email: user.officialEmail,
+      },
+    ]),
+  );
 
   const reviewBySectionId = new Map(reviews.map((review) => [review.sectionBlockId, review]));
   const assignmentsBySectionId = new Map<string, typeof assignments>();
@@ -5975,6 +6017,10 @@ export async function listAssessmentWorkspaceSections(
           id: assignment.id,
           role: assignment.role,
           deadline: assignment.deadline,
+          createdAt: assignment.createdAt,
+          assignedByUserId: assignment.assignedByUserId,
+          assignedByName: assignedByUserMap.get(assignment.assignedByUserId)?.name ?? null,
+          assignedByEmail: assignedByUserMap.get(assignment.assignedByUserId)?.email ?? null,
           userId: assignment.userId,
           guestParticipantId: assignment.guestParticipantId,
           name: assignment.user
@@ -6047,7 +6093,9 @@ export async function bulkAssignAssessmentWorkspaceSections(
     }),
   ]);
   const memberIds = new Set(memberships.map((membership) => membership.userId));
-  const collaboratorByUserId = new Map(collaborators.map((collaborator) => [collaborator.userId, collaborator]));
+  const collaboratorByUserId = new Map(
+    collaborators.map((collaborator) => [collaborator.userId, collaborator]),
+  );
 
   for (const assignment of parsed.data.assignments) {
     if (!memberIds.has(assignment.userId)) {
@@ -6057,17 +6105,17 @@ export async function bulkAssignAssessmentWorkspaceSections(
       } satisfies ErrorResult;
     }
     const collaborator = collaboratorByUserId.get(assignment.userId);
-    if (!collaborator) {
-      return {
-        status: "error",
-        message: "Section assignees must already be workspace collaborators.",
-      } satisfies ErrorResult;
-    }
-    if (!collaboratorRoleSupportsSectionAssignment(collaborator.role, assignment.role)) {
+    if (collaborator && !collaboratorRoleSupportsSectionAssignment(collaborator.role, assignment.role)) {
       return {
         status: "error",
         message: "The collaborator role is not compatible with the requested section assignment.",
       } satisfies ErrorResult;
+    }
+    if (!collaborator) {
+      collaboratorByUserId.set(assignment.userId, {
+        userId: assignment.userId,
+        role: mapSectionAssignmentRoleToCollaboratorRole(assignment.role),
+      });
     }
     const section = sectionContext.sectionsById.get(assignment.sectionBlockId);
     if (!section) {
@@ -6079,6 +6127,23 @@ export async function bulkAssignAssessmentWorkspaceSections(
     const results: Array<{ sectionCode: string; userId: string }> = [];
     const touchedSections = new Set<string>();
     for (const assignment of parsed.data.assignments) {
+      const collaboratorRole = mapSectionAssignmentRoleToCollaboratorRole(assignment.role);
+      await tx.workspaceCollaborator.upsert({
+        where: {
+          workspaceId_userId: {
+            workspaceId,
+            userId: assignment.userId,
+          },
+        },
+        create: {
+          workspaceId,
+          userId: assignment.userId,
+          role: collaboratorRole,
+          assignedSections: [],
+          addedByUserId: actorUserId,
+        },
+        update: {},
+      });
       await tx.workspaceSectionAssignment.upsert({
         where: {
           workspaceId_sectionBlockId_userId_role: {

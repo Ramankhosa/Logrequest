@@ -111,7 +111,7 @@ export function WorkspaceCollaborationHub() {
                 <div className="space-y-6">
                   <SectionReviewPanel
                     sections={data.detail.sections}
-                    collaborators={data.collaboratorOptions}
+                    assignableMembers={data.assignableMembers}
                     currentUserRole={data.detail.currentUserRole}
                     saving={data.saving}
                     sectionAction={data.sectionAction}

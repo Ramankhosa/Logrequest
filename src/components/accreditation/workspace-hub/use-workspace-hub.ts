@@ -21,6 +21,10 @@ export type SectionAssignment = {
   id: string;
   role: string;
   deadline: string | null;
+  createdAt: string;
+  assignedByUserId: string;
+  assignedByName: string | null;
+  assignedByEmail: string | null;
   name: string | null;
   email: string | null;
 };
@@ -45,6 +49,15 @@ export type WorkspaceCollaborator = {
   role: string;
   name: string;
   email: string;
+};
+
+export type AssignableMember = {
+  userId: string;
+  name: string;
+  email: string;
+  isWorkspaceCollaborator: boolean;
+  collaboratorRole: string | null;
+  membershipStatus: string;
 };
 
 export type ThreadMessage = {
@@ -101,6 +114,13 @@ export type WorkspaceDetail = {
 
 export type MessageState = { type: "success" | "error"; text: string } | null;
 
+type TenantUserDirectoryRow = {
+  id: string;
+  name: string;
+  email: string;
+  status: string;
+};
+
 // ── Fetch helpers ──
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -119,12 +139,54 @@ export function useWorkspaceHub() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [threads, setThreads] = useState<WorkspaceThread[]>([]);
+  const [assignableMembers, setAssignableMembers] = useState<AssignableMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<MessageState>(null);
 
   const sectionOptions = useMemo(() => detail?.sections ?? [], [detail]);
   const collaboratorOptions = useMemo(() => detail?.collaborators ?? [], [detail]);
+
+  const buildAssignableMembers = useCallback(
+    (workspaceDetail: WorkspaceDetail, tenantUsers: TenantUserDirectoryRow[]) => {
+      const collaboratorByUserId = new Map(
+        workspaceDetail.collaborators.map((collaborator) => [collaborator.userId, collaborator]),
+      );
+      const merged = tenantUsers.map((user) => {
+        const collaborator = collaboratorByUserId.get(user.id);
+        return {
+          userId: user.id,
+          name: user.name,
+          email: user.email,
+          isWorkspaceCollaborator: Boolean(collaborator),
+          collaboratorRole: collaborator?.role ?? null,
+          membershipStatus: user.status,
+        } satisfies AssignableMember;
+      });
+
+      for (const collaborator of workspaceDetail.collaborators) {
+        if (collaboratorByUserId.has(collaborator.userId) && merged.some((user) => user.userId === collaborator.userId)) {
+          continue;
+        }
+        merged.push({
+          userId: collaborator.userId,
+          name: collaborator.name,
+          email: collaborator.email,
+          isWorkspaceCollaborator: true,
+          collaboratorRole: collaborator.role,
+          membershipStatus: "ACTIVE",
+        });
+      }
+
+      return merged.sort((left, right) => {
+        if (left.isWorkspaceCollaborator !== right.isWorkspaceCollaborator) {
+          return left.isWorkspaceCollaborator ? -1 : 1;
+        }
+        return left.name.localeCompare(right.name);
+      });
+    },
+    [],
+  );
 
   // ── Fetchers ──
 
@@ -150,6 +212,10 @@ export function useWorkspaceHub() {
       `/api/tenant/accreditation/workspaces/${workspaceId}/discussions`,
     );
     setThreads(data.threads ?? []);
+  }, []);
+
+  const loadTenantUsers = useCallback(async () => {
+    return fetchJson<TenantUserDirectoryRow[]>("/api/tenant/users");
   }, []);
 
   const refreshAll = useCallback(async (workspaceId: string) => {
@@ -179,6 +245,54 @@ export function useWorkspaceHub() {
       },
     );
   }, [selectedWorkspaceId, loadDetail, loadThreads]);
+
+  useEffect(() => {
+    if (!detail) {
+      setAssignableMembers([]);
+      return;
+    }
+    if (detail.currentUserRole !== "COORDINATOR") {
+      setAssignableMembers(
+        detail.collaborators.map((collaborator) => ({
+          userId: collaborator.userId,
+          name: collaborator.name,
+          email: collaborator.email,
+          isWorkspaceCollaborator: true,
+          collaboratorRole: collaborator.role,
+          membershipStatus: "ACTIVE",
+        })),
+      );
+      return;
+    }
+
+    let active = true;
+    loadTenantUsers()
+      .then((tenantUsers) => {
+        if (!active) return;
+        setAssignableMembers(buildAssignableMembers(detail, tenantUsers));
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setAssignableMembers(
+          detail.collaborators.map((collaborator) => ({
+            userId: collaborator.userId,
+            name: collaborator.name,
+            email: collaborator.email,
+            isWorkspaceCollaborator: true,
+            collaboratorRole: collaborator.role,
+            membershipStatus: "ACTIVE",
+          })),
+        );
+        setMessage({
+          type: "error",
+          text: error instanceof Error ? error.message : "Failed to load tenant members.",
+        });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [detail, loadTenantUsers, buildAssignableMembers]);
 
   // ── Mutation wrapper ──
 
@@ -280,6 +394,7 @@ export function useWorkspaceHub() {
     setMessage,
     sectionOptions,
     collaboratorOptions,
+    assignableMembers,
 
     freezeWorkspace,
     unfreezeWorkspace,

@@ -17,25 +17,57 @@ import {
   inputClassName,
   labelClassName,
 } from "./constants";
-import type { WorkspaceSection, WorkspaceCollaborator, WorkspaceHubHook } from "./use-workspace-hub";
+import type { AssignableMember, WorkspaceSection, WorkspaceHubHook } from "./use-workspace-hub";
 
 type Props = {
   sections: WorkspaceSection[];
-  collaborators: WorkspaceCollaborator[];
+  assignableMembers: AssignableMember[];
   currentUserRole: string | null;
   saving: boolean;
   sectionAction: WorkspaceHubHook["sectionAction"];
   assignSection: WorkspaceHubHook["assignSection"];
 };
 
-export function SectionReviewPanel({ sections, collaborators, currentUserRole, saving, sectionAction, assignSection }: Props) {
+function formatShortDate(value: string | null | undefined) {
+  if (!value) return "Not set";
+  return new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function getTaskCompletionState(status: string) {
+  return status === "APPROVED" ? "Completed" : "Pending";
+}
+
+export function SectionReviewPanel({ sections, assignableMembers, currentUserRole, saving, sectionAction, assignSection }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [changesComment, setChangesComment] = useState("");
   const [changesTarget, setChangesTarget] = useState<string | null>(null);
   const [assignTarget, setAssignTarget] = useState<string | null>(null);
   const [assignForm, setAssignForm] = useState({ userId: "", role: "RESPONSIBLE", deadline: "" });
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [assigneeFilter, setAssigneeFilter] = useState("");
 
   const isCoordinator = currentUserRole === "COORDINATOR";
+  const normalizedAssigneeFilter = assigneeFilter.trim().toLowerCase();
+  const visibleSections = sections.filter((section) => {
+    const matchesStatus =
+      statusFilter === "ALL"
+        ? true
+        : statusFilter === "PENDING"
+          ? section.status !== "APPROVED"
+          : statusFilter === "COMPLETED"
+            ? section.status === "APPROVED"
+            : section.status === statusFilter;
+    const matchesAssignee =
+      !normalizedAssigneeFilter ||
+      section.assignments.some((assignment) =>
+        [assignment.name ?? "", assignment.email ?? "", assignment.assignedByName ?? ""]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedAssigneeFilter),
+      ) ||
+      [section.sectionCode, section.title].join(" ").toLowerCase().includes(normalizedAssigneeFilter);
+    return matchesStatus && matchesAssignee;
+  });
 
   function handleSubmit(sectionBlockId: string) {
     void sectionAction("submit", sectionBlockId);
@@ -68,11 +100,52 @@ export function SectionReviewPanel({ sections, collaborators, currentUserRole, s
   return (
     <>
       <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/85 p-6">
-        <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-slate-500">Section Review</h3>
-        <p className="mt-1 text-xs text-slate-400">Each section goes through a workflow: Open → Submitted → Confirmed → Approved.</p>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-slate-500">Section Review</h3>
+            <p className="mt-1 text-xs text-slate-400">Each section goes through a workflow: Open → Submitted → Confirmed → Approved.</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label>
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Task status
+              </span>
+              <select
+                className="min-w-[12rem] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-slate-900"
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+              >
+                <option value="ALL">All tasks</option>
+                <option value="PENDING">Pending follow-up</option>
+                <option value="COMPLETED">Completed</option>
+                {Object.entries(SECTION_STATUS_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Search
+              </span>
+              <input
+                className="min-w-[14rem] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-slate-900"
+                placeholder="Section, assignee, or assigned by"
+                value={assigneeFilter}
+                onChange={(event) => setAssigneeFilter(event.target.value)}
+              />
+            </label>
+          </div>
+        </div>
 
         <div className="mt-5 space-y-3">
-          {sections.map((section) => {
+          {visibleSections.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-8 text-center text-sm text-slate-500">
+              No sections match the current follow-up filters.
+            </div>
+          ) : null}
+          {visibleSections.map((section) => {
             const isExpanded = expandedId === section.sectionBlockId;
             const statusCls = SECTION_STATUS_CLASSES[section.status] ?? "border-slate-200 bg-slate-50 text-slate-600";
             const progressPct = section.leafEntryCount > 0
@@ -93,6 +166,11 @@ export function SectionReviewPanel({ sections, collaborators, currentUserRole, s
                       <p className="truncate text-sm font-semibold text-slate-900">{section.sectionCode} &middot; {section.title}</p>
                       <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${statusCls}`}>
                         {statusLabel(SECTION_STATUS_LABELS, section.status)}
+                      </span>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        section.status === "APPROVED" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                      }`}>
+                        {getTaskCompletionState(section.status)}
                       </span>
                     </div>
                     {/* Progress bar */}
@@ -146,14 +224,47 @@ export function SectionReviewPanel({ sections, collaborators, currentUserRole, s
                     {section.assignments.length > 0 ? (
                       <div>
                         <p className="mb-1.5 text-xs font-medium text-slate-400">Current Assignments</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {section.assignments.map((a) => (
-                            <span key={a.id} className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-600">
-                              <span className="font-semibold">{SECTION_ROLE_LABELS[a.role] ?? a.role}:</span>
-                              {a.name ?? a.email ?? "Unassigned"}
-                              {a.deadline ? <span className="text-slate-400">&middot; {new Date(a.deadline).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span> : null}
-                            </span>
-                          ))}
+                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                          <table className="w-full min-w-[42rem] text-left text-xs text-slate-600">
+                            <thead className="bg-slate-50 text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                              <tr>
+                                <th className="px-3 py-2.5">Assigned to</th>
+                                <th className="px-3 py-2.5">Role</th>
+                                <th className="px-3 py-2.5">Assigned on</th>
+                                <th className="px-3 py-2.5">Assigned by</th>
+                                <th className="px-3 py-2.5">Deadline</th>
+                                <th className="px-3 py-2.5">Task state</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {section.assignments.map((a) => (
+                                <tr key={a.id} className="border-t border-slate-100">
+                                  <td className="px-3 py-2.5">
+                                    <div className="font-medium text-slate-700">{a.name ?? a.email ?? "Unassigned"}</div>
+                                    {a.email ? <div className="text-[11px] text-slate-400">{a.email}</div> : null}
+                                  </td>
+                                  <td className="px-3 py-2.5">{SECTION_ROLE_LABELS[a.role] ?? a.role}</td>
+                                  <td className="px-3 py-2.5">{formatShortDate(a.createdAt)}</td>
+                                  <td className="px-3 py-2.5">
+                                    <div>{a.assignedByName ?? a.assignedByEmail ?? "Unknown"}</div>
+                                    {a.assignedByEmail && a.assignedByName ? (
+                                      <div className="text-[11px] text-slate-400">{a.assignedByEmail}</div>
+                                    ) : null}
+                                  </td>
+                                  <td className="px-3 py-2.5">{formatShortDate(a.deadline)}</td>
+                                  <td className="px-3 py-2.5">
+                                    <span className={`rounded-full px-2 py-0.5 font-medium ${
+                                      section.status === "APPROVED"
+                                        ? "bg-emerald-100 text-emerald-700"
+                                        : "bg-amber-100 text-amber-700"
+                                    }`}>
+                                      {getTaskCompletionState(section.status)}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     ) : null}
@@ -188,8 +299,20 @@ export function SectionReviewPanel({ sections, collaborators, currentUserRole, s
             <label className={labelClassName}>Collaborator</label>
             <select className={inputClassName} value={assignForm.userId} onChange={(e) => setAssignForm((f) => ({ ...f, userId: e.target.value }))}>
               <option value="">Select a team member</option>
-              {collaborators.map((c) => <option key={c.userId} value={c.userId}>{c.name} ({c.email})</option>)}
+              {assignableMembers.map((member) => (
+                <option key={member.userId} value={member.userId}>
+                  {member.name} ({member.email})
+                  {member.isWorkspaceCollaborator
+                    ? member.collaboratorRole
+                      ? ` · ${member.collaboratorRole}`
+                      : ""
+                    : " · will be added to workspace"}
+                </option>
+              ))}
             </select>
+            <p className="mt-1 text-xs text-slate-400">
+              Tenant members can be assigned directly. If they are not already in this workspace, they will be added automatically with a compatible collaborator role.
+            </p>
           </div>
           <div>
             <label className={labelClassName}>Role</label>

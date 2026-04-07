@@ -23,6 +23,7 @@ export function LoginForm({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [formError, setFormError] = useState(error ?? "");
+  const safeCallbackUrl = toSafeCallbackPath(callbackUrl, "/post-auth");
 
   useEffect(() => {
     if (!invalidateSession) {
@@ -61,7 +62,7 @@ export function LoginForm({
               password,
               tenantCode,
               redirect: false,
-              callbackUrl: callbackUrl ?? "/post-auth",
+              callbackUrl: safeCallbackUrl,
             });
 
             if (!response?.ok) {
@@ -69,7 +70,7 @@ export function LoginForm({
               return;
             }
 
-            router.push(response.url ?? "/post-auth");
+            router.replace(safeCallbackUrl);
             router.refresh();
           });
         }}
@@ -129,7 +130,7 @@ export function LoginForm({
         {googleEnabled ? (
           <button
             className="w-full rounded-full border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400"
-            onClick={() => signIn("google", { callbackUrl: callbackUrl ?? "/post-auth" })}
+            onClick={() => signIn("google", { callbackUrl: safeCallbackUrl })}
             type="button"
           >
             Sign in with Google
@@ -139,9 +140,7 @@ export function LoginForm({
         {microsoftEnabled ? (
           <button
             className="w-full rounded-full border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-400"
-            onClick={() =>
-              signIn("azure-ad", { callbackUrl: callbackUrl ?? "/post-auth" })
-            }
+            onClick={() => signIn("azure-ad", { callbackUrl: safeCallbackUrl })}
             type="button"
           >
             Sign in with Microsoft
@@ -161,3 +160,20 @@ export function LoginForm({
 
 const inputClassName =
   "w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-slate-900";
+
+function toSafeCallbackPath(callbackUrl: string | undefined, fallback: string) {
+  if (!callbackUrl) {
+    return fallback;
+  }
+
+  if (callbackUrl.startsWith("/")) {
+    return callbackUrl;
+  }
+
+  try {
+    const parsed = new URL(callbackUrl);
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || fallback;
+  } catch {
+    return fallback;
+  }
+}

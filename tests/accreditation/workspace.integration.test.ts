@@ -1699,6 +1699,102 @@ describe("accreditation workspace core filing", () => {
     });
   });
 
+  test("section assignment auto-adds active tenant members and exposes assignment audit details", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const fixture = await createWorkspaceFixture({
+        tracker,
+        title: "Assignment Audit Workspace",
+        criteria: [
+          {
+            blockCode: "5",
+            title: "Student Support",
+            maxScore: 100,
+          },
+        ],
+      });
+
+      const sectionBlockId = fixture.criteriaByCode.get("5")?.id;
+      expect(sectionBlockId).toBeDefined();
+      if (!sectionBlockId) {
+        throw new Error("Section fixture was not created.");
+      }
+
+      const member = await createTestUser(tracker, {
+        firstName: "Neha",
+        lastName: "Member",
+      });
+      await createTestMembership({
+        tenantId: fixture.tenant.id,
+        userId: member.id,
+        role: "TENANT_USER",
+        createdByUserId: fixture.actor.id,
+      });
+
+      const assigned = await bulkAssignAssessmentWorkspaceSections(
+        fixture.workspaceId,
+        fixture.tenant.id,
+        {
+          assignments: [
+            {
+              sectionBlockId,
+              userId: member.id,
+              role: "RESPONSIBLE",
+              deadline: new Date("2026-03-31T00:00:00.000Z"),
+            },
+          ],
+        },
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(assigned).toMatchObject({ status: "success", assignmentCount: 1 });
+
+      const workspace = await getAssessmentWorkspace(
+        fixture.workspaceId,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(workspace).toMatchObject({ status: "success" });
+      if (workspace.status !== "success") {
+        throw new Error(workspace.message);
+      }
+      expect(workspace.workspace.collaborators).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            userId: member.id,
+            role: WorkspaceCollaboratorRole.RESPONSIBLE,
+          }),
+        ]),
+      );
+
+      const sections = await listAssessmentWorkspaceSections(
+        fixture.workspaceId,
+        fixture.tenant.id,
+        fixture.actor.id,
+        "TENANT_OWNER",
+      );
+      expect(sections).toMatchObject({ status: "success" });
+      if (sections.status !== "success") {
+        throw new Error(sections.message);
+      }
+      expect(sections.sections).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            sectionBlockId,
+            assignments: expect.arrayContaining([
+              expect.objectContaining({
+                userId: member.id,
+                assignedByUserId: fixture.actor.id,
+                assignedByName: expect.stringContaining("Actor"),
+                createdAt: expect.any(Date),
+              }),
+            ]),
+          }),
+        ]),
+      );
+    });
+  });
+
   test("data gaps, reuse preview/apply, evidence version deletion, activity, and manifest are available", async () => {
     await withIsolatedDb(async (tracker) => {
       const fixture = await createWorkspaceFixture({
