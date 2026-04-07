@@ -13,7 +13,7 @@ type Props = Pick<
   | "versions" | "selectedVersionId" | "setSelectedVersionId" | "selectedVersion"
   | "canEditSelectedBody" | "canEditRuntimeCriteria"
   | "createBody" | "toggleBodyActive"
-  | "createVersion" | "toggleVersionActive" | "forkVersion"
+  | "createVersion" | "toggleVersionActive" | "changeVersionLifecycleStatus" | "forkVersion"
 >;
 
 export function BodiesVersionsTab(props: Props) {
@@ -23,7 +23,7 @@ export function BodiesVersionsTab(props: Props) {
     versions, selectedVersionId, setSelectedVersionId, selectedVersion,
     canEditSelectedBody, canEditRuntimeCriteria,
     createBody, toggleBodyActive,
-    createVersion, toggleVersionActive, forkVersion,
+    createVersion, toggleVersionActive, changeVersionLifecycleStatus, forkVersion,
   } = props;
 
   const [showCreateBody, setShowCreateBody] = useState(false);
@@ -194,6 +194,35 @@ export function BodiesVersionsTab(props: Props) {
                 >
                   Fork into Tenant Draft
                 </button>
+              ) : null}
+
+              {/* Lifecycle status transitions for superadmin */}
+              {scope === "superadmin" && selectedVersion && canEditSelectedBody ? (
+                <div className="mt-4 space-y-2 border-t border-slate-200 pt-4">
+                  <p className="text-xs font-medium text-slate-600">Change Status</p>
+                  <div className="flex gap-2">
+                    {selectedVersion.lifecycleStatus !== "DRAFT" && (
+                      <button
+                        type="button"
+                        disabled={submitting}
+                        onClick={() => void changeVersionLifecycleStatus(selectedVersion.id, "DRAFT")}
+                        className="flex-1 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 transition hover:bg-amber-100 disabled:opacity-60"
+                      >
+                        Set to Draft
+                      </button>
+                    )}
+                    {selectedVersion.lifecycleStatus === "DRAFT" && (
+                      <button
+                        type="button"
+                        disabled={submitting}
+                        onClick={() => void changeVersionLifecycleStatus(selectedVersion.id, "PUBLISHED")}
+                        className="flex-1 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
+                      >
+                        Publish
+                      </button>
+                    )}
+                  </div>
+                </div>
               ) : null}
             </div>
           )}

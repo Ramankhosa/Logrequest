@@ -443,6 +443,16 @@ export function useAccreditationManager(
     });
   }
 
+  async function changeVersionLifecycleStatus(versionId: string, newStatus: "DRAFT" | "PUBLISHED") {
+    await withSubmit(async () => {
+      await submitApi(`${basePath}/versions/${versionId}`, "PATCH", { lifecycleStatus: newStatus });
+      setMessage({ type: "success", text: `Version changed to ${newStatus.toLowerCase()}.` });
+      if (selectedBodyId) {
+        await Promise.all([fetchVersions(selectedBodyId), fetchBlocks(versionId)]);
+      }
+    });
+  }
+
   async function forkVersion(versionId: string) {
     await withSubmit(async () => {
       const data = await submitApi(`${basePath}/versions/${versionId}/fork`, "POST");
@@ -603,6 +613,7 @@ export function useAccreditationManager(
     toggleBodyActive,
     createVersion,
     toggleVersionActive,
+    changeVersionLifecycleStatus,
     forkVersion,
     validateDraft,
     publishVersion,

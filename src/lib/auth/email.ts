@@ -8,11 +8,18 @@ type EmailInput = {
 };
 
 export function getBaseUrl() {
-  return (
-    process.env.NEXTAUTH_URL ??
-    process.env.APP_URL ??
-    "http://localhost:3000"
-  ).replace(/\/$/, "");
+  const url =
+    process.env.NEXTAUTH_URL ||
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
+    process.env.VERCEL_URL;
+
+  if (!url) {
+    throw new Error("NEXTAUTH_URL, NEXT_PUBLIC_APP_URL, APP_URL, or VERCEL_URL must be set");
+  }
+
+  const baseUrl = url.startsWith("http") ? url : `https://${url}`;
+  return baseUrl.replace(/\/$/, "");
 }
 
 export async function sendAuthEmail(input: EmailInput) {

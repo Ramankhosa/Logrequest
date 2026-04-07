@@ -776,6 +776,7 @@ async function updateVersion(versionId: string, input: unknown) {
       ...(parsed.data.conversionFactor !== undefined ? { conversionFactor: parsed.data.conversionFactor ?? null } : {}),
       ...(parsed.data.effectiveFrom !== undefined ? { effectiveFrom: parsed.data.effectiveFrom ?? null } : {}),
       ...(parsed.data.effectiveTo !== undefined ? { effectiveTo: parsed.data.effectiveTo ?? null } : {}),
+      ...(parsed.data.lifecycleStatus !== undefined ? { lifecycleStatus: parsed.data.lifecycleStatus } : {}),
       ...(parsed.data.isActive !== undefined ? { isActive: parsed.data.isActive } : {}),
     },
   });
