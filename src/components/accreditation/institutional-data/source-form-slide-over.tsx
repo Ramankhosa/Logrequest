@@ -141,8 +141,8 @@ export function SourceFormSlideOver({
 
         {/* Shape */}
         <div>
-          <label className={labelClassName} htmlFor="sf-shape">Data Format</label>
-          <select id="sf-shape" className={inputClassName} name="shape" defaultValue={source?.shape ?? "DATASET"}>
+          <label className={labelClassName} htmlFor="sf-shape" title="Spreadsheet for multi-row data, Single Value for a number or text.">Data Format</label>
+          <select id="sf-shape" className={inputClassName} name="shape" defaultValue={source?.shape ?? "DATASET"} title="Spreadsheet for multi-row data, Single Value for a number or text.">
             {Object.entries(SOURCE_SHAPE_LABELS).map(([value, lbl]) => (
               <option key={value} value={value}>{lbl}</option>
             ))}
@@ -215,11 +215,11 @@ export function SourceFormSlideOver({
 
             {/* Year-wise / Scope */}
             <div className="flex items-center gap-6 text-sm text-slate-600">
-              <label className="flex items-center gap-2">
+              <label className="flex items-center gap-2" title="Check this if you plan to upload data year over year.">
                 <input type="checkbox" name="supportsYearWise" defaultChecked={source?.supportsYearWise ?? true} />
                 Track by year
               </label>
-              <label className="flex items-center gap-2">
+              <label className="flex items-center gap-2" title="Check this if you plan to upload separate data for different departments, campuses, or programs.">
                 <input type="checkbox" name="supportsScopeBreakdown" defaultChecked={source?.supportsScopeBreakdown ?? false} />
                 Scope breakdown
               </label>

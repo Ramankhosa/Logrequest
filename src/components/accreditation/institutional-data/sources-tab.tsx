@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Pencil, RefreshCw, Database } from "lucide-react";
+import { Plus, Pencil, RefreshCw, Database, Trash2 } from "lucide-react";
 import { EmptyState } from "@/components/dashboard/shared";
 import {
   label,
@@ -31,6 +31,7 @@ type Props = Pick<
   | "saveManualSnapshot"
   | "previewImport"
   | "applyImport"
+  | "deleteSnapshot"
   | "downloadSourceTemplate"
 >;
 
@@ -58,6 +59,7 @@ export function SourcesTab(props: Props) {
     saveManualSnapshot,
     previewImport,
     applyImport,
+    deleteSnapshot,
     downloadSourceTemplate,
   } = props;
 
@@ -153,6 +155,7 @@ export function SourcesTab(props: Props) {
                         disabled={saving}
                         onClick={() => void refreshSource(selectedSource.id)}
                         className="inline-flex items-center gap-1.5 rounded-2xl bg-slate-900 px-3.5 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:bg-slate-300"
+                        title="Fetch the latest data directly from the connected external system."
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
                         Sync Now
@@ -162,6 +165,7 @@ export function SourcesTab(props: Props) {
                       type="button"
                       onClick={() => setSlideOver({ kind: "edit" })}
                       className="inline-flex items-center gap-1.5 rounded-2xl border border-slate-200 px-3.5 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                      title="Edit the configuration for this data source."
                     >
                       <Pencil className="h-3.5 w-3.5" />
                       Edit
@@ -205,25 +209,43 @@ export function SourcesTab(props: Props) {
 
                 {/* Snapshot history */}
                 <div className="rounded-2xl border border-slate-200 p-5">
-                  <h4 className="mb-3 text-sm font-semibold text-slate-900">Data History</h4>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-slate-900">Data History</h4>
+                    <span className="text-[10px] text-slate-400" title="To edit data, simply upload a new file or save a new value with the same Year and Scope.">How to edit?</span>
+                  </div>
                   {selectedSource.snapshots.length === 0 ? (
                     <p className="text-sm text-slate-500">No data uploaded yet. Use the upload panel above to add data.</p>
                   ) : (
                     <div className="space-y-2">
                       {selectedSource.snapshots.slice(0, 8).map((snap) => (
-                        <div key={snap.id} className="rounded-xl bg-slate-50 px-3 py-2">
-                          <p className="text-sm font-medium text-slate-900">
-                            {snap.observedYear ?? "Current"} &middot; {snap.scopeKey}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            {label(ENTRY_MODE_LABELS, snap.entryMode)} &middot; {formatDateTime(snap.lastRefreshedAt)}
-                          </p>
-                          {snap.numberValue != null ? (
-                            <p className="mt-1 text-sm font-semibold text-slate-800">{snap.numberValue}</p>
-                          ) : null}
-                          {snap.datasetRows.length > 0 ? (
-                            <p className="mt-1 text-xs text-slate-500">{snap.datasetRows.length} row{snap.datasetRows.length !== 1 ? "s" : ""}</p>
-                          ) : null}
+                        <div key={snap.id} className="group relative rounded-xl bg-slate-50 px-3 py-2" title="To update this data, upload a new file or save a new value with the same Year and Scope.">
+                          <div className="pr-8">
+                            <p className="text-sm font-medium text-slate-900">
+                              {snap.observedYear ?? "Current"} &middot; {snap.scopeKey}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {label(ENTRY_MODE_LABELS, snap.entryMode)} &middot; {formatDateTime(snap.lastRefreshedAt)}
+                            </p>
+                            {snap.numberValue != null ? (
+                              <p className="mt-1 text-sm font-semibold text-slate-800">{snap.numberValue}</p>
+                            ) : null}
+                            {snap.datasetRows.length > 0 ? (
+                              <p className="mt-1 text-xs text-slate-500">{snap.datasetRows.length} row{snap.datasetRows.length !== 1 ? "s" : ""}</p>
+                            ) : null}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => {
+                              if (confirm("Are you sure you want to delete this data? This action cannot be undone.")) {
+                                void deleteSnapshot(selectedSource.id, snap.id);
+                              }
+                            }}
+                            className="absolute right-2 top-2 hidden rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 group-hover:block disabled:opacity-50"
+                            title="Delete data"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
                       ))}
                     </div>

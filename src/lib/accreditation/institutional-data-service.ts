@@ -1408,20 +1408,47 @@ export async function getInstitutionalDataSourceDatasetTemplate(
   const columns =
     parseDatasetTemplateColumns(source.datasetSchema) ||
     deriveTemplateColumnsFromRows(source.snapshots[0]?.datasetRows);
-  const resolvedColumns =
+  let resolvedColumns =
     columns.length > 0 ? columns : deriveTemplateColumnsFromRows(source.snapshots[0]?.datasetRows);
 
   if (resolvedColumns.length === 0) {
-    return {
-      status: "error",
-      message:
-        "Define template columns on the source first, or import one sample sheet so columns can be inferred.",
-    } satisfies ErrorResult;
+    // Provide a generic fallback template if no schema or data exists
+    resolvedColumns = [
+      { key: "id", label: "id", required: false, sample: "ID-1001" },
+      { key: "name", label: "name", required: false, sample: "Sample Name" },
+      { key: "value", label: "value", required: false, sample: "100" },
+    ];
   }
 
   const headerRow = resolvedColumns.map((column) => column.key);
-  const sampleRow = resolvedColumns.map((column) => column.sample ?? "");
-  const rows = [headerRow, sampleRow];
+  
+  // Generate 3 lines of dummy data
+  const rows = [headerRow];
+  for (let i = 0; i < 3; i++) {
+    const sampleRow = resolvedColumns.map((column) => {
+      if (column.sample) {
+        // If it looks like a number, increment it for variety
+        const num = Number(column.sample);
+        if (!isNaN(num)) return String(num + i);
+        
+        // If it looks like an ID, increment the number part
+        const match = String(column.sample).match(/^(.*?)(\d+)$/);
+        if (match) return `${match[1]}${Number(match[2]) + i}`;
+        
+        return `${column.sample} ${i + 1}`;
+      }
+      
+      const key = column.key.toLowerCase();
+      if (key.includes("id") || key.includes("code")) return `ID-${1000 + i}`;
+      if (key.includes("name")) return `Sample Name ${i + 1}`;
+      if (key.includes("email")) return `user${i + 1}@example.com`;
+      if (key.includes("date") || key.includes("year")) return `2025-01-0${i + 1}`;
+      if (key.includes("department") || key.includes("dept")) return `Department ${String.fromCharCode(65 + i)}`;
+      if (key.includes("status")) return i % 2 === 0 ? "Active" : "Inactive";
+      return `Sample Data ${i + 1}`;
+    });
+    rows.push(sampleRow);
+  }
 
   if (format === "csv") {
     const csv = rowsToCsv(rows);
@@ -1680,6 +1707,33 @@ export async function upsertInstitutionalDataSourceSnapshot(
 
   const syncResult = await syncSnapshotToMetricLinks({ snapshotId: snapshot.id, actorUserId });
   return { status: "success", message: "Source snapshot saved.", snapshot, syncResult } satisfies SuccessResult<{ snapshot: typeof snapshot; syncResult: typeof syncResult }>;
+}
+
+export async function deleteInstitutionalDataSourceSnapshot(
+  sourceId: string,
+  snapshotId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+) {
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const snapshot = await prisma.dataBankSourceSnapshot.findFirst({
+    where: { id: snapshotId, sourceId, source: { tenantId } },
+  });
+
+  if (!snapshot) {
+    return { status: "error", message: "Snapshot not found." } satisfies ErrorResult;
+  }
+
+  await prisma.dataBankSourceSnapshot.delete({
+    where: { id: snapshotId },
+  });
+
+  return { status: "success", message: "Snapshot deleted successfully." } satisfies SuccessResult<{}>;
 }
 
 export async function listInstitutionalMetrics(

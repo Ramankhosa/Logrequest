@@ -85,31 +85,32 @@ function ManualSnapshotForm({
       <form className="space-y-4" onSubmit={handleSubmit}>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className={labelClassName} htmlFor="snap-year">Year</label>
-            <input id="snap-year" className={inputClassName} name="observedYear" type="number" placeholder="e.g. 2025" />
+            <label className={labelClassName} htmlFor="snap-year" title="The academic or calendar year this data applies to (e.g., 2024). Leave blank for current/all-time data.">Year</label>
+            <input id="snap-year" className={inputClassName} name="observedYear" type="number" placeholder="e.g. 2025" title="The academic or calendar year this data applies to (e.g., 2024). Leave blank for current/all-time data." />
           </div>
           <div>
-            <label className={labelClassName} htmlFor="snap-scope">Scope (optional)</label>
-            <input id="snap-scope" className={inputClassName} name="scopeKey" placeholder="e.g. department name" />
+            <label className={labelClassName} htmlFor="snap-scope" title="A specific department, campus, or program this data belongs to. Leave blank for institution-wide data.">Scope (optional)</label>
+            <input id="snap-scope" className={inputClassName} name="scopeKey" placeholder="e.g. department name" title="A specific department, campus, or program this data belongs to. Leave blank for institution-wide data." />
           </div>
         </div>
 
         {source.shape === "SCALAR" ? (
           <div>
-            <label className={labelClassName} htmlFor="snap-num">Value</label>
-            <input id="snap-num" className={inputClassName} name="numberValue" type="number" step="any" placeholder="Numeric value" />
+            <label className={labelClassName} htmlFor="snap-num" title="The numeric value for this data point.">Value</label>
+            <input id="snap-num" className={inputClassName} name="numberValue" type="number" step="any" placeholder="Numeric value" title="The numeric value for this data point." />
           </div>
         ) : null}
 
         <div>
-          <label className={labelClassName} htmlFor="snap-text">{source.shape === "NARRATIVE" ? "Narrative Text" : "Text Value (optional)"}</label>
-          <textarea id="snap-text" className={`${inputClassName} min-h-[5rem]`} name="textValue" placeholder="Enter text..." />
+          <label className={labelClassName} htmlFor="snap-text" title="Any additional text or narrative explanation for this data point.">{source.shape === "NARRATIVE" ? "Narrative Text" : "Text Value (optional)"}</label>
+          <textarea id="snap-text" className={`${inputClassName} min-h-[5rem]`} name="textValue" placeholder="Enter text..." title="Any additional text or narrative explanation for this data point." />
         </div>
 
         <button
           type="submit"
           disabled={saving}
           className="rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:bg-slate-300"
+          title="Save this value to the system."
         >
           {saving ? "Saving..." : "Save Value"}
         </button>
@@ -179,6 +180,7 @@ function DatasetImportForm({
           disabled={saving}
           onClick={() => void onDownloadTemplate(source.id, "xlsx")}
           className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400"
+          title="Download an Excel template with sample data to help you format your upload."
         >
           Download XLSX Template
         </button>
@@ -187,6 +189,7 @@ function DatasetImportForm({
           disabled={saving}
           onClick={() => void onDownloadTemplate(source.id, "csv")}
           className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400"
+          title="Download a CSV template with sample data to help you format your upload."
         >
           Download CSV Template
         </button>
@@ -194,28 +197,29 @@ function DatasetImportForm({
 
       <div className="space-y-4">
         <div>
-          <label className={labelClassName} htmlFor="import-file">File</label>
+          <label className={labelClassName} htmlFor="import-file" title="Select the spreadsheet file you want to upload.">File</label>
           <input
             id="import-file"
             className={inputClassName}
             type="file"
             accept=".csv,.xlsx,.xls"
             onChange={(e) => { setFile(e.target.files?.[0] ?? null); onClearPreview(); }}
+            title="Select the spreadsheet file you want to upload."
           />
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className={labelClassName} htmlFor="import-year">Year (optional)</label>
-            <input id="import-year" className={inputClassName} type="number" placeholder="e.g. 2025" value={year} onChange={(e) => setYear(e.target.value)} />
+            <label className={labelClassName} htmlFor="import-year" title="The academic or calendar year this data applies to (e.g., 2024). Leave blank for current/all-time data.">Year (optional)</label>
+            <input id="import-year" className={inputClassName} type="number" placeholder="e.g. 2025" value={year} onChange={(e) => setYear(e.target.value)} title="The academic or calendar year this data applies to (e.g., 2024). Leave blank for current/all-time data." />
           </div>
           <div>
-            <label className={labelClassName} htmlFor="import-scope">Scope (optional)</label>
-            <input id="import-scope" className={inputClassName} placeholder="e.g. department name" value={scopeKey} onChange={(e) => setScopeKey(e.target.value)} />
+            <label className={labelClassName} htmlFor="import-scope" title="A specific department, campus, or program this data belongs to. Leave blank for institution-wide data.">Scope (optional)</label>
+            <input id="import-scope" className={inputClassName} placeholder="e.g. department name" value={scopeKey} onChange={(e) => setScopeKey(e.target.value)} title="A specific department, campus, or program this data belongs to. Leave blank for institution-wide data." />
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-slate-600">
+        <label className="flex items-center gap-2 text-sm text-slate-600" title="If checked, existing data for this Year and Scope will be overwritten. If unchecked, new rows will be appended.">
           <input type="checkbox" checked={replaceRows} onChange={(e) => setReplaceRows(e.target.checked)} />
           Replace existing rows (recommended)
         </label>
@@ -226,6 +230,7 @@ function DatasetImportForm({
             disabled={saving || !file}
             onClick={handlePreview}
             className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400"
+            title="Check your data for errors before finalizing the import."
           >
             Preview
           </button>
@@ -234,6 +239,7 @@ function DatasetImportForm({
             disabled={saving || !file}
             onClick={handleApply}
             className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:bg-slate-300"
+            title="Save this data to the system."
           >
             {saving ? "Importing..." : "Import Data"}
           </button>

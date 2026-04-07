@@ -373,6 +373,17 @@ export function useInstitutionalData() {
     });
   }
 
+  async function deleteSnapshot(sourceId: string, snapshotId: string) {
+    await withSaving(async () => {
+      await fetchJson(`${BASE}/sources/${sourceId}/snapshots/${snapshotId}`, { method: "DELETE" });
+      await Promise.all([refreshOverview(), refreshSources(sourceId), loadSourceDetail(sourceId)]);
+      if (selectedMetricId) {
+        await Promise.all([refreshMetrics(selectedMetricId), loadMetricDetail(selectedMetricId)]);
+      }
+      setMessage({ type: "success", text: "Data deleted." });
+    });
+  }
+
   async function downloadSourceTemplate(sourceId: string, format: "csv" | "xlsx") {
     await withSaving(async () => {
       const response = await fetch(`${BASE}/sources/${sourceId}/dataset/template?format=${format}`, {
@@ -473,6 +484,7 @@ export function useInstitutionalData() {
     saveManualSnapshot,
     previewImport,
     applyImport,
+    deleteSnapshot,
     downloadSourceTemplate,
     createMetric,
     updateMetric,
