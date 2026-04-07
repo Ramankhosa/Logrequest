@@ -6,6 +6,8 @@ import type {
   TenantPermissionAssignmentView,
   TenantPermissionRoleDefinition,
 } from "@/lib/tenant-permissions/service";
+import { SlideOver } from "@/components/dashboard/shared/slide-over";
+import { Shield, ShieldAlert, CheckCircle2 } from "lucide-react";
 
 type Props = {
   initialAssignments: TenantPermissionAssignmentView[];
@@ -20,6 +22,10 @@ export function AccessControlManager({ initialAssignments, roleDefinitions }: Pr
   const [query, setQuery] = useState("");
   const [savingUserId, setSavingUserId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  // Slide-over state
+  const [selectedUser, setSelectedUser] = useState<TenantPermissionAssignmentView | null>(null);
+  const [draftRoles, setDraftRoles] = useState<TenantPermissionRole[]>([]);
 
   const filteredRows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -39,31 +45,32 @@ export function AccessControlManager({ initialAssignments, roleDefinitions }: Pr
     );
   }, [query, rows]);
 
-  function toggleRole(userId: string, roleCode: TenantPermissionRole) {
-    setRows((current) =>
-      current.map((row) =>
-        row.userId !== userId
-          ? row
-          : {
-              ...row,
-              permissionRoles: row.permissionRoles.includes(roleCode)
-                ? row.permissionRoles.filter((code) => code !== roleCode)
-                : [...row.permissionRoles, roleCode].sort(),
-            },
-      ),
+  function handleManageAccess(user: TenantPermissionAssignmentView) {
+    setSelectedUser(user);
+    setDraftRoles([...user.permissionRoles]);
+    setFeedback(null);
+  }
+
+  function toggleDraftRole(roleCode: TenantPermissionRole) {
+    setDraftRoles((current) =>
+      current.includes(roleCode)
+        ? current.filter((code) => code !== roleCode)
+        : [...current, roleCode].sort(),
     );
   }
 
-  async function saveRow(row: TenantPermissionAssignmentView) {
-    setSavingUserId(row.userId);
+  async function saveRoles() {
+    if (!selectedUser) return;
+    
+    setSavingUserId(selectedUser.userId);
     setFeedback(null);
     try {
       const response = await fetch("/api/tenant/access-control", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          targetUserId: row.userId,
-          roleCodes: row.permissionRoles,
+          targetUserId: selectedUser.userId,
+          roleCodes: draftRoles,
         }),
       });
       const payload = await response.json();
@@ -71,7 +78,18 @@ export function AccessControlManager({ initialAssignments, roleDefinitions }: Pr
         setFeedback({ type: "error", message: payload.message ?? "Failed to update access roles." });
         return;
       }
-      setFeedback({ type: "success", message: `Updated access roles for ${row.name}.` });
+      
+      // Update local state
+      setRows((current) =>
+        current.map((row) =>
+          row.userId !== selectedUser.userId
+            ? row
+            : { ...row, permissionRoles: draftRoles },
+        ),
+      );
+      
+      setFeedback({ type: "success", message: `Updated access roles for ${selectedUser.name}.` });
+      setSelectedUser(null);
     } catch {
       setFeedback({ type: "error", message: "Failed to update access roles." });
     } finally {
@@ -117,94 +135,173 @@ export function AccessControlManager({ initialAssignments, roleDefinitions }: Pr
         </div>
       </section>
 
-      {feedback ? (
+      {feedback && !selectedUser ? (
         <div
-          className={`rounded-2xl border px-4 py-3 text-sm ${
+          className={`flex items-center gap-3 rounded-2xl border px-4 py-3 text-sm ${
             feedback.type === "success"
               ? "border-emerald-200 bg-emerald-50 text-emerald-700"
               : "border-rose-200 bg-rose-50 text-rose-700"
           }`}
         >
+          {feedback.type === "success" ? (
+            <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+          ) : (
+            <ShieldAlert className="h-5 w-5 text-rose-500" />
+          )}
           {feedback.message}
         </div>
       ) : null}
 
-      <section className="overflow-hidden rounded-[1.75rem] border border-slate-200/80 bg-white/85">
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-slate-200/80 text-left">
-            <thead className="bg-slate-50/80">
-              <tr>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Person</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Base Role</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Primary Unit</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Access Status</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Permission Roles</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200/80">
-              {filteredRows.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500">
-                    No matching users found.
-                  </td>
-                </tr>
-              ) : (
-                filteredRows.map((row) => (
-                  <tr key={row.userId} className="align-top">
-                    <td className="px-4 py-4">
-                      <div className="space-y-1">
-                        <div className="text-sm font-semibold text-slate-900">{row.name}</div>
-                        <div className="text-sm text-slate-500">{row.email}</div>
-                        <div className="text-xs text-slate-400">
-                          {row.employeeId ?? "No employee id"}
-                          {row.designation ? ` · ${row.designation}` : ""}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-4 text-sm text-slate-600">{row.baseRole}</td>
-                    <td className="px-4 py-4 text-sm text-slate-600">
-                      {row.primaryUnitName ? `${row.primaryUnitName} (${row.primaryUnitCode})` : "—"}
-                    </td>
-                    <td className="px-4 py-4 text-sm text-slate-600">{row.membershipStatus}</td>
-                    <td className="px-4 py-4">
-                      <div className="grid gap-2 md:grid-cols-2">
-                        {roleDefinitions.map((definition) => (
-                          <label
-                            key={`${row.userId}:${definition.code}`}
-                            className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-700"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={row.permissionRoles.includes(definition.code)}
-                              onChange={() => toggleRole(row.userId, definition.code)}
-                              className="mt-0.5 h-4 w-4 rounded border-slate-300"
-                            />
-                            <span>
-                              <span className="block font-medium text-slate-900">{definition.label}</span>
-                              <span className="block text-xs text-slate-500">{definition.description}</span>
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-4 py-4">
-                      <button
-                        type="button"
-                        onClick={() => void saveRow(row)}
-                        disabled={savingUserId === row.userId}
-                        className="inline-flex items-center rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {savingUserId === row.userId ? "Saving..." : "Save roles"}
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+      <section className="space-y-3">
+        {filteredRows.length === 0 ? (
+          <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/85 p-8 text-center text-sm text-slate-500">
+            No matching users found.
+          </div>
+        ) : (
+          filteredRows.map((row) => (
+            <div
+              key={row.userId}
+              className="flex flex-col gap-4 rounded-[1.75rem] border border-slate-200/80 bg-white/85 p-5 transition hover:border-slate-300 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="flex-1 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-base font-semibold text-slate-900">{row.name}</h3>
+                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-600">
+                    {row.baseRole}
+                  </span>
+                  {row.membershipStatus !== "ACTIVE" && (
+                    <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-700">
+                      {row.membershipStatus}
+                    </span>
+                  )}
+                </div>
+                <div className="text-sm text-slate-500">{row.email}</div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+                  {row.employeeId ? <span>ID: {row.employeeId}</span> : null}
+                  {row.designation ? <span>{row.designation}</span> : null}
+                  {row.primaryUnitName ? (
+                    <span className="flex items-center gap-1">
+                      <span className="h-1 w-1 rounded-full bg-slate-300" />
+                      {row.primaryUnitName} ({row.primaryUnitCode})
+                    </span>
+                  ) : null}
+                </div>
+                
+                {row.permissionRoles.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5 pt-2">
+                    {row.permissionRoles.map((roleCode) => {
+                      const def = roleDefinitions.find((d) => d.code === roleCode);
+                      return (
+                        <span
+                          key={roleCode}
+                          className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700"
+                        >
+                          <Shield className="h-3 w-3" />
+                          {def?.label || roleCode}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              
+              <div className="shrink-0 pt-2 sm:pt-0">
+                <button
+                  type="button"
+                  onClick={() => handleManageAccess(row)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-900 sm:w-auto"
+                >
+                  Manage Access
+                </button>
+              </div>
+            </div>
+          ))
+        )}
       </section>
+
+      <SlideOver
+        open={!!selectedUser}
+        onClose={() => {
+          setSelectedUser(null);
+          setFeedback(null);
+        }}
+        title="Manage Access Roles"
+        subtitle={selectedUser ? `Editing roles for ${selectedUser.name}` : undefined}
+      >
+        {selectedUser && (
+          <div className="flex h-full flex-col">
+            <div className="flex-1 space-y-6">
+              {feedback && selectedUser ? (
+                <div
+                  className={`rounded-xl border px-4 py-3 text-sm ${
+                    feedback.type === "success"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-rose-200 bg-rose-50 text-rose-700"
+                  }`}
+                >
+                  {feedback.message}
+                </div>
+              ) : null}
+
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-slate-900">Available Roles</h3>
+                <div className="grid gap-3">
+                  {roleDefinitions.map((definition) => {
+                    const isSelected = draftRoles.includes(definition.code);
+                    return (
+                      <label
+                        key={definition.code}
+                        className={`relative flex cursor-pointer items-start gap-4 rounded-2xl border p-4 transition-colors ${
+                          isSelected
+                            ? "border-indigo-600 bg-indigo-50/50 ring-1 ring-indigo-600"
+                            : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                        }`}
+                      >
+                        <div className="flex h-5 items-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleDraftRole(definition.code)}
+                            className="h-5 w-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <span className={`block font-medium ${isSelected ? "text-indigo-900" : "text-slate-900"}`}>
+                            {definition.label}
+                          </span>
+                          <span className={`mt-1 block text-sm ${isSelected ? "text-indigo-700" : "text-slate-500"}`}>
+                            {definition.description}
+                          </span>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="sticky bottom-0 -mx-5 -mb-5 mt-8 border-t border-slate-200 bg-white p-5">
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setSelectedUser(null)}
+                  className="rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveRoles()}
+                  disabled={savingUserId === selectedUser.userId}
+                  className="inline-flex items-center justify-center rounded-xl bg-slate-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingUserId === selectedUser.userId ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </SlideOver>
     </div>
   );
 }
