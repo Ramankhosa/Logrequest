@@ -99,6 +99,7 @@ export function InstitutionalDataManager() {
           saveManualSnapshot={data.saveManualSnapshot}
           previewImport={data.previewImport}
           applyImport={data.applyImport}
+          downloadSourceTemplate={data.downloadSourceTemplate}
         />
       ) : null}
 

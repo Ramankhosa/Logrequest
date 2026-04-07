@@ -25,6 +25,7 @@ import {
   createDataBankDomain,
   createInstitutionalDataSource,
   createInstitutionalMetric,
+  getInstitutionalDataSourceDatasetTemplate,
   getInstitutionalDataGaps,
   listMetricRefreshSuggestions,
   refreshInstitutionalDataSource,
@@ -172,6 +173,75 @@ async function createWorkspaceFixture(tracker: DbTracker, blockCode: string) {
 }
 
 describe("institutional data service", () => {
+  test("dataset sources can generate CSV and XLSX templates from configured source columns", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const domain = await createDataBankDomain(
+        tenant.id,
+        { code: "RESEARCH", name: "Research" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(domain).toMatchObject({ status: "success" });
+      if (domain.status !== "success") {
+        throw new Error(domain.message);
+      }
+
+      const source = await createInstitutionalDataSource(
+        tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "PUBLICATION_REGISTER",
+          name: "Publication Register",
+          kind: "CSV_IMPORT",
+          shape: "DATASET",
+          datasetSchema: {
+            columns: [
+              { key: "title", label: "Title" },
+              { key: "issn", label: "ISSN" },
+              { key: "scopus_indexed", label: "Scopus Indexed" },
+            ],
+          },
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(source).toMatchObject({ status: "success" });
+      if (source.status !== "success") {
+        throw new Error(source.message);
+      }
+
+      const csvTemplate = await getInstitutionalDataSourceDatasetTemplate(
+        source.source.id,
+        tenant.id,
+        actor.id,
+        "TENANT_OWNER",
+        "csv",
+      );
+      expect(csvTemplate).toMatchObject({ status: "success" });
+      if (csvTemplate.status !== "success") {
+        throw new Error(csvTemplate.message);
+      }
+      expect(csvTemplate.filename).toBe("publication_register-template.csv");
+      expect(csvTemplate.content.toString("utf8")).toContain("title,issn,scopus_indexed");
+
+      const xlsxTemplate = await getInstitutionalDataSourceDatasetTemplate(
+        source.source.id,
+        tenant.id,
+        actor.id,
+        "TENANT_OWNER",
+        "xlsx",
+      );
+      expect(xlsxTemplate).toMatchObject({ status: "success" });
+      if (xlsxTemplate.status !== "success") {
+        throw new Error(xlsxTemplate.message);
+      }
+      expect(xlsxTemplate.filename).toBe("publication_register-template.xlsx");
+      expect(xlsxTemplate.content.byteLength).toBeGreaterThan(100);
+    });
+  });
+
   test("personnel adapter refresh writes a current-state dataset snapshot without inventing year history", async () => {
     await withIsolatedDb(async (tracker) => {
       const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);

@@ -12,6 +12,7 @@ type Props = {
   onSaveSnapshot: (sourceId: string, payload: Record<string, unknown>) => Promise<void>;
   onPreviewImport: (sourceId: string, file: File, year: number | null, scopeKey: string | null, replaceRows: boolean) => Promise<void>;
   onApplyImport: (sourceId: string, file: File, year: number | null, scopeKey: string | null, replaceRows: boolean) => Promise<void>;
+  onDownloadTemplate: (sourceId: string, format: "csv" | "xlsx") => Promise<void>;
   onClearPreview: () => void;
 };
 
@@ -22,6 +23,7 @@ export function SourceUploadPanel({
   onSaveSnapshot,
   onPreviewImport,
   onApplyImport,
+  onDownloadTemplate,
   onClearPreview,
 }: Props) {
   const showDatasetImport = source.shape === "DATASET";
@@ -42,6 +44,7 @@ export function SourceUploadPanel({
           importPreview={importPreview}
           onPreview={onPreviewImport}
           onApply={onApplyImport}
+          onDownloadTemplate={onDownloadTemplate}
           onClearPreview={onClearPreview}
         />
       ) : null}
@@ -123,6 +126,7 @@ function DatasetImportForm({
   importPreview,
   onPreview,
   onApply,
+  onDownloadTemplate,
   onClearPreview,
 }: {
   source: SourceDetail;
@@ -130,6 +134,7 @@ function DatasetImportForm({
   importPreview: ImportPreview | null;
   onPreview: (sourceId: string, file: File, year: number | null, scopeKey: string | null, replaceRows: boolean) => Promise<void>;
   onApply: (sourceId: string, file: File, year: number | null, scopeKey: string | null, replaceRows: boolean) => Promise<void>;
+  onDownloadTemplate: (sourceId: string, format: "csv" | "xlsx") => Promise<void>;
   onClearPreview: () => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
@@ -168,6 +173,24 @@ function DatasetImportForm({
       <p className="mb-4 text-xs text-slate-500">
         Upload a CSV or Excel file (.csv, .xlsx, .xls). The first row should contain column headers.
       </p>
+      <div className="mb-4 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => void onDownloadTemplate(source.id, "xlsx")}
+          className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400"
+        >
+          Download XLSX Template
+        </button>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => void onDownloadTemplate(source.id, "csv")}
+          className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400"
+        >
+          Download CSV Template
+        </button>
+      </div>
 
       <div className="space-y-4">
         <div>

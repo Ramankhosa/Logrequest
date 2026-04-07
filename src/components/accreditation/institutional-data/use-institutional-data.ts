@@ -38,6 +38,7 @@ export type SourceDetail = {
   kind: string;
   shape: string;
   adapterKey: string | null;
+  datasetSchema?: Record<string, unknown> | null;
   domainId?: string | null;
   supportsYearWise: boolean;
   supportsScopeBreakdown: boolean;
@@ -152,6 +153,17 @@ async function fileToBase64(file: File) {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary);
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ── Base URL ──
@@ -361,6 +373,27 @@ export function useInstitutionalData() {
     });
   }
 
+  async function downloadSourceTemplate(sourceId: string, format: "csv" | "xlsx") {
+    await withSaving(async () => {
+      const response = await fetch(`${BASE}/sources/${sourceId}/dataset/template?format=${format}`, {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(data?.message ?? "Failed to download template.");
+      }
+
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const match = disposition.match(/filename=\"?([^"]+)\"?/i);
+      const filename = match?.[1] ?? `dataset-template.${format}`;
+      const blob = await response.blob();
+      downloadBlob(blob, filename);
+      setMessage({ type: "success", text: `Template downloaded (${format.toUpperCase()}).` });
+    });
+  }
+
   async function createMetric(payload: Record<string, unknown>) {
     await withSaving(async () => {
       const r = await postJson<{ metric: MetricRow }>(`${BASE}/metrics`, payload);
@@ -440,6 +473,7 @@ export function useInstitutionalData() {
     saveManualSnapshot,
     previewImport,
     applyImport,
+    downloadSourceTemplate,
     createMetric,
     updateMetric,
     addMetricLink,

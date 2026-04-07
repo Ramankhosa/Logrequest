@@ -31,6 +31,7 @@ type Props = Pick<
   | "saveManualSnapshot"
   | "previewImport"
   | "applyImport"
+  | "downloadSourceTemplate"
 >;
 
 type SlideOverMode = { kind: "create" } | { kind: "edit" } | null;
@@ -57,6 +58,7 @@ export function SourcesTab(props: Props) {
     saveManualSnapshot,
     previewImport,
     applyImport,
+    downloadSourceTemplate,
   } = props;
 
   const [slideOver, setSlideOver] = useState<SlideOverMode>(null);
@@ -176,6 +178,7 @@ export function SourcesTab(props: Props) {
                 onSaveSnapshot={saveManualSnapshot}
                 onPreviewImport={previewImport}
                 onApplyImport={applyImport}
+                onDownloadTemplate={downloadSourceTemplate}
                 onClearPreview={clearImportPreview}
               />
 

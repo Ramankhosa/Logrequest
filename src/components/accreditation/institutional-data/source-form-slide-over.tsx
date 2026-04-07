@@ -21,6 +21,41 @@ type Props = {
   onSubmit: (payload: Record<string, unknown>) => Promise<void>;
 };
 
+function datasetSchemaToText(value: Record<string, unknown> | null | undefined) {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  const rawColumns = Array.isArray((value as { columns?: unknown[] }).columns)
+    ? (value as { columns: unknown[] }).columns
+    : [];
+
+  return rawColumns
+    .map((column) => {
+      if (typeof column === "string") {
+        return column.trim();
+      }
+      if (column && typeof column === "object") {
+        const item = column as Record<string, unknown>;
+        const key = typeof item.key === "string" ? item.key.trim() : "";
+        return key;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function parseDatasetSchemaText(value: string) {
+  const columns = value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((key) => ({ key, label: key, required: false }));
+
+  return { columns };
+}
+
 export function SourceFormSlideOver({
   open,
   onClose,
@@ -36,14 +71,19 @@ export function SourceFormSlideOver({
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const fd = new FormData(event.currentTarget);
+    const shape = String(fd.get("shape") ?? "SCALAR");
     const payload = {
       domainId: String(fd.get("domainId") ?? "") || null,
       code: String(fd.get("code") ?? ""),
       name: String(fd.get("name") ?? ""),
       description: String(fd.get("description") ?? "") || null,
       kind: String(fd.get("kind") ?? "MANUAL"),
-      shape: String(fd.get("shape") ?? "SCALAR"),
+      shape,
       adapterKey: String(fd.get("adapterKey") ?? "") || null,
+      datasetSchema:
+        shape === "DATASET"
+          ? parseDatasetSchemaText(String(fd.get("datasetSchemaText") ?? ""))
+          : undefined,
       supportsYearWise: fd.get("supportsYearWise") === "on",
       supportsScopeBreakdown: fd.get("supportsScopeBreakdown") === "on",
     };
@@ -157,6 +197,20 @@ export function SourceFormSlideOver({
                 ))}
               </select>
               <p className="mt-1 text-xs text-slate-400">Only needed for &ldquo;Auto-sync from System&rdquo; sources.</p>
+            </div>
+
+            <div>
+              <label className={labelClassName} htmlFor="sf-dataset-schema">Template Columns</label>
+              <textarea
+                id="sf-dataset-schema"
+                className={`${inputClassName} min-h-[7rem]`}
+                name="datasetSchemaText"
+                defaultValue={datasetSchemaToText(source?.datasetSchema ?? null)}
+                placeholder={"employee_id\nemployee_name\ndepartment\nqualification"}
+              />
+              <p className="mt-1 text-xs text-slate-400">
+                One column per line or comma-separated. These headers will be used to generate CSV/XLSX import templates.
+              </p>
             </div>
 
             {/* Year-wise / Scope */}

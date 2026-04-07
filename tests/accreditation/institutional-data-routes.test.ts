@@ -12,6 +12,7 @@ const listInstitutionalDataSourceSnapshotsMock = vi.fn();
 const upsertInstitutionalDataSourceSnapshotMock = vi.fn();
 const previewInstitutionalDataSourceImportMock = vi.fn();
 const importInstitutionalDataSourceDatasetMock = vi.fn();
+const getInstitutionalDataSourceDatasetTemplateMock = vi.fn();
 const refreshInstitutionalDataSourceMock = vi.fn();
 const listInstitutionalMetricsMock = vi.fn();
 const createInstitutionalMetricMock = vi.fn();
@@ -40,6 +41,7 @@ vi.mock("@/lib/accreditation/institutional-data-service", () => ({
   upsertInstitutionalDataSourceSnapshot: upsertInstitutionalDataSourceSnapshotMock,
   previewInstitutionalDataSourceImport: previewInstitutionalDataSourceImportMock,
   importInstitutionalDataSourceDataset: importInstitutionalDataSourceDatasetMock,
+  getInstitutionalDataSourceDatasetTemplate: getInstitutionalDataSourceDatasetTemplateMock,
   refreshInstitutionalDataSource: refreshInstitutionalDataSourceMock,
   listInstitutionalMetrics: listInstitutionalMetricsMock,
   createInstitutionalMetric: createInstitutionalMetricMock,
@@ -80,6 +82,12 @@ describe("institutional data routes", () => {
     upsertInstitutionalDataSourceSnapshotMock.mockResolvedValue({ status: "success", snapshot: { id: "snapshot-1" } });
     previewInstitutionalDataSourceImportMock.mockResolvedValue({ status: "success", preview: { rowCount: 2 } });
     importInstitutionalDataSourceDatasetMock.mockResolvedValue({ status: "success", snapshot: { id: "snapshot-1" } });
+    getInstitutionalDataSourceDatasetTemplateMock.mockResolvedValue({
+      status: "success",
+      filename: "source-template.xlsx",
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      content: Buffer.from("template"),
+    });
     refreshInstitutionalDataSourceMock.mockResolvedValue({ status: "success", refreshedSnapshotCount: 1 });
     listInstitutionalMetricsMock.mockResolvedValue({ status: "success", metrics: [] });
     createInstitutionalMetricMock.mockResolvedValue({ status: "success", metric: { id: "metric-1" } });
@@ -98,6 +106,7 @@ describe("institutional data routes", () => {
     const snapshotsRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/snapshots/route");
     const importPreviewRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/dataset/import-preview/route");
     const importRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/dataset/import/route");
+    const templateRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/dataset/template/route");
     const refreshRoute = await import("@/app/api/tenant/accreditation/institutional-data/sources/[id]/refresh/route");
     const metricsRoute = await import("@/app/api/tenant/accreditation/institutional-data/metrics/route");
     const metricRoute = await import("@/app/api/tenant/accreditation/institutional-data/metrics/[id]/route");
@@ -230,6 +239,19 @@ describe("institutional data routes", () => {
       { fileName: "faculty.csv", fileContentBase64: "ZHVtbXk=" },
       "user-1",
       "TENANT_OWNER",
+    );
+
+    const templateResponse = await templateRoute.GET(
+      new Request("http://localhost?format=xlsx"),
+      { params: Promise.resolve({ id: "source-1" }) },
+    );
+    expect(templateResponse.status).toBe(200);
+    expect(getInstitutionalDataSourceDatasetTemplateMock).toHaveBeenCalledWith(
+      "source-1",
+      "tenant-1",
+      "user-1",
+      "TENANT_OWNER",
+      "xlsx",
     );
 
     const refreshResponse = await refreshRoute.POST(new Request("http://localhost", { method: "POST" }), {
