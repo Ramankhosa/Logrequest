@@ -274,6 +274,13 @@ type ParsedDatasetImport = {
   }>;
 };
 
+type DatasetTemplateColumn = {
+  key: string;
+  label: string;
+  required: boolean;
+  sample: string | null;
+};
+
 function normalizeNullableString(value: string | null | undefined) {
   const normalized = value?.trim();
   return normalized ? normalized : null;
@@ -419,6 +426,115 @@ function parseDatasetImport(input: z.infer<typeof dataBankDatasetImportSchema>):
     sampleRows: datasetRows.slice(0, 5).map((row) => row.rowData),
     datasetRows,
   };
+}
+
+function normalizeTemplateKey(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseDatasetTemplateColumns(value: Prisma.JsonValue | null | undefined): DatasetTemplateColumn[] {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  const sourceObject = value as Record<string, unknown>;
+  const rawColumns = Array.isArray(sourceObject.columns)
+    ? sourceObject.columns
+    : Array.isArray(value)
+      ? (value as unknown[])
+      : [];
+
+  const columns: DatasetTemplateColumn[] = [];
+  for (const rawColumn of rawColumns) {
+    if (typeof rawColumn === "string") {
+      const key = normalizeTemplateKey(rawColumn);
+      if (!key) continue;
+      columns.push({
+        key,
+        label: key,
+        required: false,
+        sample: null,
+      });
+      continue;
+    }
+
+    if (rawColumn && typeof rawColumn === "object") {
+      const item = rawColumn as Record<string, unknown>;
+      const key = normalizeTemplateKey(item.key ?? item.code ?? item.name ?? item.label);
+      if (!key) continue;
+      const label = normalizeTemplateKey(item.label) ?? key;
+      const sample =
+        item.sample == null
+          ? null
+          : typeof item.sample === "string" || typeof item.sample === "number" || typeof item.sample === "boolean"
+            ? String(item.sample)
+            : null;
+
+      columns.push({
+        key,
+        label,
+        required: item.required === true,
+        sample,
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  return columns.filter((column) => {
+    const fingerprint = column.key.toLowerCase();
+    if (seen.has(fingerprint)) {
+      return false;
+    }
+    seen.add(fingerprint);
+    return true;
+  });
+}
+
+function deriveTemplateColumnsFromRows(
+  rows: Array<{ rowData: Prisma.JsonValue }> | undefined,
+): DatasetTemplateColumn[] {
+  if (!rows || rows.length === 0) {
+    return [];
+  }
+
+  const orderedKeys: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (!row.rowData || typeof row.rowData !== "object" || Array.isArray(row.rowData)) {
+      continue;
+    }
+    for (const key of Object.keys(row.rowData)) {
+      const normalized = key.trim();
+      if (!normalized || seen.has(normalized.toLowerCase())) continue;
+      seen.add(normalized.toLowerCase());
+      orderedKeys.push(normalized);
+    }
+  }
+
+  return orderedKeys.map((key) => ({
+    key,
+    label: key,
+    required: false,
+    sample: null,
+  }));
+}
+
+function rowsToCsv(rows: string[][]) {
+  return rows
+    .map((row) =>
+      row
+        .map((value) => {
+          const normalized = value ?? "";
+          const escaped = normalized.replaceAll('"', '""');
+          return /[",\n]/.test(normalized) ? `"${escaped}"` : escaped;
+        })
+        .join(","),
+    )
+    .join("\n");
 }
 
 function rowMatchesFilter(rowData: Prisma.JsonObject, filter: Record<string, unknown> | undefined) {
@@ -1248,6 +1364,100 @@ export async function getInstitutionalDataSource(
     source,
     adapters: listInstitutionalDataAdapters(),
   } satisfies SuccessResult<{ source: typeof source; adapters: ReturnType<typeof listInstitutionalDataAdapters> }>;
+}
+
+export async function getInstitutionalDataSourceDatasetTemplate(
+  sourceId: string,
+  tenantId: string,
+  actorUserId: string,
+  actorRole: Role | null | undefined,
+  format: "csv" | "xlsx" = "xlsx",
+) {
+  const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
+  if (accessError) {
+    return { status: "error", message: accessError } satisfies ErrorResult;
+  }
+
+  const source = await prisma.dataBankSourceDefinition.findFirst({
+    where: { id: sourceId, tenantId, isActive: true },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      shape: true,
+      datasetSchema: true,
+      snapshots: {
+        orderBy: [{ updatedAt: "desc" }],
+        take: 1,
+        include: {
+          datasetRows: {
+            orderBy: { rowIndex: "asc" },
+            take: 25,
+          },
+        },
+      },
+    },
+  });
+  if (!source) {
+    return { status: "error", message: "Institutional data source not found." } satisfies ErrorResult;
+  }
+  if (source.shape !== "DATASET") {
+    return { status: "error", message: "Only dataset sources can generate spreadsheet templates." } satisfies ErrorResult;
+  }
+
+  const columns =
+    parseDatasetTemplateColumns(source.datasetSchema) ||
+    deriveTemplateColumnsFromRows(source.snapshots[0]?.datasetRows);
+  const resolvedColumns =
+    columns.length > 0 ? columns : deriveTemplateColumnsFromRows(source.snapshots[0]?.datasetRows);
+
+  if (resolvedColumns.length === 0) {
+    return {
+      status: "error",
+      message:
+        "Define template columns on the source first, or import one sample sheet so columns can be inferred.",
+    } satisfies ErrorResult;
+  }
+
+  const headerRow = resolvedColumns.map((column) => column.key);
+  const sampleRow = resolvedColumns.map((column) => column.sample ?? "");
+  const rows = [headerRow, sampleRow];
+
+  if (format === "csv") {
+    const csv = rowsToCsv(rows);
+    return {
+      status: "success",
+      filename: `${source.code.toLowerCase()}-template.csv`,
+      contentType: "text/csv; charset=utf-8",
+      content: Buffer.from(csv, "utf8"),
+      columns: resolvedColumns,
+    } satisfies SuccessResult<{
+      filename: string;
+      contentType: string;
+      content: Buffer;
+      columns: DatasetTemplateColumn[];
+    }>;
+  }
+
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  sheet["!cols"] = resolvedColumns.map((column) => ({
+    wch: Math.max(column.key.length + 2, column.sample?.length ?? 0, 14),
+  }));
+  XLSX.utils.book_append_sheet(workbook, sheet, "Template");
+
+  return {
+    status: "success",
+    filename: `${source.code.toLowerCase()}-template.xlsx`,
+    contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    content: Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer),
+    columns: resolvedColumns,
+  } satisfies SuccessResult<{
+    filename: string;
+    contentType: string;
+    content: Buffer;
+    columns: DatasetTemplateColumn[];
+  }>;
 }
 
 export async function updateInstitutionalDataSource(
