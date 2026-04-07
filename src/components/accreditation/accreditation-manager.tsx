@@ -97,6 +97,7 @@ export function AccreditationManager({
           toggleBodyActive={data.toggleBodyActive}
           createVersion={data.createVersion}
           toggleVersionActive={data.toggleVersionActive}
+          changeVersionLifecycleStatus={data.changeVersionLifecycleStatus}
           forkVersion={data.forkVersion}
         />
       ) : null}
