@@ -1,7 +1,19 @@
 import "dotenv/config";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PlatformLlmProvider, PrismaClient } from "@prisma/client";
+import { Pool } from "pg";
 
-const prisma = new PrismaClient();
+const databaseUrl = process.env.DATABASE_URL?.trim();
+
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL is required for production LLM model seeding.");
+}
+
+const pool = new Pool({ connectionString: databaseUrl });
+const prisma = new PrismaClient({
+  adapter: new PrismaPg(pool),
+  log: ["error"],
+});
 
 type SeedModel = {
   code: string;
@@ -218,4 +230,5 @@ main()
   })
   .finally(async () => {
     await prisma.$disconnect();
+    await pool.end();
   });
