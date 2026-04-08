@@ -17,6 +17,11 @@ export async function GET(
   const { id } = await params;
   const { searchParams } = new URL(request.url);
   const format = searchParams.get("format") === "csv" ? "csv" : "xlsx";
+  const variantParam = searchParams.get("variant");
+  const variant =
+    variantParam === "MINIMAL" || variantParam === "STANDARD" || variantParam === "FULL" || variantParam === "SUMMARY_FALLBACK"
+      ? variantParam
+      : "STANDARD";
 
   const result = await getInstitutionalDataSourceDatasetTemplate(
     id,
@@ -24,6 +29,7 @@ export async function GET(
     session.userId,
     session.role,
     format,
+    variant,
   );
 
   if (result.status === "error") {

@@ -46,7 +46,7 @@ export const tenantNavigationGroups: NavigationGroup[] = [
       },
       {
         href: "/tenant-admin/institutional-data",
-        label: "Institutional Data",
+        label: "Build Data Bank",
         icon: "database",
         serviceCode: "ACCREDITATION",
       },

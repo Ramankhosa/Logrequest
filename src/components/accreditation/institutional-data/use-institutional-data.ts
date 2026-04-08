@@ -21,12 +21,50 @@ export type GapItem = {
   gapStatus: string;
 };
 
+export type TemplateVariant = "MINIMAL" | "STANDARD" | "FULL" | "SUMMARY_FALLBACK";
+
+export type DatasetGuide = {
+  ownerOffice: string;
+  summary: string;
+  minimumDataHint: string;
+  supportsPartialUpload: boolean;
+  supportedMetrics: string[];
+};
+
+export type DatasetSchema = {
+  templateKey?: string;
+  templateVersion?: string;
+  availableVariants?: TemplateVariant[];
+  guide?: DatasetGuide;
+  columns?: Array<{
+    key: string;
+    label?: string;
+    description?: string;
+    requiredLevel?: "CORE" | "RECOMMENDED" | "OPTIONAL";
+    type?: string;
+    sample?: string | number | boolean | null;
+    usedByMetrics?: string[];
+  }>;
+} | null;
+
 export type SourceRow = {
   id: string;
   code: string;
   name: string;
+  description?: string | null;
   kind: string;
   shape: string;
+  datasetSchema?: DatasetSchema;
+  snapshots?: Array<{
+    id: string;
+    coverageStatus: string;
+    coveragePercent: number | null;
+    updatedAt: string;
+  }>;
+  _count?: {
+    snapshots: number;
+    metricLinks: number;
+  };
   domain: DomainRow | null;
 };
 
@@ -38,7 +76,7 @@ export type SourceDetail = {
   kind: string;
   shape: string;
   adapterKey: string | null;
-  datasetSchema?: Record<string, unknown> | null;
+  datasetSchema?: DatasetSchema;
   domainId?: string | null;
   supportsYearWise: boolean;
   supportsScopeBreakdown: boolean;
@@ -57,6 +95,10 @@ export type SourceDetail = {
     textValue: string | null;
     lastRefreshedAt: string | null;
     entryMode: string | null;
+    coverageStatus: string;
+    coveragePercent: number | null;
+    confidenceNote: string | null;
+    evidenceMeta: Record<string, unknown> | null;
     datasetRows: Array<{
       id: string;
       rowData: Record<string, unknown>;
@@ -119,9 +161,48 @@ export type SuggestionRow = {
 };
 
 export type ImportPreview = {
+  source: {
+    id: string;
+    code: string;
+    name: string;
+  };
+  selectedHeaderRowIndex: number;
+  detectedHeaders: string[];
   rowCount: number;
   columns: string[];
+  sampleRows: Array<Record<string, unknown>>;
+  normalizedSampleRows: Array<Record<string, unknown>>;
+  validRowCount: number;
+  skippedRowCount: number;
+  blockingIssues: Array<{ code: string; message: string }>;
+  warnings: Array<{ code: string; message: string }>;
+  rowIssueSample: Array<{ rowIndex: number; issues: string[] }>;
+  suggestedMappings: Array<{ sourceHeader: string; targetKey: string; matchType: string }>;
+  resolvedMappings: Array<{ sourceHeader: string; targetKey: string; matchType: string }>;
+  sourceReadiness: {
+    score: number;
+    status: "READY" | "PARTIAL" | "MISSING";
+    coreCompletionPercent: number;
+    recommendedCompletionPercent: number;
+    summary: string;
+  };
+  coverageByMetric: Array<{
+    metricCode: string;
+    status: "READY" | "PARTIAL" | "MISSING";
+    presentFieldCount: number;
+    totalFieldCount: number;
+  }>;
+  coverageByBody: Array<{
+    bodyCode: string;
+    readyMetricCount: number;
+    partialMetricCount: number;
+    missingMetricCount: number;
+  }>;
+  importVariant: TemplateVariant;
   scopeKey: string;
+  observedYear: number | null;
+  dimensions: Record<string, string | number | boolean>;
+  replaceRows: boolean;
   existingSnapshot: { id: string; rowCount: number } | null;
 };
 
@@ -346,23 +427,48 @@ export function useInstitutionalData() {
     });
   }
 
-  async function previewImport(sourceId: string, file: File, observedYear: number | null, scopeKey: string | null, replaceRows: boolean) {
+  async function previewImport(
+    sourceId: string,
+    file: File,
+    observedYear: number | null,
+    scopeKey: string | null,
+    replaceRows: boolean,
+    importVariant: TemplateVariant,
+    headerRowIndex: number | null,
+    resolvedMappings?: ImportPreview["resolvedMappings"],
+  ) {
     await withSaving(async () => {
       const fileContentBase64 = await fileToBase64(file);
       const r = await postJson<{ preview: ImportPreview }>(
         `${BASE}/sources/${sourceId}/dataset/import-preview`,
-        { fileName: file.name, fileContentBase64, observedYear, scopeKey, replaceRows },
+        { fileName: file.name, fileContentBase64, observedYear, scopeKey, replaceRows, importVariant, headerRowIndex, resolvedMappings },
       );
       setImportPreview(r.preview);
-      setMessage({ type: "success", text: "Import preview ready." });
+      setMessage({ type: "success", text: r.preview.warnings.length > 0 ? "Preview ready with warnings." : "Import preview ready." });
     });
   }
 
-  async function applyImport(sourceId: string, file: File, observedYear: number | null, scopeKey: string | null, replaceRows: boolean) {
+  async function applyImport(
+    sourceId: string,
+    file: File,
+    observedYear: number | null,
+    scopeKey: string | null,
+    replaceRows: boolean,
+    importVariant: TemplateVariant,
+    headerRowIndex: number | null,
+    resolvedMappings?: ImportPreview["resolvedMappings"],
+  ) {
     await withSaving(async () => {
       const fileContentBase64 = await fileToBase64(file);
       await postJson(`${BASE}/sources/${sourceId}/dataset/import`, {
-        fileName: file.name, fileContentBase64, observedYear, scopeKey, replaceRows,
+        fileName: file.name,
+        fileContentBase64,
+        observedYear,
+        scopeKey,
+        replaceRows,
+        importVariant,
+        headerRowIndex,
+        resolvedMappings,
       });
       setImportPreview(null);
       await Promise.all([refreshOverview(), refreshSuggestions(), refreshSources(sourceId), loadSourceDetail(sourceId)]);
@@ -384,9 +490,9 @@ export function useInstitutionalData() {
     });
   }
 
-  async function downloadSourceTemplate(sourceId: string, format: "csv" | "xlsx") {
+  async function downloadSourceTemplate(sourceId: string, format: "csv" | "xlsx", variant: TemplateVariant) {
     await withSaving(async () => {
-      const response = await fetch(`${BASE}/sources/${sourceId}/dataset/template?format=${format}`, {
+      const response = await fetch(`${BASE}/sources/${sourceId}/dataset/template?format=${format}&variant=${variant}`, {
         method: "GET",
         cache: "no-store",
       });

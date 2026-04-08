@@ -9,6 +9,7 @@ import {
   TenantServiceCode,
 } from "@prisma/client";
 import { describe, expect, test } from "vitest";
+import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import {
   createTenantAccreditationBody,
@@ -27,7 +28,9 @@ import {
   createInstitutionalMetric,
   getInstitutionalDataSourceDatasetTemplate,
   getInstitutionalDataGaps,
+  importInstitutionalDataSourceDataset,
   listMetricRefreshSuggestions,
+  previewInstitutionalDataSourceImport,
   refreshInstitutionalDataSource,
   resolveMetricRefreshSuggestion,
   seedInstitutionalDataCatalog,
@@ -173,7 +176,7 @@ async function createWorkspaceFixture(tracker: DbTracker, blockCode: string) {
 }
 
 describe("institutional data service", () => {
-  test("dataset sources can generate CSV and XLSX templates from configured source columns", async () => {
+  test("dataset sources generate guided templates with sample rows and instructions", async () => {
     await withIsolatedDb(async (tracker) => {
       const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
 
@@ -197,10 +200,21 @@ describe("institutional data service", () => {
           kind: "CSV_IMPORT",
           shape: "DATASET",
           datasetSchema: {
+            templateKey: "PUBLICATION_REGISTER",
+            templateVersion: "2026.04.v1",
+            guide: {
+              ownerOffice: "Research Cell",
+              summary: "Publication data",
+              minimumDataHint: "Title, year, publication type, and faculty author ID.",
+              supportsPartialUpload: true,
+              supportedMetrics: ["3.4.5"],
+            },
+            availableVariants: ["MINIMAL", "STANDARD", "FULL"],
             columns: [
-              { key: "title", label: "Title" },
-              { key: "issn", label: "ISSN" },
-              { key: "scopus_indexed", label: "Scopus Indexed" },
+              { key: "title", label: "Title", description: "Publication title", requiredLevel: "CORE", sample: "A Study on Learning Analytics" },
+              { key: "publicationYear", label: "Publication Year", description: "Year", requiredLevel: "CORE", type: "NUMBER", sample: 2024 },
+              { key: "ugcCareFlag", label: "UGC CARE", description: "UGC listed", requiredLevel: "RECOMMENDED", type: "BOOLEAN", sample: true },
+              { key: "citationCount", label: "Citation Count", description: "Citations", requiredLevel: "OPTIONAL", type: "NUMBER", sample: 12 },
             ],
           },
         },
@@ -218,13 +232,16 @@ describe("institutional data service", () => {
         actor.id,
         "TENANT_OWNER",
         "csv",
+        "FULL",
       );
       expect(csvTemplate).toMatchObject({ status: "success" });
       if (csvTemplate.status !== "success") {
         throw new Error(csvTemplate.message);
       }
       expect(csvTemplate.filename).toBe("publication_register-template.csv");
-      expect(csvTemplate.content.toString("utf8")).toContain("title,issn,scopus_indexed");
+      const csvLines = csvTemplate.content.toString("utf8").trim().split("\n");
+      expect(csvLines[0]).toContain("title,publicationYear,ugcCareFlag,citationCount");
+      expect(csvLines).toHaveLength(5);
 
       const xlsxTemplate = await getInstitutionalDataSourceDatasetTemplate(
         source.source.id,
@@ -232,6 +249,7 @@ describe("institutional data service", () => {
         actor.id,
         "TENANT_OWNER",
         "xlsx",
+        "STANDARD",
       );
       expect(xlsxTemplate).toMatchObject({ status: "success" });
       if (xlsxTemplate.status !== "success") {
@@ -239,6 +257,212 @@ describe("institutional data service", () => {
       }
       expect(xlsxTemplate.filename).toBe("publication_register-template.xlsx");
       expect(xlsxTemplate.content.byteLength).toBeGreaterThan(100);
+      const workbook = XLSX.read(xlsxTemplate.content, { type: "buffer" });
+      expect(workbook.SheetNames).toEqual(expect.arrayContaining(["Template", "Instructions"]));
+      const templateRows = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets.Template, { header: 1, defval: "" });
+      expect(templateRows).toHaveLength(5);
+      expect(templateRows[0]).toEqual(["title", "publicationYear", "ugcCareFlag"]);
+    });
+  });
+
+  test("preview accepts partial uploads, warns clearly, and detects the header row", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const domain = await createDataBankDomain(
+        tenant.id,
+        { code: "HUMAN_RESOURCES", name: "Human Resources" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(domain).toMatchObject({ status: "success" });
+      if (domain.status !== "success") {
+        throw new Error(domain.message);
+      }
+
+      const source = await createInstitutionalDataSource(
+        tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "HR_FACULTY_ROSTER",
+          name: "HR Faculty Roster",
+          kind: "CSV_IMPORT",
+          shape: "DATASET",
+          datasetSchema: {
+            templateKey: "HR_FACULTY_ROSTER",
+            templateVersion: "2026.04.v1",
+            rowIdentityKeys: ["employeeCode"],
+            guide: {
+              ownerOffice: "HR Office",
+              summary: "Faculty roster",
+              minimumDataHint: "Employee code, faculty name, department, and full-time flag.",
+              supportsPartialUpload: true,
+              supportedMetrics: ["2.4.1", "2.4.2"],
+            },
+            columns: [
+              { key: "employeeCode", label: "Employee Code", description: "ID", requiredLevel: "CORE", aliases: ["employee_id"], sample: "EMP-1001" },
+              { key: "facultyName", label: "Faculty Name", description: "Name", requiredLevel: "CORE", aliases: ["faculty_name"], sample: "Dr Riya Sharma" },
+              { key: "departmentName", label: "Department", description: "Department", requiredLevel: "CORE", aliases: ["department"], sample: "Computer Science" },
+              { key: "fullTimeFlag", label: "Full-time", description: "Full time", requiredLevel: "CORE", type: "BOOLEAN", aliases: ["full_time"], sample: true, normalizers: ["boolean"] },
+              { key: "phdEquivalentFlag", label: "PhD or Equivalent", description: "Doctorate flag", requiredLevel: "RECOMMENDED", type: "BOOLEAN", aliases: ["phd_flag"], sample: true, normalizers: ["boolean"], usedByMetrics: ["2.4.2"] },
+            ],
+          },
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(source).toMatchObject({ status: "success" });
+      if (source.status !== "success") {
+        throw new Error(source.message);
+      }
+
+      const csv = [
+        "Faculty roster exported on 2025-04-01",
+        "employee_id,faculty_name,department,full_time",
+        "EMP-1001,Dr Riya Sharma,Computer Science,Yes",
+        ",Dr Missing Code,Computer Science,Yes",
+      ].join("\n");
+
+      const preview = await previewInstitutionalDataSourceImport(
+        source.source.id,
+        tenant.id,
+        {
+          fileName: "faculty.csv",
+          fileContentBase64: Buffer.from(csv, "utf8").toString("base64"),
+          importVariant: "STANDARD",
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(preview).toMatchObject({ status: "success" });
+      if (preview.status !== "success") {
+        throw new Error(preview.message);
+      }
+
+      expect(preview.preview.selectedHeaderRowIndex).toBe(1);
+      expect(preview.preview.validRowCount).toBe(1);
+      expect(preview.preview.skippedRowCount).toBe(1);
+      expect(preview.preview.warnings.some((warning) => warning.code === "MISSING_RECOMMENDED_FIELDS")).toBe(true);
+      expect(preview.preview.sourceReadiness.status).toBe("PARTIAL");
+      expect(preview.preview.coverageByMetric).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ metricCode: "2.4.2", status: "MISSING" }),
+        ]),
+      );
+    });
+  });
+
+  test("import stores partial-data diagnostics and blocks zero-valid-row uploads", async () => {
+    await withIsolatedDb(async (tracker) => {
+      const { tenant, actor } = await createEnabledTenantAccreditationContext(tracker);
+
+      const domain = await createDataBankDomain(
+        tenant.id,
+        { code: "FINANCE", name: "Finance" },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(domain).toMatchObject({ status: "success" });
+      if (domain.status !== "success") {
+        throw new Error(domain.message);
+      }
+
+      const source = await createInstitutionalDataSource(
+        tenant.id,
+        {
+          domainId: domain.domain.id,
+          code: "FINANCE_LEDGER",
+          name: "Finance Ledger",
+          kind: "CSV_IMPORT",
+          shape: "DATASET",
+          datasetSchema: {
+            templateKey: "FINANCE_LEDGER",
+            templateVersion: "2026.04.v1",
+            rowIdentityKeys: ["transactionId"],
+            guide: {
+              ownerOffice: "Finance Office",
+              summary: "Finance ledger",
+              minimumDataHint: "Transaction ID, fiscal year, category, and amount.",
+              supportsPartialUpload: true,
+              supportedMetrics: ["6.4.2"],
+            },
+            columns: [
+              { key: "transactionId", label: "Transaction ID", description: "ID", requiredLevel: "CORE", aliases: ["voucher_no"], sample: "FIN-0001" },
+              { key: "fiscalYear", label: "Fiscal Year", description: "Year", requiredLevel: "CORE", sample: "2024-25" },
+              { key: "ledgerCategory", label: "Category", description: "Ledger category", requiredLevel: "CORE", sample: "Infrastructure" },
+              { key: "amount", label: "Amount", description: "Amount", requiredLevel: "CORE", type: "CURRENCY", sample: 1250000, normalizers: ["currency"] },
+              { key: "fundSourceType", label: "Fund Source", description: "Source type", requiredLevel: "RECOMMENDED", sample: "Government", usedByMetrics: ["6.4.2"] },
+            ],
+          },
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(source).toMatchObject({ status: "success" });
+      if (source.status !== "success") {
+        throw new Error(source.message);
+      }
+
+      const importCsv = [
+        "voucher_no,fiscalYear,ledgerCategory,amount",
+        "FIN-0001,2024-25,Infrastructure,1250000",
+        "FIN-0002,2024-25,Library,98000",
+      ].join("\n");
+
+      const importResult = await importInstitutionalDataSourceDataset(
+        source.source.id,
+        tenant.id,
+        {
+          fileName: "finance.csv",
+          fileContentBase64: Buffer.from(importCsv, "utf8").toString("base64"),
+          observedYear: 2025,
+          importVariant: "STANDARD",
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(importResult).toMatchObject({ status: "success" });
+      if (importResult.status !== "success") {
+        throw new Error(importResult.message);
+      }
+
+      expect(importResult.importSummary.validRowCount).toBe(2);
+      expect(importResult.importSummary.warnings.some((warning) => warning.code === "MISSING_RECOMMENDED_FIELDS")).toBe(true);
+
+      const savedSnapshot = await prisma.dataBankSourceSnapshot.findUniqueOrThrow({
+        where: { id: importResult.snapshot.id },
+      });
+      expect(savedSnapshot.coverageStatus).toBe(DataBankCoverageStatus.PARTIAL);
+      expect(savedSnapshot.coveragePercent).toBeGreaterThan(0);
+      expect(savedSnapshot.evidenceMeta).toMatchObject({
+        importValidation: expect.objectContaining({
+          validRowCount: 2,
+          skippedRowCount: 0,
+        }),
+      });
+
+      const blockedCsv = [
+        "voucher_no,fiscalYear,ledgerCategory,amount",
+        ",2024-25,Infrastructure,",
+      ].join("\n");
+
+      const blocked = await importInstitutionalDataSourceDataset(
+        source.source.id,
+        tenant.id,
+        {
+          fileName: "finance-bad.csv",
+          fileContentBase64: Buffer.from(blockedCsv, "utf8").toString("base64"),
+          observedYear: 2025,
+          importVariant: "STANDARD",
+        },
+        actor.id,
+        "TENANT_OWNER",
+      );
+      expect(blocked).toMatchObject({ status: "error" });
+      if (blocked.status !== "error") {
+        throw new Error("Expected bad upload to fail.");
+      }
+      expect(blocked.message).toContain("No valid rows remain");
     });
   });
 
@@ -524,9 +748,9 @@ describe("institutional data service", () => {
         {
           observedYear: 2024,
           datasetRows: [
-            { rowData: { facultyId: "F1", qualification: "PhD" } },
-            { rowData: { facultyId: "F2", qualification: "PhD" } },
-            { rowData: { facultyId: "F3", qualification: "MTech" } },
+            { rowData: { employeeCode: "F1", phdEquivalentFlag: true } },
+            { rowData: { employeeCode: "F2", phdEquivalentFlag: true } },
+            { rowData: { employeeCode: "F3", phdEquivalentFlag: false } },
           ],
         },
         actor.id,

@@ -13,8 +13,8 @@ export default async function TenantInstitutionalDataPage() {
   return (
     <AppShell
       eyebrow="Tenant"
-      title="Institutional Data"
-      description="Manage institutional sources, reusable metrics, adapter refreshes, imports, and metric-source resolution for accreditation."
+      title="Build Data Bank"
+      description="Set up guided institutional source packs, upload partial spreadsheets with warnings, and turn raw institutional data into reusable accreditation metrics."
       navigationGroups={tenantNavigationGroups}
       userSummary={getShellIdentity(context)}
     >

@@ -242,7 +242,7 @@ describe("institutional data routes", () => {
     );
 
     const templateResponse = await templateRoute.GET(
-      new Request("http://localhost?format=xlsx"),
+      new Request("http://localhost?format=xlsx&variant=FULL"),
       { params: Promise.resolve({ id: "source-1" }) },
     );
     expect(templateResponse.status).toBe(200);
@@ -252,6 +252,7 @@ describe("institutional data routes", () => {
       "user-1",
       "TENANT_OWNER",
       "xlsx",
+      "FULL",
     );
 
     const refreshResponse = await refreshRoute.POST(new Request("http://localhost", { method: "POST" }), {

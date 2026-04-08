@@ -13,7 +13,7 @@ type TabId = "overview" | "sources" | "metrics" | "review";
 
 const TABS: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard className="h-4 w-4" /> },
-  { id: "sources", label: "Data Sources", icon: <Database className="h-4 w-4" /> },
+  { id: "sources", label: "Build Data Bank", icon: <Database className="h-4 w-4" /> },
   { id: "metrics", label: "Metrics", icon: <BarChart3 className="h-4 w-4" /> },
   { id: "review", label: "Review Queue", icon: <Inbox className="h-4 w-4" /> },
 ];

@@ -94,11 +94,11 @@ export function SourceFormSlideOver({
     <SlideOver
       open={open}
       onClose={onClose}
-      title={isEditing ? "Edit Data Source" : "Add Data Source"}
+      title={isEditing ? "Edit Custom Source" : "Add Custom Source"}
       subtitle={
         isEditing
           ? `Editing ${source.name}`
-          : "Define where your institutional data comes from."
+          : "Use this only when the guided source packs do not fit your institution."
       }
     >
       <form className="space-y-5" onSubmit={handleSubmit}>
@@ -182,7 +182,7 @@ export function SourceFormSlideOver({
           className="flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-700"
         >
           <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? "rotate-180" : ""}`} />
-          Advanced options
+          Advanced / admin options
         </button>
 
         {showAdvanced ? (

@@ -31,26 +31,26 @@ export function OverviewTab({ loading, saving, summary, gapItems, seedCatalog, o
       <div className="space-y-6">
         <EmptyState
           icon={<Database className="h-7 w-7" />}
-          title="No institutional data yet"
-          description="Start by seeding the recommended catalog of data sources and metrics, or add your own sources manually."
-          actionLabel="Seed Recommended Catalog"
+          title="Build your institutional data bank"
+          description="Seed the guided source packs first. They come with templates, sample rows, and upload rules for non-technical coordinators."
+          actionLabel="Seed Guided Source Packs"
           onAction={() => void seedCatalog()}
         />
 
         <div className="rounded-[1.75rem] border border-slate-200/80 bg-white/85 p-6">
-          <h3 className="text-sm font-semibold text-slate-900">How it works</h3>
+          <h3 className="text-sm font-semibold text-slate-900">How the databank works</h3>
           <ol className="mt-3 space-y-3 text-sm text-slate-600">
             <li className="flex gap-3">
               <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">1</span>
-              <span><strong className="text-slate-900">Add data sources</strong> &mdash; these are where your institution&apos;s data lives (spreadsheets, system records, documents).</span>
+              <span><strong className="text-slate-900">Choose the source pack</strong> - for example HR, placements, finance, or publications.</span>
             </li>
             <li className="flex gap-3">
               <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">2</span>
-              <span><strong className="text-slate-900">Upload or sync data</strong> &mdash; import spreadsheets, enter values manually, or auto-sync from system adapters.</span>
+              <span><strong className="text-slate-900">Upload the data you have</strong> - partial files are accepted, and the system warns about missing or invalid rows.</span>
             </li>
             <li className="flex gap-3">
               <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">3</span>
-              <span><strong className="text-slate-900">Define metrics</strong> &mdash; create reusable metrics that pull values from your sources for accreditation.</span>
+              <span><strong className="text-slate-900">Track readiness</strong> - see what is ready, partial, or still missing for accreditation metrics.</span>
             </li>
           </ol>
         </div>
@@ -63,10 +63,10 @@ export function OverviewTab({ loading, saving, summary, gapItems, seedCatalog, o
       {/* Summary stat cards */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard label="Domains" value={summary?.domainCount} loading={loading} />
-        <StatCard label="Data Sources" value={summary?.sourceCount} loading={loading} />
-        <StatCard label="Metrics" value={summary?.metricCount} loading={loading} />
+        <StatCard label="Source Packs" value={summary?.sourceCount} loading={loading} />
+        <StatCard label="Linked Metrics" value={summary?.metricCount} loading={loading} />
         <StatCard label="Pending Reviews" value={summary?.pendingSuggestionCount} loading={loading} accent={!!summary && summary.pendingSuggestionCount > 0} />
-        <StatCard label="Stale Metrics" value={summary?.staleMetricCount} loading={loading} accent={!!summary && summary.staleMetricCount > 0} />
+        <StatCard label="Needs Refresh" value={summary?.staleMetricCount} loading={loading} accent={!!summary && summary.staleMetricCount > 0} />
       </div>
 
       {/* Quick actions */}
@@ -78,14 +78,14 @@ export function OverviewTab({ loading, saving, summary, gapItems, seedCatalog, o
           className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:bg-slate-300"
         >
           <Sprout className="h-4 w-4" />
-          Seed Recommended Catalog
+          Seed Guided Source Packs
         </button>
         <button
           type="button"
           onClick={onGoToSources}
           className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
         >
-          Go to Data Sources
+          Go to Build Data Bank
         </button>
       </div>
 
@@ -93,7 +93,7 @@ export function OverviewTab({ loading, saving, summary, gapItems, seedCatalog, o
       {gapItems.length > 0 ? (
         <section className="rounded-[1.75rem] border border-slate-200/80 bg-white/85 p-6">
           <h3 className="mb-1 text-sm font-semibold text-slate-900">Data Gaps</h3>
-          <p className="mb-4 text-xs text-slate-500">Metrics that need attention &mdash; missing, partial, or stale data.</p>
+          <p className="mb-4 text-xs text-slate-500">These metrics still need better uploads, cleaner files, or fresher data.</p>
           <div className="flex flex-wrap gap-2">
             {gapItems.slice(0, 20).map((item) => (
               <span
@@ -113,7 +113,7 @@ export function OverviewTab({ loading, saving, summary, gapItems, seedCatalog, o
       ) : (
         !loading && (
           <div className="rounded-[1.75rem] border border-emerald-200/80 bg-emerald-50/50 px-6 py-4 text-sm text-emerald-700">
-            All metrics have complete data. No gaps detected.
+            All linked metrics currently have usable data. No major gaps detected.
           </div>
         )
       )}

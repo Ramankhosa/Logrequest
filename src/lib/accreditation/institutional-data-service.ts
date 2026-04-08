@@ -14,6 +14,9 @@ import * as XLSX from "xlsx";
 import { z } from "zod";
 import { evaluateFormula, parseFormulaDependencyBlockCodes } from "./block-formula-evaluator";
 import { getInstitutionalDataAdapter, listInstitutionalDataAdapters } from "./institutional-data-adapters";
+import {
+  curatedSourcePacks,
+} from "./institutional-data-template-catalog";
 import { prisma } from "@/lib/prisma";
 import { hasTenantCapability } from "@/lib/tenant-permissions/service";
 import { hasTenantServiceEnabled } from "@/lib/tenant-services/service";
@@ -261,12 +264,53 @@ const dataBankDatasetImportSchema = z.object({
   scopeKey: z.string().trim().min(1).max(120).nullable().optional(),
   dimensions: dimensionsSchema.optional(),
   replaceRows: z.boolean().optional(),
+  importVariant: z.enum(["MINIMAL", "STANDARD", "FULL", "SUMMARY_FALLBACK"]).optional(),
+  headerRowIndex: z.number().int().min(0).nullable().optional(),
+  resolvedMappings: z.array(
+    z.object({
+      sourceHeader: z.string().trim().min(1).max(255),
+      targetKey: z.string().trim().min(1).max(120),
+      matchType: z.string().trim().min(1).max(32).optional(),
+    }),
+  ).optional(),
+  normalizerProfileId: z.string().trim().min(1).max(120).nullable().optional(),
 });
 
+type TemplateVariant = "MINIMAL" | "STANDARD" | "FULL" | "SUMMARY_FALLBACK";
+type DatasetFieldRequiredLevel = "CORE" | "RECOMMENDED" | "OPTIONAL";
 type ParsedDatasetImport = {
+  selectedHeaderRowIndex: number;
+  detectedHeaders: string[];
   rowCount: number;
   columns: string[];
   sampleRows: Array<Record<string, unknown>>;
+  normalizedSampleRows: Array<Record<string, unknown>>;
+  validRowCount: number;
+  skippedRowCount: number;
+  blockingIssues: Array<{ code: string; message: string }>;
+  warnings: Array<{ code: string; message: string }>;
+  rowIssueSample: Array<{ rowIndex: number; issues: string[] }>;
+  suggestedMappings: Array<{ sourceHeader: string; targetKey: string; matchType: string }>;
+  resolvedMappings: Array<{ sourceHeader: string; targetKey: string; matchType: string }>;
+  sourceReadiness: {
+    score: number;
+    status: "READY" | "PARTIAL" | "MISSING";
+    coreCompletionPercent: number;
+    recommendedCompletionPercent: number;
+    summary: string;
+  };
+  coverageByMetric: Array<{
+    metricCode: string;
+    status: "READY" | "PARTIAL" | "MISSING";
+    presentFieldCount: number;
+    totalFieldCount: number;
+  }>;
+  coverageByBody: Array<{
+    bodyCode: string;
+    readyMetricCount: number;
+    partialMetricCount: number;
+    missingMetricCount: number;
+  }>;
   datasetRows: Array<{
     rowIndex: number;
     rowKey: string | null;
@@ -277,8 +321,35 @@ type ParsedDatasetImport = {
 type DatasetTemplateColumn = {
   key: string;
   label: string;
+  description?: string;
   required: boolean;
+  requiredLevel: DatasetFieldRequiredLevel;
   sample: string | null;
+  type?: string;
+  aliases?: string[];
+  enumValues?: string[];
+  semanticRole?: string;
+  usedByMetrics?: string[];
+  usedByBodies?: string[];
+  normalizers?: string[];
+};
+
+type DatasetTemplateSchema = {
+  templateKey: string;
+  templateVersion: string;
+  rowIdentityKeys: string[];
+  fallbackIdentityKeys: string[];
+  dimensionKeys: string[];
+  coverageByBody: Record<string, string[]>;
+  availableVariants: TemplateVariant[];
+  guide?: {
+    ownerOffice: string;
+    summary: string;
+    minimumDataHint: string;
+    supportsPartialUpload: boolean;
+    supportedMetrics: readonly string[];
+  };
+  columns: DatasetTemplateColumn[];
 };
 
 function normalizeNullableString(value: string | null | undefined) {
@@ -387,53 +458,107 @@ function normalizeSpreadsheetValue(value: unknown): Prisma.JsonValue {
   return String(value);
 }
 
-function parseDatasetImport(input: z.infer<typeof dataBankDatasetImportSchema>): ParsedDatasetImport {
-  const workbook = XLSX.read(Buffer.from(input.fileContentBase64, "base64"), { type: "buffer", cellDates: true });
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) {
-    throw new Error("Import file does not contain any sheets.");
-  }
-
-  const sheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-    defval: null,
-    raw: true,
-  });
-  if (rows.length === 0) {
-    throw new Error("Import file does not contain any data rows.");
-  }
-
-  const columns = [...new Set(rows.flatMap((row) => Object.keys(row).map((key) => key.trim()).filter(Boolean)))];
-  if (columns.length === 0) {
-    throw new Error("Import file does not contain any usable columns.");
-  }
-
-  const datasetRows = rows.map((row, index) => {
-    const rowData = Object.fromEntries(
-      Object.entries(row).map(([key, value]) => [key.trim(), normalizeSpreadsheetValue(value)]),
-    );
-    const rowKeyCandidate = rowData.rowKey ?? rowData.id ?? rowData.code ?? rowData.employeeId ?? rowData.achievementId;
-    return {
-      rowIndex: index,
-      rowKey: rowKeyCandidate == null ? null : String(rowKeyCandidate),
-      rowData,
-    };
-  });
-
-  return {
-    rowCount: datasetRows.length,
-    columns,
-    sampleRows: datasetRows.slice(0, 5).map((row) => row.rowData),
-    datasetRows,
-  };
-}
-
 function normalizeTemplateKey(value: unknown) {
   if (typeof value !== "string") {
     return null;
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeHeaderFingerprint(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function asText(value: unknown) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return String(value).trim();
+}
+
+function normalizeBooleanValue(value: unknown) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return value;
+  }
+  const normalized = asText(value)?.toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (["yes", "y", "true", "1", "active"].includes(normalized)) {
+    return true;
+  }
+  if (["no", "n", "false", "0", "inactive"].includes(normalized)) {
+    return false;
+  }
+  return value;
+}
+
+function normalizeCurrencyValue(value: unknown) {
+  if (typeof value === "number") {
+    return value;
+  }
+  const normalized = asText(value);
+  if (!normalized) {
+    return null;
+  }
+  const stripped = normalized.replace(/[, ]+/g, "").replace(/[^0-9.\-]/g, "");
+  if (!stripped) {
+    return null;
+  }
+  const parsed = Number(stripped);
+  return Number.isFinite(parsed) ? parsed : value;
+}
+
+function normalizeDateValue(value: unknown) {
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10);
+  }
+  const normalized = asText(value);
+  if (!normalized) {
+    return null;
+  }
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+function applyColumnNormalizers(value: unknown, column: DatasetTemplateColumn) {
+  let next: unknown = normalizeSpreadsheetValue(value);
+  const normalizers = column.normalizers ?? [];
+  for (const normalizer of normalizers) {
+    if (normalizer === "trim" && typeof next === "string") {
+      next = next.trim();
+      continue;
+    }
+    if (normalizer === "upper" && typeof next === "string") {
+      next = next.toUpperCase();
+      continue;
+    }
+    if (normalizer === "boolean") {
+      next = normalizeBooleanValue(next);
+      continue;
+    }
+    if (normalizer === "currency") {
+      next = normalizeCurrencyValue(next);
+      continue;
+    }
+    if (normalizer === "number") {
+      next = asNumber(next);
+      continue;
+    }
+    if (normalizer === "date") {
+      next = normalizeDateValue(next);
+    }
+  }
+  return normalizeSpreadsheetValue(next);
 }
 
 function parseDatasetTemplateColumns(value: Prisma.JsonValue | null | undefined): DatasetTemplateColumn[] {
@@ -457,7 +582,13 @@ function parseDatasetTemplateColumns(value: Prisma.JsonValue | null | undefined)
         key,
         label: key,
         required: false,
+        requiredLevel: "OPTIONAL",
         sample: null,
+        aliases: [],
+        enumValues: [],
+        usedByMetrics: [],
+        usedByBodies: [],
+        normalizers: [],
       });
       continue;
     }
@@ -467,6 +598,12 @@ function parseDatasetTemplateColumns(value: Prisma.JsonValue | null | undefined)
       const key = normalizeTemplateKey(item.key ?? item.code ?? item.name ?? item.label);
       if (!key) continue;
       const label = normalizeTemplateKey(item.label) ?? key;
+      const requiredLevel =
+        item.requiredLevel === "CORE" || item.requiredLevel === "RECOMMENDED" || item.requiredLevel === "OPTIONAL"
+          ? item.requiredLevel
+          : item.required === true
+            ? "CORE"
+            : "OPTIONAL";
       const sample =
         item.sample == null
           ? null
@@ -477,8 +614,17 @@ function parseDatasetTemplateColumns(value: Prisma.JsonValue | null | undefined)
       columns.push({
         key,
         label,
-        required: item.required === true,
+        description: normalizeTemplateKey(item.description) ?? undefined,
+        required: requiredLevel === "CORE",
+        requiredLevel,
         sample,
+        type: typeof item.type === "string" ? item.type : undefined,
+        aliases: Array.isArray(item.aliases) ? item.aliases.filter((entry): entry is string => typeof entry === "string") : [],
+        enumValues: Array.isArray(item.enumValues) ? item.enumValues.filter((entry): entry is string => typeof entry === "string") : [],
+        semanticRole: typeof item.semanticRole === "string" ? item.semanticRole : undefined,
+        usedByMetrics: Array.isArray(item.usedByMetrics) ? item.usedByMetrics.filter((entry): entry is string => typeof entry === "string") : [],
+        usedByBodies: Array.isArray(item.usedByBodies) ? item.usedByBodies.filter((entry): entry is string => typeof entry === "string") : [],
+        normalizers: Array.isArray(item.normalizers) ? item.normalizers.filter((entry): entry is string => typeof entry === "string") : [],
       });
     }
   }
@@ -492,6 +638,74 @@ function parseDatasetTemplateColumns(value: Prisma.JsonValue | null | undefined)
     seen.add(fingerprint);
     return true;
   });
+}
+
+function parseDatasetTemplateSchema(value: Prisma.JsonValue | null | undefined): DatasetTemplateSchema | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const sourceObject = value as Record<string, unknown>;
+  return {
+    templateKey: typeof sourceObject.templateKey === "string" ? sourceObject.templateKey : "CUSTOM_DATASET",
+    templateVersion: typeof sourceObject.templateVersion === "string" ? sourceObject.templateVersion : "1",
+    rowIdentityKeys: Array.isArray(sourceObject.rowIdentityKeys)
+      ? sourceObject.rowIdentityKeys.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    fallbackIdentityKeys: Array.isArray(sourceObject.fallbackIdentityKeys)
+      ? sourceObject.fallbackIdentityKeys.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    dimensionKeys: Array.isArray(sourceObject.dimensionKeys)
+      ? sourceObject.dimensionKeys.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    coverageByBody: sourceObject.coverageByBody && typeof sourceObject.coverageByBody === "object" && !Array.isArray(sourceObject.coverageByBody)
+      ? Object.fromEntries(
+          Object.entries(sourceObject.coverageByBody as Record<string, unknown>).map(([key, entry]) => [
+            key,
+            Array.isArray(entry) ? entry.filter((metric): metric is string => typeof metric === "string") : [],
+          ]),
+        )
+      : {},
+    availableVariants: Array.isArray(sourceObject.availableVariants)
+      ? sourceObject.availableVariants.filter(
+          (entry): entry is TemplateVariant =>
+            entry === "MINIMAL" || entry === "STANDARD" || entry === "FULL" || entry === "SUMMARY_FALLBACK",
+        )
+      : ["MINIMAL", "STANDARD", "FULL"],
+    guide:
+      sourceObject.guide && typeof sourceObject.guide === "object" && !Array.isArray(sourceObject.guide)
+        ? {
+            ownerOffice: typeof (sourceObject.guide as Record<string, unknown>).ownerOffice === "string"
+              ? ((sourceObject.guide as Record<string, unknown>).ownerOffice as string)
+              : "Institution Office",
+            summary: typeof (sourceObject.guide as Record<string, unknown>).summary === "string"
+              ? ((sourceObject.guide as Record<string, unknown>).summary as string)
+              : "",
+            minimumDataHint: typeof (sourceObject.guide as Record<string, unknown>).minimumDataHint === "string"
+              ? ((sourceObject.guide as Record<string, unknown>).minimumDataHint as string)
+              : "",
+            supportsPartialUpload: (sourceObject.guide as Record<string, unknown>).supportsPartialUpload !== false,
+            supportedMetrics: Array.isArray((sourceObject.guide as Record<string, unknown>).supportedMetrics)
+              ? ((sourceObject.guide as Record<string, unknown>).supportedMetrics as unknown[]).filter(
+                  (entry): entry is string => typeof entry === "string",
+                )
+              : [],
+          }
+        : undefined,
+    columns: parseDatasetTemplateColumns(value),
+  };
+}
+
+function filterTemplateColumnsForVariant(columns: DatasetTemplateColumn[], variant: TemplateVariant) {
+  if (variant === "FULL") {
+    return columns;
+  }
+  if (variant === "STANDARD") {
+    return columns.filter((column) => column.requiredLevel !== "OPTIONAL");
+  }
+  if (variant === "SUMMARY_FALLBACK") {
+    return columns.filter((column) => column.requiredLevel === "CORE" || column.semanticRole === "DIMENSION");
+  }
+  return columns.filter((column) => column.requiredLevel === "CORE");
 }
 
 function deriveTemplateColumnsFromRows(
@@ -519,8 +733,395 @@ function deriveTemplateColumnsFromRows(
     key,
     label: key,
     required: false,
+    requiredLevel: "OPTIONAL",
     sample: null,
+    aliases: [],
+    enumValues: [],
+    usedByMetrics: [],
+    usedByBodies: [],
+    normalizers: [],
   }));
+}
+
+function scoreHeaderRow(
+  row: unknown[],
+  columns: DatasetTemplateColumn[],
+  savedMappings: Record<string, string>,
+) {
+  const lookups = new Map<string, string>();
+  for (const column of columns) {
+    lookups.set(normalizeHeaderFingerprint(column.key), column.key);
+    lookups.set(normalizeHeaderFingerprint(column.label), column.key);
+    for (const alias of column.aliases ?? []) {
+      lookups.set(normalizeHeaderFingerprint(alias), column.key);
+    }
+  }
+
+  let score = 0;
+  for (const cell of row) {
+    const header = normalizeTemplateKey(cell);
+    if (!header) continue;
+    const fingerprint = normalizeHeaderFingerprint(header);
+    if (lookups.has(fingerprint)) {
+      score += 4;
+      continue;
+    }
+    if (savedMappings[fingerprint]) {
+      score += 2;
+    }
+  }
+  return score;
+}
+
+function buildResolvedMappings(
+  detectedHeaders: string[],
+  columns: DatasetTemplateColumn[],
+  savedMappings: Record<string, string>,
+  suppliedMappings?: Array<{ sourceHeader: string; targetKey: string; matchType?: string }>,
+) {
+  const supplied = new Map<string, { sourceHeader: string; targetKey: string; matchType?: string }>();
+  for (const mapping of suppliedMappings ?? []) {
+    supplied.set(normalizeHeaderFingerprint(mapping.sourceHeader), mapping);
+  }
+
+  const byFingerprint = new Map<string, { key: string; matchType: string }>();
+  for (const column of columns) {
+    byFingerprint.set(normalizeHeaderFingerprint(column.key), { key: column.key, matchType: "exact" });
+    byFingerprint.set(normalizeHeaderFingerprint(column.label), { key: column.key, matchType: "label" });
+    for (const alias of column.aliases ?? []) {
+      byFingerprint.set(normalizeHeaderFingerprint(alias), { key: column.key, matchType: "alias" });
+    }
+  }
+
+  return detectedHeaders.flatMap((header) => {
+    const fingerprint = normalizeHeaderFingerprint(header);
+    if (!fingerprint) {
+      return [];
+    }
+    const suppliedMatch = supplied.get(fingerprint);
+    if (suppliedMatch) {
+      return [{ sourceHeader: header, targetKey: suppliedMatch.targetKey, matchType: suppliedMatch.matchType ?? "user" }];
+    }
+    if (byFingerprint.has(fingerprint)) {
+      const match = byFingerprint.get(fingerprint)!;
+      return [{ sourceHeader: header, targetKey: match.key, matchType: match.matchType }];
+    }
+    const savedTarget = savedMappings[fingerprint];
+    if (savedTarget) {
+      return [{ sourceHeader: header, targetKey: savedTarget, matchType: "saved" }];
+    }
+    return [];
+  });
+}
+
+function determineRowKey(
+  rowData: Record<string, unknown>,
+  schema: DatasetTemplateSchema | null,
+) {
+  const preferredKeys = schema?.rowIdentityKeys ?? [];
+  const fallbackKeys = schema?.fallbackIdentityKeys ?? [];
+  const candidates = [...preferredKeys, ...fallbackKeys, "rowKey", "id", "code", "employeeCode", "studentId"];
+  for (const key of candidates) {
+    const value = rowData[key];
+    if (value === null || value === undefined) {
+      continue;
+    }
+    const text = asText(value);
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
+function computeSourceReadiness(columns: DatasetTemplateColumn[], validRows: Array<Record<string, unknown>>) {
+  if (validRows.length === 0) {
+    return {
+      score: 0,
+      status: "MISSING" as const,
+      coreCompletionPercent: 0,
+      recommendedCompletionPercent: 0,
+      summary: "No usable data rows were found.",
+    };
+  }
+
+  const coreColumns = columns.filter((column) => column.requiredLevel === "CORE");
+  const recommendedColumns = columns.filter((column) => column.requiredLevel === "RECOMMENDED");
+
+  const completion = (targetColumns: DatasetTemplateColumn[]) => {
+    if (targetColumns.length === 0) {
+      return 100;
+    }
+    const totalChecks = validRows.length * targetColumns.length;
+    const presentChecks = validRows.reduce((sum, row) => {
+      return sum + targetColumns.filter((column) => row[column.key] !== null && row[column.key] !== undefined && row[column.key] !== "").length;
+    }, 0);
+    return Math.round((presentChecks / totalChecks) * 100);
+  };
+
+  const coreCompletionPercent = completion(coreColumns);
+  const recommendedCompletionPercent = completion(recommendedColumns);
+  const score = Math.round((coreCompletionPercent * 0.7) + (recommendedCompletionPercent * 0.3));
+  const status: "READY" | "PARTIAL" | "MISSING" = score >= 80 ? "READY" : score >= 35 ? "PARTIAL" : "MISSING";
+
+  return {
+    score,
+    status,
+    coreCompletionPercent,
+    recommendedCompletionPercent,
+    summary:
+      status === "READY"
+        ? "Enough data is present to compute most supported metrics."
+        : status === "PARTIAL"
+          ? "The upload is usable, but some recommended fields are still missing."
+          : "Only a limited subset of supported metrics can be derived from this upload.",
+  };
+}
+
+function computeMetricCoverage(columns: DatasetTemplateColumn[], validRows: Array<Record<string, unknown>>) {
+  const metrics = new Map<string, DatasetTemplateColumn[]>();
+  for (const column of columns) {
+    for (const metricCode of column.usedByMetrics ?? []) {
+      const current = metrics.get(metricCode) ?? [];
+      current.push(column);
+      metrics.set(metricCode, current);
+    }
+  }
+
+  return [...metrics.entries()].map(([metricCode, metricColumns]) => {
+    const totalFieldCount = metricColumns.length;
+    const presentFieldCount = metricColumns.filter((column) =>
+      validRows.some((row) => row[column.key] !== null && row[column.key] !== undefined && row[column.key] !== ""),
+    ).length;
+    const coreMissing = metricColumns.some(
+      (column) =>
+        column.requiredLevel === "CORE" &&
+        !validRows.some((row) => row[column.key] !== null && row[column.key] !== undefined && row[column.key] !== ""),
+    );
+
+    const status: "READY" | "PARTIAL" | "MISSING" =
+      presentFieldCount === 0 ? "MISSING" : coreMissing || presentFieldCount < totalFieldCount ? "PARTIAL" : "READY";
+    return {
+      metricCode,
+      status,
+      presentFieldCount,
+      totalFieldCount,
+    };
+  });
+}
+
+function computeBodyCoverage(
+  metricCoverage: Array<{ metricCode: string; status: "READY" | "PARTIAL" | "MISSING" }>,
+  schema: DatasetTemplateSchema | null,
+) {
+  const coverageByBody = schema?.coverageByBody ?? {};
+  return Object.entries(coverageByBody).map(([bodyCode, metricCodes]) => {
+    const relevant = metricCoverage.filter((metric) => metricCodes.includes(metric.metricCode));
+    return {
+      bodyCode,
+      readyMetricCount: relevant.filter((metric) => metric.status === "READY").length,
+      partialMetricCount: relevant.filter((metric) => metric.status === "PARTIAL").length,
+      missingMetricCount: relevant.filter((metric) => metric.status === "MISSING").length,
+    };
+  });
+}
+
+function parseDatasetImport(
+  input: z.infer<typeof dataBankDatasetImportSchema>,
+  schema: DatasetTemplateSchema | null,
+  savedMappings: Record<string, string>,
+): ParsedDatasetImport {
+  const workbook = XLSX.read(Buffer.from(input.fileContentBase64, "base64"), { type: "buffer", cellDates: true });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    throw new Error("Import file does not contain any sheets.");
+  }
+
+  const sheet = workbook.Sheets[sheetName];
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1,
+    defval: null,
+    raw: true,
+    blankrows: false,
+  });
+  if (matrix.length === 0) {
+    throw new Error("Import file does not contain any data rows.");
+  }
+
+  const selectedVariant = input.importVariant ?? "STANDARD";
+  let templateColumns = filterTemplateColumnsForVariant(
+    schema?.columns ?? deriveTemplateColumnsFromRows([]),
+    selectedVariant,
+  );
+  const nonEmptyRows = matrix
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => Array.isArray(row) && row.some((cell) => asText(cell)));
+  if (nonEmptyRows.length === 0) {
+    throw new Error("Import file does not contain any usable rows.");
+  }
+
+  const headerCandidate = input.headerRowIndex ?? nonEmptyRows
+    .slice(0, 10)
+    .sort((left, right) => scoreHeaderRow(right.row, templateColumns, savedMappings) - scoreHeaderRow(left.row, templateColumns, savedMappings))[0]?.index;
+  if (headerCandidate === undefined) {
+    throw new Error("Could not detect a usable header row.");
+  }
+
+  const headerRow = matrix[headerCandidate];
+  if (!Array.isArray(headerRow)) {
+    throw new Error("Selected header row is invalid.");
+  }
+
+  const detectedHeaders = headerRow
+    .map((cell) => normalizeTemplateKey(cell))
+    .map((cell, index) => cell ?? `Column_${index + 1}`);
+
+  if (templateColumns.length === 0) {
+    templateColumns = detectedHeaders.map((header) => ({
+      key: header,
+      label: header,
+      required: false,
+      requiredLevel: "OPTIONAL",
+      sample: null,
+      aliases: [],
+      enumValues: [],
+      usedByMetrics: [],
+      usedByBodies: [],
+      normalizers: [],
+    }));
+  }
+
+  const columns = [...new Set(detectedHeaders.filter(Boolean))];
+  if (columns.length === 0) {
+    throw new Error("Import file does not contain any usable columns.");
+  }
+
+  const resolvedMappings = buildResolvedMappings(detectedHeaders, templateColumns, savedMappings, input.resolvedMappings);
+  const resolvedMap = new Map(resolvedMappings.map((mapping) => [normalizeHeaderFingerprint(mapping.sourceHeader), mapping]));
+  const blockingIssues: Array<{ code: string; message: string }> = [];
+  const warnings: Array<{ code: string; message: string }> = [];
+
+  if ((schema?.rowIdentityKeys?.length ?? 0) > 0) {
+    const hasAnyIdentityMapping = (schema?.rowIdentityKeys ?? []).some((key) =>
+      resolvedMappings.some((mapping) => mapping.targetKey === key),
+    );
+    if (!hasAnyIdentityMapping) {
+      blockingIssues.push({
+        code: "MISSING_IDENTITY",
+        message: `This template needs at least one identity column: ${(schema?.rowIdentityKeys ?? []).join(", ")}.`,
+      });
+    }
+  }
+
+  const unmappedHeaders = detectedHeaders.filter((header) => !resolvedMap.has(normalizeHeaderFingerprint(header)));
+  if (unmappedHeaders.length > 0) {
+    warnings.push({
+      code: "UNMAPPED_HEADERS",
+      message: `Some columns are not mapped and will be ignored: ${unmappedHeaders.slice(0, 6).join(", ")}${unmappedHeaders.length > 6 ? "..." : ""}.`,
+    });
+  }
+
+  const dataRows = matrix.slice(headerCandidate + 1);
+  const validRows: Array<Record<string, unknown>> = [];
+  const rowIssueSample: Array<{ rowIndex: number; issues: string[] }> = [];
+  const seenRowKeys = new Set<string>();
+
+  for (const [offset, row] of dataRows.entries()) {
+    if (!Array.isArray(row) || !row.some((cell) => asText(cell))) {
+      continue;
+    }
+    const originalRowIndex = headerCandidate + 1 + offset;
+    const normalizedRow: Record<string, unknown> = {};
+    const issues: string[] = [];
+
+    detectedHeaders.forEach((header, index) => {
+      const mapping = resolvedMap.get(normalizeHeaderFingerprint(header));
+      if (!mapping) {
+        return;
+      }
+      const templateColumn = templateColumns.find((column) => column.key === mapping.targetKey);
+      if (!templateColumn) {
+        return;
+      }
+      normalizedRow[mapping.targetKey] = applyColumnNormalizers(row[index] ?? null, templateColumn);
+    });
+
+    for (const column of templateColumns.filter((templateColumn) => templateColumn.requiredLevel === "CORE")) {
+      const value = normalizedRow[column.key];
+      if (value === null || value === undefined || value === "") {
+        issues.push(`Missing ${column.label}.`);
+      }
+    }
+
+    const rowKey =
+      determineRowKey(normalizedRow, schema) ??
+      ((schema?.rowIdentityKeys?.length ?? 0) === 0 ? `ROW-${originalRowIndex + 1}` : null);
+    if (!rowKey) {
+      issues.push("No row identity could be derived for this row.");
+    } else if (seenRowKeys.has(rowKey)) {
+      issues.push(`Duplicate row identity "${rowKey}" detected.`);
+    } else {
+      seenRowKeys.add(rowKey);
+    }
+
+    if (issues.length > 0) {
+      rowIssueSample.push({ rowIndex: originalRowIndex + 1, issues });
+      continue;
+    }
+
+    validRows.push(normalizedRow);
+  }
+
+  if (validRows.length === 0) {
+    blockingIssues.push({
+      code: "NO_VALID_ROWS",
+      message: "No valid rows remain after applying required-field checks.",
+    });
+  }
+
+  const requiredColumns = templateColumns.filter((column) => column.requiredLevel === "CORE");
+  const missingRecommendedColumns = templateColumns
+    .filter((column) => column.requiredLevel === "RECOMMENDED")
+    .filter((column) => !validRows.some((row) => row[column.key] !== null && row[column.key] !== undefined && row[column.key] !== ""));
+  if (missingRecommendedColumns.length > 0) {
+    warnings.push({
+      code: "MISSING_RECOMMENDED_FIELDS",
+      message: `Recommended fields are missing or blank for all rows: ${missingRecommendedColumns.map((column) => column.label).slice(0, 6).join(", ")}${missingRecommendedColumns.length > 6 ? "..." : ""}.`,
+    });
+  }
+
+  const sourceReadiness = computeSourceReadiness([...requiredColumns, ...missingRecommendedColumns, ...templateColumns.filter((column) => column.requiredLevel === "RECOMMENDED" && !missingRecommendedColumns.includes(column))], validRows);
+  const coverageByMetric = computeMetricCoverage(templateColumns, validRows);
+  const coverageByBody = computeBodyCoverage(coverageByMetric, schema);
+  const datasetRows = validRows.map((rowData, index) => ({
+    rowIndex: index,
+    rowKey: determineRowKey(rowData, schema) ?? `ROW-${index + 1}`,
+    rowData,
+  }));
+
+  return {
+    selectedHeaderRowIndex: headerCandidate,
+    detectedHeaders,
+    rowCount: dataRows.filter((row) => Array.isArray(row) && row.some((cell) => asText(cell))).length,
+    columns,
+    sampleRows: dataRows.slice(0, 5).map((row) =>
+      Object.fromEntries(
+        detectedHeaders.map((header, index) => [header, normalizeSpreadsheetValue((row as unknown[])[index] ?? null)]),
+      ),
+    ),
+    normalizedSampleRows: validRows.slice(0, 5),
+    validRowCount: validRows.length,
+    skippedRowCount: rowIssueSample.length,
+    blockingIssues,
+    warnings,
+    rowIssueSample: rowIssueSample.slice(0, 10),
+    suggestedMappings: resolvedMappings,
+    resolvedMappings,
+    sourceReadiness,
+    coverageByMetric,
+    coverageByBody,
+    datasetRows,
+  };
 }
 
 function rowsToCsv(rows: string[][]) {
@@ -535,6 +1136,150 @@ function rowsToCsv(rows: string[][]) {
         .join(","),
     )
     .join("\n");
+}
+
+function buildTemplateSampleValue(column: DatasetTemplateColumn, rowIndex: number) {
+  if (column.sample !== null && column.sample !== undefined && column.sample !== "") {
+    if (column.type === "BOOLEAN") {
+      return String(rowIndex % 2 === 0 ? column.sample : !normalizeBooleanValue(column.sample));
+    }
+    if (column.type === "NUMBER" || column.type === "CURRENCY") {
+      const numericSample = Number(column.sample);
+      if (Number.isFinite(numericSample)) {
+        return String(numericSample + rowIndex);
+      }
+    }
+    if (column.type === "DATE") {
+      const normalizedDate = normalizeDateValue(column.sample);
+      if (typeof normalizedDate === "string") {
+        const parsed = new Date(normalizedDate);
+        parsed.setDate(parsed.getDate() + rowIndex);
+        return parsed.toISOString().slice(0, 10);
+      }
+    }
+    const sampleText = String(column.sample);
+    const match = sampleText.match(/^(.*?)(\d+)$/);
+    if (match) {
+      return `${match[1]}${Number(match[2]) + rowIndex}`;
+    }
+    return rowIndex === 0 ? sampleText : `${sampleText} ${rowIndex + 1}`;
+  }
+
+  const key = column.key.toLowerCase();
+  if (column.type === "BOOLEAN") {
+    return rowIndex % 2 === 0 ? "Yes" : "No";
+  }
+  if (column.type === "NUMBER" || key.includes("count") || key.includes("year")) {
+    return key.includes("year") ? String(2025 + rowIndex) : String(10 + rowIndex);
+  }
+  if (column.type === "CURRENCY" || key.includes("amount") || key.includes("ctc")) {
+    return String(50000 + (rowIndex * 10000));
+  }
+  if (column.type === "DATE" || key.includes("date")) {
+    return `2025-01-0${Math.min(rowIndex + 1, 9)}`;
+  }
+  if (key.includes("id") || key.includes("code")) {
+    return `ID-${1001 + rowIndex}`;
+  }
+  if (key.includes("department") || key.includes("campus") || key.includes("school")) {
+    return ["Computer Science", "Management", "Central Library", "Engineering Block"][rowIndex] ?? `Unit ${rowIndex + 1}`;
+  }
+  if (key.includes("name") || key.includes("title")) {
+    return `Sample ${column.label} ${rowIndex + 1}`;
+  }
+  if (column.enumValues && column.enumValues.length > 0) {
+    return column.enumValues[rowIndex % column.enumValues.length] ?? "";
+  }
+  return `Sample ${rowIndex + 1}`;
+}
+
+function buildTemplateSampleRows(columns: DatasetTemplateColumn[], count = 4) {
+  return Array.from({ length: count }, (_, rowIndex) =>
+    columns.map((column) => buildTemplateSampleValue(column, rowIndex)),
+  );
+}
+
+function buildTemplateInstructionsRows(source: { name: string; code: string }, schema: DatasetTemplateSchema | null, columns: DatasetTemplateColumn[]) {
+  const guide = schema?.guide;
+  const rows: string[][] = [
+    ["Field", "Value"],
+    ["Template", source.name],
+    ["Template Code", schema?.templateKey ?? source.code],
+    ["Version", schema?.templateVersion ?? "1"],
+    ["Owner Office", guide?.ownerOffice ?? "Institution Office"],
+    ["Summary", guide?.summary ?? "Upload the data you have. Missing recommended fields will generate warnings, not a hard block."],
+    ["Minimum Data Needed", guide?.minimumDataHint ?? "At minimum provide identifying rows and the core fields shown in the main template sheet."],
+    ["Partial Uploads", guide?.supportsPartialUpload === false ? "No" : "Yes"],
+    ["Supported Metrics", (guide?.supportedMetrics ?? []).join(", ") || "General institutional databank coverage"],
+    ["" , ""],
+    ["Column Key", "Label | Requirement | Type | Example | Used By"],
+  ];
+
+  for (const column of columns) {
+    rows.push([
+      column.key,
+      [
+        column.label,
+        column.requiredLevel,
+        column.type ?? "TEXT",
+        column.sample ?? "-",
+        column.usedByMetrics?.length ? column.usedByMetrics.join(", ") : "General coverage",
+      ].join(" | "),
+    ]);
+  }
+
+  return rows;
+}
+
+function extractSavedMappings(
+  adapterConfig: Prisma.JsonValue | null | undefined,
+  templateKey: string,
+): Record<string, string> {
+  const config = asJsonObject(adapterConfig);
+  const profilesValue = config?.importProfiles;
+  if (!profilesValue || typeof profilesValue !== "object" || Array.isArray(profilesValue)) {
+    return {};
+  }
+  const profileValue = (profilesValue as Prisma.JsonObject)[templateKey];
+  if (!profileValue || typeof profileValue !== "object" || Array.isArray(profileValue)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(profileValue as Record<string, unknown>)
+      .filter(([, targetKey]) => typeof targetKey === "string" && targetKey.trim().length > 0)
+      .map(([fingerprint, targetKey]) => [fingerprint, String(targetKey)]),
+  );
+}
+
+function buildUpdatedAdapterConfig(
+  existingValue: Prisma.JsonValue | null | undefined,
+  templateKey: string,
+  resolvedMappings: Array<{ sourceHeader: string; targetKey: string }>,
+) {
+  const existingConfig = asJsonObject(existingValue) ?? {};
+  const existingProfiles =
+    existingConfig.importProfiles && typeof existingConfig.importProfiles === "object" && !Array.isArray(existingConfig.importProfiles)
+      ? { ...(existingConfig.importProfiles as Prisma.JsonObject) }
+      : {};
+
+  existingProfiles[templateKey] = Object.fromEntries(
+    resolvedMappings.map((mapping) => [normalizeHeaderFingerprint(mapping.sourceHeader), mapping.targetKey]),
+  );
+
+  return {
+    ...existingConfig,
+    importProfiles: existingProfiles,
+  } satisfies Prisma.InputJsonObject;
+}
+
+function toCoverageStatus(status: "READY" | "PARTIAL" | "MISSING") {
+  if (status === "READY") {
+    return DataBankCoverageStatus.COMPLETE;
+  }
+  if (status === "PARTIAL") {
+    return DataBankCoverageStatus.PARTIAL;
+  }
+  return DataBankCoverageStatus.NONE;
 }
 
 function rowMatchesFilter(rowData: Prisma.JsonObject, filter: Record<string, unknown> | undefined) {
@@ -1372,6 +2117,7 @@ export async function getInstitutionalDataSourceDatasetTemplate(
   actorUserId: string,
   actorRole: Role | null | undefined,
   format: "csv" | "xlsx" = "xlsx",
+  variant: TemplateVariant = "STANDARD",
 ) {
   const accessError = await ensureInstitutionalDataAccess(tenantId, actorUserId, actorRole);
   if (accessError) {
@@ -1405,50 +2151,22 @@ export async function getInstitutionalDataSourceDatasetTemplate(
     return { status: "error", message: "Only dataset sources can generate spreadsheet templates." } satisfies ErrorResult;
   }
 
-  const columns =
-    parseDatasetTemplateColumns(source.datasetSchema) ||
-    deriveTemplateColumnsFromRows(source.snapshots[0]?.datasetRows);
-  let resolvedColumns =
-    columns.length > 0 ? columns : deriveTemplateColumnsFromRows(source.snapshots[0]?.datasetRows);
+  const schema = parseDatasetTemplateSchema(source.datasetSchema);
+  let resolvedColumns = filterTemplateColumnsForVariant(
+    schema?.columns ?? deriveTemplateColumnsFromRows(source.snapshots[0]?.datasetRows),
+    variant,
+  );
 
   if (resolvedColumns.length === 0) {
-    // Provide a generic fallback template if no schema or data exists
     resolvedColumns = [
-      { key: "id", label: "id", required: false, sample: "ID-1001" },
-      { key: "name", label: "name", required: false, sample: "Sample Name" },
-      { key: "value", label: "value", required: false, sample: "100" },
+      { key: "id", label: "ID", required: false, requiredLevel: "CORE", sample: "ID-1001", aliases: [], enumValues: [], usedByMetrics: [], usedByBodies: [], normalizers: [] },
+      { key: "name", label: "Name", required: false, requiredLevel: "RECOMMENDED", sample: "Sample Name", aliases: [], enumValues: [], usedByMetrics: [], usedByBodies: [], normalizers: [] },
+      { key: "value", label: "Value", required: false, requiredLevel: "OPTIONAL", sample: "100", aliases: [], enumValues: [], usedByMetrics: [], usedByBodies: [], normalizers: [] },
     ];
   }
 
   const headerRow = resolvedColumns.map((column) => column.key);
-  
-  // Generate 3 lines of dummy data
-  const rows = [headerRow];
-  for (let i = 0; i < 3; i++) {
-    const sampleRow = resolvedColumns.map((column) => {
-      if (column.sample) {
-        // If it looks like a number, increment it for variety
-        const num = Number(column.sample);
-        if (!isNaN(num)) return String(num + i);
-        
-        // If it looks like an ID, increment the number part
-        const match = String(column.sample).match(/^(.*?)(\d+)$/);
-        if (match) return `${match[1]}${Number(match[2]) + i}`;
-        
-        return `${column.sample} ${i + 1}`;
-      }
-      
-      const key = column.key.toLowerCase();
-      if (key.includes("id") || key.includes("code")) return `ID-${1000 + i}`;
-      if (key.includes("name")) return `Sample Name ${i + 1}`;
-      if (key.includes("email")) return `user${i + 1}@example.com`;
-      if (key.includes("date") || key.includes("year")) return `2025-01-0${i + 1}`;
-      if (key.includes("department") || key.includes("dept")) return `Department ${String.fromCharCode(65 + i)}`;
-      if (key.includes("status")) return i % 2 === 0 ? "Active" : "Inactive";
-      return `Sample Data ${i + 1}`;
-    });
-    rows.push(sampleRow);
-  }
+  const rows = [headerRow, ...buildTemplateSampleRows(resolvedColumns, 4)];
 
   if (format === "csv") {
     const csv = rowsToCsv(rows);
@@ -1469,9 +2187,14 @@ export async function getInstitutionalDataSourceDatasetTemplate(
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   sheet["!cols"] = resolvedColumns.map((column) => ({
-    wch: Math.max(column.key.length + 2, column.sample?.length ?? 0, 14),
+    wch: Math.max(column.key.length + 2, String(column.sample ?? "").length, 16),
   }));
   XLSX.utils.book_append_sheet(workbook, sheet, "Template");
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet(buildTemplateInstructionsRows(source, schema, resolvedColumns)),
+    "Instructions",
+  );
 
   return {
     status: "success",
@@ -2022,6 +2745,8 @@ export async function previewInstitutionalDataSourceImport(
       code: true,
       name: true,
       shape: true,
+      datasetSchema: true,
+      adapterConfig: true,
     },
   });
   if (!source) {
@@ -2033,7 +2758,9 @@ export async function previewInstitutionalDataSourceImport(
 
   let parsedImport: ParsedDatasetImport;
   try {
-    parsedImport = parseDatasetImport(parsed.data);
+    const schema = parseDatasetTemplateSchema(source.datasetSchema);
+    const savedMappings = extractSavedMappings(source.adapterConfig, schema?.templateKey ?? source.code);
+    parsedImport = parseDatasetImport(parsed.data, schema, savedMappings);
   } catch (error) {
     return {
       status: "error",
@@ -2069,9 +2796,23 @@ export async function previewInstitutionalDataSourceImport(
         code: source.code,
         name: source.name,
       },
+      selectedHeaderRowIndex: parsedImport.selectedHeaderRowIndex,
+      detectedHeaders: parsedImport.detectedHeaders,
       rowCount: parsedImport.rowCount,
       columns: parsedImport.columns,
       sampleRows: parsedImport.sampleRows,
+      normalizedSampleRows: parsedImport.normalizedSampleRows,
+      validRowCount: parsedImport.validRowCount,
+      skippedRowCount: parsedImport.skippedRowCount,
+      blockingIssues: parsedImport.blockingIssues,
+      warnings: parsedImport.warnings,
+      rowIssueSample: parsedImport.rowIssueSample,
+      suggestedMappings: parsedImport.suggestedMappings,
+      resolvedMappings: parsedImport.resolvedMappings,
+      sourceReadiness: parsedImport.sourceReadiness,
+      coverageByMetric: parsedImport.coverageByMetric,
+      coverageByBody: parsedImport.coverageByBody,
+      importVariant: parsed.data.importVariant ?? "STANDARD",
       observedYear: parsed.data.observedYear ?? null,
       scopeKey,
       dimensions,
@@ -2092,9 +2833,23 @@ export async function previewInstitutionalDataSourceImport(
         code: string;
         name: string;
       };
+      selectedHeaderRowIndex: number;
+      detectedHeaders: string[];
       rowCount: number;
       columns: string[];
       sampleRows: Array<Record<string, unknown>>;
+      normalizedSampleRows: Array<Record<string, unknown>>;
+      validRowCount: number;
+      skippedRowCount: number;
+      blockingIssues: Array<{ code: string; message: string }>;
+      warnings: Array<{ code: string; message: string }>;
+      rowIssueSample: Array<{ rowIndex: number; issues: string[] }>;
+      suggestedMappings: Array<{ sourceHeader: string; targetKey: string; matchType: string }>;
+      resolvedMappings: Array<{ sourceHeader: string; targetKey: string; matchType: string }>;
+      sourceReadiness: ParsedDatasetImport["sourceReadiness"];
+      coverageByMetric: ParsedDatasetImport["coverageByMetric"];
+      coverageByBody: ParsedDatasetImport["coverageByBody"];
+      importVariant: TemplateVariant;
       observedYear: number | null;
       scopeKey: string;
       dimensions: DimensionRecord;
@@ -2137,7 +2892,10 @@ export async function importInstitutionalDataSourceDataset(
     },
     select: {
       id: true,
+      code: true,
       shape: true,
+      datasetSchema: true,
+      adapterConfig: true,
     },
   });
   if (!source) {
@@ -2149,13 +2907,39 @@ export async function importInstitutionalDataSourceDataset(
 
   let parsedImport: ParsedDatasetImport;
   try {
-    parsedImport = parseDatasetImport(parsed.data);
+    const schema = parseDatasetTemplateSchema(source.datasetSchema);
+    const savedMappings = extractSavedMappings(source.adapterConfig, schema?.templateKey ?? source.code);
+    parsedImport = parseDatasetImport(parsed.data, schema, savedMappings);
   } catch (error) {
     return {
       status: "error",
       message: error instanceof Error ? error.message : "Failed to parse import file.",
     } satisfies ErrorResult;
   }
+
+  if (parsedImport.blockingIssues.length > 0) {
+    return {
+      status: "error",
+      message: parsedImport.blockingIssues[0]?.message ?? "The uploaded file has blocking validation issues.",
+    } satisfies ErrorResult;
+  }
+
+  const coverageStatus = toCoverageStatus(parsedImport.sourceReadiness.status);
+  const importValidation = {
+    fileName: parsed.data.fileName,
+    importVariant: parsed.data.importVariant ?? "STANDARD",
+    selectedHeaderRowIndex: parsedImport.selectedHeaderRowIndex,
+    detectedHeaders: parsedImport.detectedHeaders,
+    resolvedMappings: parsedImport.resolvedMappings,
+    warnings: parsedImport.warnings,
+    blockingIssues: parsedImport.blockingIssues,
+    rowIssueSample: parsedImport.rowIssueSample,
+    validRowCount: parsedImport.validRowCount,
+    skippedRowCount: parsedImport.skippedRowCount,
+    coverageByMetric: parsedImport.coverageByMetric,
+    coverageByBody: parsedImport.coverageByBody,
+    sourceReadiness: parsedImport.sourceReadiness,
+  };
 
   const result = await upsertInstitutionalDataSourceSnapshot(
     sourceId,
@@ -2168,7 +2952,13 @@ export async function importInstitutionalDataSourceDataset(
         importedFrom: parsed.data.fileName,
         columns: parsedImport.columns,
       },
+      coverageStatus,
+      coveragePercent: parsedImport.sourceReadiness.score,
+      confidenceNote: parsedImport.sourceReadiness.summary,
       entryMode: DataBankSnapshotEntryMode.BULK_IMPORT,
+      evidenceMeta: {
+        importValidation,
+      },
       datasetRows: parsedImport.datasetRows,
       replaceRows: parsed.data.replaceRows ?? true,
     },
@@ -2180,21 +2970,43 @@ export async function importInstitutionalDataSourceDataset(
     return result;
   }
 
+  const schema = parseDatasetTemplateSchema(source.datasetSchema);
+  await prisma.dataBankSourceDefinition.update({
+    where: { id: sourceId },
+    data: {
+      adapterConfig: buildUpdatedAdapterConfig(
+        source.adapterConfig,
+        schema?.templateKey ?? source.code,
+        parsedImport.resolvedMappings,
+      ),
+    },
+  });
+
   return {
     status: "success",
     message: "Dataset imported.",
     snapshot: result.snapshot,
     syncResult: result.syncResult,
     importSummary: {
+      validRowCount: parsedImport.validRowCount,
+      skippedRowCount: parsedImport.skippedRowCount,
       rowCount: parsedImport.rowCount,
       columns: parsedImport.columns,
+      warnings: parsedImport.warnings,
+      sourceReadiness: parsedImport.sourceReadiness,
+      coverageByMetric: parsedImport.coverageByMetric,
     },
   } satisfies SuccessResult<{
     snapshot: typeof result.snapshot;
     syncResult: typeof result.syncResult;
     importSummary: {
+      validRowCount: number;
+      skippedRowCount: number;
       rowCount: number;
       columns: string[];
+      warnings: Array<{ code: string; message: string }>;
+      sourceReadiness: ParsedDatasetImport["sourceReadiness"];
+      coverageByMetric: ParsedDatasetImport["coverageByMetric"];
     };
   }>;
 }
@@ -2779,7 +3591,7 @@ export async function seedInstitutionalDataCatalog(
   }
 
   if (parsed.data.includeRecommendedSources !== false) {
-    for (const seededSource of seededSourceCatalog) {
+    for (const seededSource of curatedSourcePacks) {
       const domainId = domains.get(seededSource.domainCode)?.id;
       await prisma.dataBankSourceDefinition.upsert({
         where: {
@@ -2791,23 +3603,31 @@ export async function seedInstitutionalDataCatalog(
         update: {
           domainId,
           name: seededSource.name,
+          description: seededSource.description,
           kind: seededSource.kind,
           shape: seededSource.shape,
-          adapterKey: "adapterKey" in seededSource ? seededSource.adapterKey : null,
+          datasetSchema: seededSource.datasetSchema ? (seededSource.datasetSchema as Prisma.InputJsonValue) : Prisma.DbNull,
+          adapterKey: seededSource.adapterKey ?? null,
           supportsScopeBreakdown: seededSource.supportsScopeBreakdown,
+          supportsYearWise: true,
           isSystemDefined: true,
           isActive: true,
+          sortOrder: seededSource.sortOrder,
         },
         create: {
           tenantId,
           domainId,
           code: seededSource.code,
           name: seededSource.name,
+          description: seededSource.description,
           kind: seededSource.kind,
           shape: seededSource.shape,
-          adapterKey: "adapterKey" in seededSource ? seededSource.adapterKey : null,
+          datasetSchema: seededSource.datasetSchema ? (seededSource.datasetSchema as Prisma.InputJsonValue) : Prisma.DbNull,
+          adapterKey: seededSource.adapterKey ?? null,
+          supportsYearWise: true,
           supportsScopeBreakdown: seededSource.supportsScopeBreakdown,
           isSystemDefined: true,
+          sortOrder: seededSource.sortOrder,
         },
       });
     }
@@ -2859,7 +3679,7 @@ export async function seedInstitutionalDataCatalog(
     (await prisma.sourceMetricDefinition.findMany({
       where: {
         tenantId,
-        code: { in: ["FACULTY_TOTAL", "FACULTY_PHD", "STUDENT_PLACED_TOTAL", "PUBLICATIONS_TOTAL"] },
+        code: { in: ["FACULTY_TOTAL", "FACULTY_PHD", "GRADUATING_STUDENTS_TOTAL", "STUDENT_PLACED_TOTAL", "PUBLICATIONS_TOTAL", "ANNUAL_BUDGET_TOTAL"] },
       },
       select: { id: true, code: true },
     })).map((metric) => [metric.code, metric.id]),
@@ -2868,7 +3688,7 @@ export async function seedInstitutionalDataCatalog(
     (await prisma.dataBankSourceDefinition.findMany({
       where: {
         tenantId,
-        code: { in: ["HR_FACULTY_ROSTER", "PLACEMENT_LIST", "PUBLICATION_REGISTER"] },
+        code: { in: ["HR_FACULTY_ROSTER", "STUDENT_LIFECYCLE_REGISTER", "PLACEMENT_LIST", "PUBLICATION_REGISTER", "FINANCE_LEDGER"] },
       },
       select: { id: true, code: true },
     })).map((source) => [source.code, source.id]),
@@ -2876,9 +3696,11 @@ export async function seedInstitutionalDataCatalog(
 
   const recommendedLinks: Array<{ metricCode: string; sourceCode: string; resolutionMode: MetricSourceResolutionMode; transformConfig: Prisma.InputJsonValue; precedence: number }> = [
     { metricCode: "FACULTY_TOTAL", sourceCode: "HR_FACULTY_ROSTER", resolutionMode: MetricSourceResolutionMode.COUNT_ROWS, transformConfig: { mode: "COUNT_ROWS" }, precedence: 10 },
-    { metricCode: "FACULTY_PHD", sourceCode: "HR_FACULTY_ROSTER", resolutionMode: MetricSourceResolutionMode.COUNT_ROWS, transformConfig: { mode: "COUNT_ROWS", filter: { qualification: "PhD" } }, precedence: 20 },
-    { metricCode: "STUDENT_PLACED_TOTAL", sourceCode: "PLACEMENT_LIST", resolutionMode: MetricSourceResolutionMode.COUNT_ROWS, transformConfig: { mode: "COUNT_ROWS", filter: { placed: true } }, precedence: 10 },
+    { metricCode: "FACULTY_PHD", sourceCode: "HR_FACULTY_ROSTER", resolutionMode: MetricSourceResolutionMode.COUNT_ROWS, transformConfig: { mode: "COUNT_ROWS", filter: { phdEquivalentFlag: true } }, precedence: 20 },
+    { metricCode: "GRADUATING_STUDENTS_TOTAL", sourceCode: "STUDENT_LIFECYCLE_REGISTER", resolutionMode: MetricSourceResolutionMode.COUNT_ROWS, transformConfig: { mode: "COUNT_ROWS", filter: { outgoingFlag: true } }, precedence: 10 },
+    { metricCode: "STUDENT_PLACED_TOTAL", sourceCode: "PLACEMENT_LIST", resolutionMode: MetricSourceResolutionMode.COUNT_ROWS, transformConfig: { mode: "COUNT_ROWS", filter: { placedFlag: true } }, precedence: 10 },
     { metricCode: "PUBLICATIONS_TOTAL", sourceCode: "PUBLICATION_REGISTER", resolutionMode: MetricSourceResolutionMode.COUNT_ROWS, transformConfig: { mode: "COUNT_ROWS" }, precedence: 10 },
+    { metricCode: "ANNUAL_BUDGET_TOTAL", sourceCode: "FINANCE_LEDGER", resolutionMode: MetricSourceResolutionMode.SUM_COLUMN, transformConfig: { mode: "SUM_COLUMN", columnKey: "amount" }, precedence: 10 },
   ];
 
   for (const link of recommendedLinks) {
